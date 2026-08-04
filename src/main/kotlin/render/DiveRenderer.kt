@@ -12,13 +12,13 @@ import no.njoh.pulseengine.core.shared.primitives.Color
  *   pearl  = small amber square
  *   zones  = flat horizontal bands
  * Real art replaces this after the loop is locked.
+ *
+ * All coordinate maths lives in [Viewport], which is pure and unit-tested — the screen
+ * dimensions handed in here are PHYSICAL framebuffer pixels, not the logical size from
+ * application.cfg, so nothing may assume a particular resolution.
  */
 object DiveRenderer
 {
-    private const val PIXELS_PER_METRE = 5f
-    private const val DIVER_BASE_SIZE = 14f
-    private const val PEARL_SIZE = 6f
-
     private val zoneColors = mapOf(
         Zone.SHALLOWS to Color(0.20f, 0.55f, 0.80f),
         Zone.KELP     to Color(0.14f, 0.42f, 0.62f),
@@ -29,54 +29,60 @@ object DiveRenderer
 
     private val pearlColor = Color(1f, 0.78f, 0.35f)
     private val diverColor = Color(1f, 1f, 1f)
+    private val surfaceColor = Color(0.55f, 0.80f, 0.95f)
 
     fun render(surface: Surface, sim: DiveSim, screenWidth: Float, screenHeight: Float)
     {
-        val centreX = screenWidth * 0.5f
-        // Camera follows the diver vertically, keeping them at 40% screen height.
-        val cameraDepth = sim.depth - (screenHeight * 0.4f) / PIXELS_PER_METRE
-
-        drawZoneBands(surface, cameraDepth, screenWidth, screenHeight)
-        drawPearls(surface, sim, centreX, cameraDepth, screenHeight)
-        drawDiver(surface, sim, centreX, cameraDepth)
+        drawZoneBands(surface, sim, screenWidth, screenHeight)
+        drawSurfaceLine(surface, sim, screenWidth, screenHeight)
+        drawPearls(surface, sim, screenWidth, screenHeight)
+        drawDiver(surface, sim, screenWidth, screenHeight)
     }
 
-    private fun drawZoneBands(surface: Surface, cameraDepth: Float, w: Float, h: Float)
+    private fun drawZoneBands(surface: Surface, sim: DiveSim, w: Float, h: Float)
     {
         Zone.entries.forEach { zone ->
-            val top = (zone.minDepth - cameraDepth) * PIXELS_PER_METRE
-            val bottom = nextZoneTop(zone, cameraDepth)
+            val top = Viewport.screenY(zone.minDepth, sim.depth, h)
+            val bottom = Viewport.screenY(nextZoneDepth(zone), sim.depth, h)
             if (bottom < 0f || top > h) return@forEach
             surface.setDrawColor(zoneColors.getValue(zone))
             surface.drawQuad(0f, top, w, bottom - top)
         }
     }
 
-    private fun nextZoneTop(zone: Zone, cameraDepth: Float): Float
+    private fun nextZoneDepth(zone: Zone): Float =
+        Zone.entries.getOrNull(zone.ordinal + 1)?.minDepth ?: Tuning.MAX_DEPTH
+
+    /** The waterline. Without it there is no visual cue for where banking happens. */
+    private fun drawSurfaceLine(surface: Surface, sim: DiveSim, w: Float, h: Float)
     {
-        val next = Zone.entries.getOrNull(zone.ordinal + 1)
-        val depth = next?.minDepth ?: Tuning.MAX_DEPTH
-        return (depth - cameraDepth) * PIXELS_PER_METRE
+        val y = Viewport.screenY(Tuning.SURFACE_DEPTH, sim.depth, h)
+        if (y < -4f || y > h) return
+        val thickness = Viewport.pixelsPerMetre(h) * 0.4f
+        surface.setDrawColor(surfaceColor)
+        surface.drawQuad(0f, y - thickness * 0.5f, w, thickness)
     }
 
-    private fun drawPearls(surface: Surface, sim: DiveSim, centreX: Float, cameraDepth: Float, h: Float)
+    private fun drawPearls(surface: Surface, sim: DiveSim, w: Float, h: Float)
     {
+        val size = Viewport.PEARL_SIZE_METRES * Viewport.pixelsPerMetre(h)
         surface.setDrawColor(pearlColor)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
-            val screenY = (pearl.depth - cameraDepth) * PIXELS_PER_METRE
-            if (screenY < -PEARL_SIZE || screenY > h + PEARL_SIZE) return@forEach
-            val screenX = centreX + pearl.x * PIXELS_PER_METRE
-            surface.drawQuad(screenX - PEARL_SIZE * 0.5f, screenY - PEARL_SIZE * 0.5f, PEARL_SIZE, PEARL_SIZE)
+            val screenY = Viewport.screenY(pearl.depth, sim.depth, h)
+            if (screenY < -size || screenY > h + size) return@forEach
+            val screenX = Viewport.screenX(pearl.x, w, h)
+            surface.drawQuad(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
         }
     }
 
-    private fun drawDiver(surface: Surface, sim: DiveSim, centreX: Float, cameraDepth: Float)
+    private fun drawDiver(surface: Surface, sim: DiveSim, w: Float, h: Float)
     {
         // Size scales with load so weight is visible as well as felt.
-        val size = DIVER_BASE_SIZE + sim.heldMass * 0.15f
-        val screenX = centreX + sim.x * PIXELS_PER_METRE
-        val screenY = (sim.depth - cameraDepth) * PIXELS_PER_METRE
+        val metres = Viewport.DIVER_SIZE_METRES + sim.heldMass * 0.03f
+        val size = metres * Viewport.pixelsPerMetre(h)
+        val screenX = Viewport.screenX(sim.x, w, h)
+        val screenY = Viewport.screenY(sim.depth, sim.depth, h)
         surface.setDrawColor(diverColor)
         surface.drawQuad(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
     }
