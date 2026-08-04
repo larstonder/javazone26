@@ -51,4 +51,28 @@ class PearlTest {
     fun `pearls start uncollected`() {
         assertTrue(PearlColumn.generate(seed = 7L).none { it.collected })
     }
+
+    @Test
+    fun `Zone at returns the deeper zone exactly on a boundary`() {
+        // The loop-variable bug: constructing a Pearl with the generator's current
+        // zone instead of Zone.at(depth) mis-tags any pearl landing on a boundary.
+        // Sampling cannot catch that, so pin the depths directly.
+        Zone.entries.drop(1).forEach { zone ->
+            val pearl = Pearl(x = 0f, depth = zone.minDepth, zone = Zone.at(zone.minDepth))
+            assertEquals(zone, pearl.zone, "depth ${zone.minDepth} must be $zone")
+            assertEquals(zone.pearlValue, pearl.value, "value at boundary ${zone.minDepth}")
+            assertEquals(zone.pearlMass, pearl.mass, 0.001f)
+        }
+    }
+
+    @Test
+    fun `Zone at returns the shallower zone just above a boundary`() {
+        Zone.entries.drop(1).forEach { zone ->
+            val justAbove = zone.minDepth - 0.01f
+            assertTrue(
+                Zone.at(justAbove).ordinal < zone.ordinal,
+                "depth $justAbove must be shallower than $zone, got ${Zone.at(justAbove)}"
+            )
+        }
+    }
 }
