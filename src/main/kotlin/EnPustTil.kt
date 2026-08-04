@@ -24,6 +24,10 @@ class EnPustTil : PulseEngineGame()
         engine.service.add(MetricViewer()) // F3
         engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
         engine.config.fixedTickRate = 60f
+
+        System.getenv("EPT_SCREENSHOT")?.let {
+            engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
+        }
     }
 
     override fun onFixedUpdate()
@@ -37,12 +41,14 @@ class EnPustTil : PulseEngineGame()
             sim = DiveSim(seed = DAILY_SEED)
     }
 
+
     override fun onRender()
     {
         val surface = engine.gfx.mainSurface
         DiveRenderer.render(surface, sim, engine.window.width.toFloat(), engine.window.height.toFloat())
         drawDebugReadout()
     }
+
 
 
     /**

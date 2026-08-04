@@ -46,7 +46,7 @@ object DiveRenderer
             val bottom = Viewport.screenY(nextZoneDepth(zone), sim.depth, h)
             if (bottom < 0f || top > h) return@forEach
             surface.setDrawColor(zoneColors.getValue(zone))
-            surface.drawQuad(0f, top, w, bottom - top)
+            surface.fillRect(0f, top, w, bottom - top)
         }
     }
 
@@ -60,7 +60,7 @@ object DiveRenderer
         if (y < -4f || y > h) return
         val thickness = Viewport.pixelsPerMetre(h) * 0.4f
         surface.setDrawColor(surfaceColor)
-        surface.drawQuad(0f, y - thickness * 0.5f, w, thickness)
+        surface.fillRect(0f, y - thickness * 0.5f, w, thickness)
     }
 
     private fun drawPearls(surface: Surface, sim: DiveSim, w: Float, h: Float)
@@ -72,7 +72,7 @@ object DiveRenderer
             val screenY = Viewport.screenY(pearl.depth, sim.depth, h)
             if (screenY < -size || screenY > h + size) return@forEach
             val screenX = Viewport.screenX(pearl.x, w, h)
-            surface.drawQuad(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+            surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
         }
     }
 
@@ -84,6 +84,6 @@ object DiveRenderer
         val screenX = Viewport.screenX(sim.x, w, h)
         val screenY = Viewport.screenY(sim.depth, sim.depth, h)
         surface.setDrawColor(diverColor)
-        surface.drawQuad(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+        surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
     }
 }
