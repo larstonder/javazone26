@@ -35,6 +35,15 @@ object Tuning
     // Horizontal movement
     const val SWIM_SPEED = 5f
 
+    // Hydrodynamics — how fast the diver reaches target speed. Velocity eases toward the
+    // target instead of snapping to it, so the diver glides on after you let go and takes
+    // a moment to get moving. Lower RESPONSE_RATE = more inertia = heavier water.
+    const val RESPONSE_RATE = 3.5f
+
+    // Mass at which responsiveness halves. A loaded diver is sluggish to start AND to stop,
+    // which is what makes a full haul feel like one rather than just a slower number.
+    const val K_RESPONSE_MASS = 60f
+
     // World
     const val COLUMN_HALF_WIDTH = 40f
     const val MAX_DEPTH = 160f

@@ -130,6 +130,9 @@ class DiveSimTest {
     @Test
     fun `bleeding cannot go below zero`() {
         val sim = DiveSim(seed = 1L)
+        // Isolate bleeding: otherwise the diver sinks through the pearl field during the
+        // 5s run and picks up new pearls, so "held" measures collection, not bleeding.
+        sim.pearls.forEach { it.collected = true }
         sim.debugSetHeld(count = 10, mass = 1f)
         run(sim, 5f, idle.copy(bleed = true))
         assertEquals(0, sim.held)
@@ -237,5 +240,91 @@ class DiveSimTest {
         assertEquals(100, sim.banked, "blackout banks exactly 10% and nothing else")
         assertEquals(0, sim.held, "nothing may be collected after blacking out")
         assertTrue(!shallowPearl.collected, "a pearl must not be swept up post-blackout")
+    }
+
+    // --- Hydrodynamics: it should feel like swimming through water ---------------
+
+    @Test
+    fun `the diver glides on after input stops instead of halting dead`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        run(sim, 1f, swimDown.copy(kick = true))   // build up speed
+
+        val depthAtRelease = sim.depth
+        val speedAtRelease = sim.vy
+        run(sim, 0.15f, idle)                       // let go
+
+        assertTrue(speedAtRelease > 0f, "should be moving before release")
+        assertTrue(sim.depth > depthAtRelease, "must keep travelling after release")
+    }
+
+    @Test
+    fun `the diver does not reach full speed instantly`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        sim.tick(1f / 60f, swimDown.copy(kick = true))
+
+        val terminal = Buoyancy.descentSpeed(0f) * Tuning.KICK_SPEED_MULT
+        assertTrue(sim.vy > 0f, "should have started moving")
+        assertTrue(sim.vy < terminal * 0.5f, "one frame must not reach terminal velocity")
+    }
+
+    @Test
+    fun `velocity converges on terminal speed when held`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        run(sim, 4f, swimDown)
+        assertEquals(Buoyancy.descentSpeed(0f), sim.vy, 0.2f)
+    }
+
+    @Test
+    fun `a loaded diver accelerates more sluggishly than an empty one`() {
+        val empty = DiveSim(seed = 1L).also { it.pearls.forEach { p -> p.collected = true } }
+        val loaded = DiveSim(seed = 1L).also { it.pearls.forEach { p -> p.collected = true } }
+        loaded.debugSetHeld(count = 0, mass = 120f)
+
+        // Fraction of each diver's own terminal speed reached in the same time.
+        run(empty, 0.3f, swimDown)
+        run(loaded, 0.3f, swimDown)
+
+        val emptyFraction = empty.vy / Buoyancy.descentSpeed(0f)
+        val loadedFraction = loaded.vy / Buoyancy.descentSpeed(120f)
+        assertTrue(
+            loadedFraction < emptyFraction,
+            "a loaded diver should take longer to get going (empty=$emptyFraction loaded=$loadedFraction)"
+        )
+    }
+
+    @Test
+    fun `hydrodynamics are frame-rate independent`() {
+        val coarse = DiveSim(seed = 1L).also { it.pearls.forEach { p -> p.collected = true } }
+        val fine = DiveSim(seed = 1L).also { it.pearls.forEach { p -> p.collected = true } }
+
+        repeat(30) { coarse.tick(1f / 60f, swimDown) }
+        repeat(120) { fine.tick(1f / 240f, swimDown) }
+
+        assertEquals(coarse.vy, fine.vy, 0.05f, "60fps and 240fps must reach the same speed")
+        assertEquals(coarse.depth, fine.depth, 0.1f, "and cover the same distance")
+    }
+
+    @Test
+    fun `hitting the column edge kills horizontal momentum`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        run(sim, 6f, idle.copy(horizontal = 1f, kick = true))
+        assertEquals(Tuning.COLUMN_HALF_WIDTH, sim.x, 0.001f)
+        assertEquals(0f, sim.vx, 0.001f, "velocity must not persist into a wall")
+    }
+
+    @Test
+    fun `surfacing resets velocity so the next dive starts from rest`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        run(sim, 1f, swimDown.copy(kick = true))
+        assertTrue(sim.vy > 0f)
+
+        sim.debugSurface()
+        assertEquals(0f, sim.vy, 0.001f)
+        assertEquals(0f, sim.vx, 0.001f)
     }
 }

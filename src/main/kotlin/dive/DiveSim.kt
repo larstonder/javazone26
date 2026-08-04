@@ -1,5 +1,6 @@
 package dive
 
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 
@@ -22,6 +23,10 @@ class DiveSim(seed: Long)
     var runOver = false;               private set
     var lastBankAmount = 0;            private set
     var blackedOut = false;            private set
+
+    /** Current velocity. Water has inertia — these persist between ticks. */
+    var vx = 0f;                       private set
+    var vy = 0f;                       private set
 
     val zone get() = Zone.at(depth)
 
@@ -67,19 +72,34 @@ class DiveSim(seed: Long)
     {
         val boost = if (input.kick) Tuning.KICK_SPEED_MULT else 1f
 
-        x = (x + input.horizontal * Tuning.SWIM_SPEED * boost * dt)
-            .coerceIn(-Tuning.COLUMN_HALF_WIDTH, Tuning.COLUMN_HALF_WIDTH)
-
-        // Neutral stick sinks passively — the diver is never truly still.
-        // Swimming up is limited by ascentSpeed, which is what makes weight bite.
-        val vertical = when
+        // Target velocity — what the diver would eventually reach and hold.
+        // Neutral stick still sinks: the diver is never truly still.
+        // Swimming up is capped by ascentSpeed, which is what makes weight bite.
+        val targetVx = input.horizontal * Tuning.SWIM_SPEED * boost
+        val targetVy = when
         {
             input.vertical < 0f -> input.vertical * Buoyancy.ascentSpeed(heldMass) * boost
             input.vertical > 0f -> input.vertical * Buoyancy.descentSpeed(heldMass) * boost
             else                -> Buoyancy.descentSpeed(heldMass)
         }
 
-        depth = (depth + vertical * dt).coerceIn(0f, Tuning.MAX_DEPTH)
+        // Drag: velocity eases toward the target rather than snapping to it, so the diver
+        // accelerates into a stroke and glides out of it. Using 1 - e^(-k*dt) keeps this
+        // frame-rate independent. Response falls as the diver loads up, so a full haul is
+        // sluggish to start and sluggish to stop — the feel of swimming with weight.
+        val response = 1f - exp(-Buoyancy.responseRate(heldMass) * dt)
+        vx += (targetVx - vx) * response
+        vy += (targetVy - vy) * response
+
+        // Integrate, and kill velocity into a wall so the diver does not stick to it.
+        val nextX = x + vx * dt
+        x = nextX.coerceIn(-Tuning.COLUMN_HALF_WIDTH, Tuning.COLUMN_HALF_WIDTH)
+        if (x != nextX) vx = 0f
+
+        val nextDepth = depth + vy * dt
+        depth = nextDepth.coerceIn(0f, Tuning.MAX_DEPTH)
+        if (depth != nextDepth) vy = 0f
+
         maxDepthThisDive = max(maxDepthThisDive, depth)
     }
 
@@ -132,6 +152,8 @@ class DiveSim(seed: Long)
         air = Tuning.BASE_AIR_SECONDS
         maxDepthThisDive = 0f
         depth = 0f
+        vx = 0f
+        vy = 0f
     }
 
     // --- Test hooks ---------------------------------------------------------
