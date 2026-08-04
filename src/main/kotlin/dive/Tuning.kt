@@ -49,4 +49,7 @@ object Tuning
     const val MAX_DEPTH = 160f
     const val SURFACE_DEPTH = 0f
     const val PEARL_PICKUP_RADIUS = 2.5f
+
+    // Vents are a lifeline, so they are more forgiving to hit than a pearl.
+    const val AIR_POCKET_PICKUP_RADIUS = 4f
 }

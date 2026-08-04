@@ -36,6 +36,7 @@ object Viewport
 
     const val DIVER_SIZE_METRES = 3f
     const val PEARL_SIZE_METRES = 1.2f
+    const val AIR_POCKET_SIZE_METRES = 2.4f
 
     fun pixelsPerMetre(screenHeight: Float) = screenHeight / VISIBLE_DEPTH_METRES
 

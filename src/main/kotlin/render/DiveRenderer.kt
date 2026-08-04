@@ -28,6 +28,8 @@ object DiveRenderer
     )
 
     private val pearlColor = Color(1f, 0.78f, 0.35f)
+    private val airPocketColor = Color(0.65f, 0.95f, 1f)
+    private val airPocketSpentColor = Color(0.22f, 0.34f, 0.42f)
     private val diverColor = Color(1f, 1f, 1f)
     private val surfaceColor = Color(0.55f, 0.80f, 0.95f)
 
@@ -36,6 +38,7 @@ object DiveRenderer
         val cam = camera.depth
         drawZoneBands(surface, cam, screenWidth, screenHeight)
         drawSurfaceLine(surface, cam, screenWidth, screenHeight)
+        drawAirPockets(surface, sim, cam, screenWidth, screenHeight)
         drawPearls(surface, sim, cam, screenWidth, screenHeight)
         drawDiver(surface, sim, cam, screenWidth, screenHeight)
     }
@@ -62,6 +65,23 @@ object DiveRenderer
         val thickness = Viewport.pixelsPerMetre(h) * 0.4f
         surface.setDrawColor(surfaceColor)
         surface.fillRect(0f, y - thickness * 0.5f, w, thickness)
+    }
+
+    /**
+     * Air vents. Drawn before pearls so a pearl sitting on top of one stays readable, and
+     * dimmed rather than hidden once spent — knowing where a used vent was is what lets a
+     * player plan the next dive around it.
+     */
+    private fun drawAirPockets(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)
+    {
+        val size = Viewport.AIR_POCKET_SIZE_METRES * Viewport.pixelsPerMetre(h)
+        sim.airPockets.forEach { pocket ->
+            val screenY = Viewport.screenY(pocket.depth, cam, h)
+            if (screenY < -size || screenY > h + size) return@forEach
+            val screenX = Viewport.screenX(pocket.x, w, h)
+            surface.setDrawColor(if (pocket.usedThisDive) airPocketSpentColor else airPocketColor)
+            surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+        }
     }
 
     private fun drawPearls(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)

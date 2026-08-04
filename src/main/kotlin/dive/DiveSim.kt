@@ -11,6 +11,7 @@ import kotlin.math.min
 class DiveSim(seed: Long)
 {
     val pearls: MutableList<Pearl> = PearlColumn.generate(seed)
+    val airPockets: List<AirPocket> = AirPocketField.generate(seed)
 
     var clock = Tuning.RUN_SECONDS;    private set
     var banked = 0;                    private set
@@ -46,6 +47,7 @@ class DiveSim(seed: Long)
 
         updateBleed(dt, input)
         updateMovement(dt, input)
+        refillAtAirPockets()
         val justBlackedOut = updateAir(dt, input)
         if (justBlackedOut) return   // blacking out ends the tick — no pickup, no surface bank
 
@@ -112,6 +114,22 @@ class DiveSim(seed: Long)
         return false
     }
 
+    /** Reaching a vent refills the breath. Once per dive; see [AirPocket]. */
+    private fun refillAtAirPockets()
+    {
+        airPockets.forEach { pocket ->
+            if (pocket.usedThisDive) return@forEach
+            val dx = pocket.x - x
+            val dy = pocket.depth - depth
+            val r = Tuning.AIR_POCKET_PICKUP_RADIUS
+            if (dx * dx + dy * dy <= r * r)
+            {
+                pocket.usedThisDive = true
+                air = Tuning.BASE_AIR_SECONDS
+            }
+        }
+    }
+
     private fun collectPearls()
     {
         pearls.forEach { pearl ->
@@ -154,6 +172,7 @@ class DiveSim(seed: Long)
         depth = 0f
         vx = 0f
         vy = 0f
+        airPockets.forEach { it.usedThisDive = false }
     }
 
     // --- Test hooks ---------------------------------------------------------
