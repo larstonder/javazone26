@@ -1,6 +1,17 @@
 plugins {
     kotlin("jvm") version "2.2.20"
     id("edu.sc.seis.launch4j") version "4.0.0"
+    application
+}
+
+application {
+    mainClass.set("EnPustTilKt")
+    // LWJGL/GLFW requires the window to be created on the process's first thread.
+    // The Gradle `run` task launches the JVM on a worker thread by default, so on
+    // macOS this must be forced explicitly. No-op on other platforms; the Windows
+    // release build below uses launch4j's own jvmOptions instead.
+    if (org.gradle.internal.os.OperatingSystem.current().isMacOsX)
+        applicationDefaultJvmArgs = listOf("-XstartOnFirstThread")
 }
 
 group = "org.example"
@@ -30,7 +41,7 @@ tasks.test {
 
 val releaseName = "$name-$version"
 val releaseBuildDir = "$buildDir/$releaseName"
-val mainClass = "GameTemplateKt"
+val mainClass = "EnPustTilKt"
 
 tasks.jar {
     duplicatesStrategy = DuplicatesStrategy.INCLUDE

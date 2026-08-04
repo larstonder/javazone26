@@ -1,0 +1,97 @@
+import dive.DiveInput
+import dive.DiveSim
+import dive.Tuning
+import no.njoh.pulseengine.core.PulseEngine
+import no.njoh.pulseengine.core.PulseEngineGame
+import no.njoh.pulseengine.core.input.GamepadAxis
+import no.njoh.pulseengine.core.input.Key
+import no.njoh.pulseengine.core.shared.primitives.Color
+import no.njoh.pulseengine.modules.metrics.MetricViewer
+import render.DiveRenderer
+
+fun main() = PulseEngine.run<EnPustTil>()
+
+/**
+ * Engine shell. Reads input, ticks the pure simulation on the fixed update,
+ * and draws it. All game logic lives in the `dive` package.
+ */
+class EnPustTil : PulseEngineGame()
+{
+    private var sim = DiveSim(seed = DAILY_SEED)
+
+    override fun onCreate()
+    {
+        engine.service.add(MetricViewer()) // F3
+        engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
+        engine.config.fixedTickRate = 60f
+    }
+
+    override fun onFixedUpdate()
+    {
+        sim.tick(engine.data.fixedDeltaTime, readInput())
+    }
+
+    override fun onUpdate()
+    {
+        if (engine.input.wasClicked(Key.R) || (sim.runOver && engine.input.wasClicked(Key.SPACE)))
+            sim = DiveSim(seed = DAILY_SEED)
+    }
+
+    override fun onRender()
+    {
+        val surface = engine.gfx.mainSurface
+        DiveRenderer.render(surface, sim, engine.window.width.toFloat(), engine.window.height.toFloat())
+        drawDebugReadout()
+    }
+
+    /**
+     * Stick is a full 2D swim direction; A boosts whichever way you point.
+     * Deadzone is applied so a drifting analogue stick does not stop the
+     * passive sink, which is the game's baseline state.
+     */
+    private fun readInput(): DiveInput
+    {
+        val pad = engine.input.gamepads.firstOrNull()
+        val padX = pad?.getAxis(GamepadAxis.LEFT_X)?.deadzone() ?: 0f
+        val padY = pad?.getAxis(GamepadAxis.LEFT_Y)?.deadzone() ?: 0f
+
+        val keyX = axis(Key.LEFT, Key.RIGHT)
+        val keyY = axis(Key.UP, Key.DOWN)
+
+        return DiveInput(
+            horizontal = if (padX != 0f) padX else keyX,
+            vertical   = if (padY != 0f) padY else keyY,
+            kick       = engine.input.isPressed(Key.Z),
+            bleed      = engine.input.isPressed(Key.X)
+        )
+    }
+
+    private fun axis(negative: Key, positive: Key) = when
+    {
+        engine.input.isPressed(negative) -> -1f
+        engine.input.isPressed(positive) ->  1f
+        else -> 0f
+    }
+
+    private fun Float.deadzone() = if (kotlin.math.abs(this) < STICK_DEADZONE) 0f else this
+
+    /** Temporary numeric readout. Replaced by the real HUD in Task 8. */
+    private fun drawDebugReadout()
+    {
+        val s = engine.gfx.mainSurface
+        s.setDrawColor(Color.WHITE)
+        s.drawText("CLOCK  %.1f".format(sim.clock), 20f, 30f, fontSize = 24f)
+        s.drawText("DEPTH  %.1f m".format(sim.depth), 20f, 60f, fontSize = 24f)
+        s.drawText("AIR    %.1f".format(sim.air), 20f, 90f, fontSize = 24f)
+        s.drawText("HELD   ${sim.held}  (mass %.1f)".format(sim.heldMass), 20f, 120f, fontSize = 24f)
+        s.drawText("BANKED ${sim.banked}", 20f, 150f, fontSize = 24f)
+        s.drawText("ZONE   ${sim.zone}", 20f, 180f, fontSize = 24f)
+        if (sim.runOver) s.drawText("RUN OVER - SPACE to restart", 20f, 220f, fontSize = 32f)
+    }
+
+    private companion object
+    {
+        const val DAILY_SEED = 20260902L
+        const val STICK_DEADZONE = 0.2f
+    }
+}
