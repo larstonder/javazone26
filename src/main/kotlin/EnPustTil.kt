@@ -7,6 +7,7 @@ import no.njoh.pulseengine.core.input.GamepadAxis
 import no.njoh.pulseengine.core.input.Key
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.metrics.MetricViewer
+import render.DiveCamera
 import render.DiveRenderer
 
 fun main() = PulseEngine.run<EnPustTil>()
@@ -18,12 +19,14 @@ fun main() = PulseEngine.run<EnPustTil>()
 class EnPustTil : PulseEngineGame()
 {
     private var sim = DiveSim(seed = DAILY_SEED)
+    private val camera = DiveCamera()
 
     override fun onCreate()
     {
         engine.service.add(MetricViewer()) // F3
         engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
         engine.config.fixedTickRate = 60f
+        camera.snapTo(sim.depth)
 
         System.getenv("EPT_SCREENSHOT")?.let {
             engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
@@ -37,15 +40,22 @@ class EnPustTil : PulseEngineGame()
 
     override fun onUpdate()
     {
+        // Camera easing is presentation only, so it runs on the render clock rather than
+        // the fixed tick — that keeps it smooth independently of the simulation rate.
+        camera.update(engine.data.deltaTime, sim.depth)
+
         if (engine.input.wasClicked(Key.R) || (sim.runOver && engine.input.wasClicked(Key.SPACE)))
+        {
             sim = DiveSim(seed = DAILY_SEED)
+            camera.snapTo(sim.depth)
+        }
     }
 
 
     override fun onRender()
     {
         val surface = engine.gfx.mainSurface
-        DiveRenderer.render(surface, sim, engine.window.width.toFloat(), engine.window.height.toFloat())
+        DiveRenderer.render(surface, sim, camera, engine.window.width.toFloat(), engine.window.height.toFloat())
         drawDebugReadout()
     }
 

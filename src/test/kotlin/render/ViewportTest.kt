@@ -18,8 +18,8 @@ class ViewportTest
     fun `the diver sits at the same screen fraction on every display`() {
         val diverDepth = 42f
 
-        val yLogical = Viewport.screenY(diverDepth, diverDepth, logical)
-        val yRetina = Viewport.screenY(diverDepth, diverDepth, retina)
+        val yLogical = Viewport.screenY(diverDepth, Viewport.targetCameraDepth(diverDepth), logical)
+        val yRetina = Viewport.screenY(diverDepth, Viewport.targetCameraDepth(diverDepth), retina)
 
         assertEquals(Viewport.DIVER_SCREEN_FRACTION, yLogical / logical, 0.001f)
         assertEquals(Viewport.DIVER_SCREEN_FRACTION, yRetina / retina, 0.001f)
@@ -30,8 +30,8 @@ class ViewportTest
         val diverDepth = 30f
         val pearlDepth = 55f
 
-        val fractionLogical = Viewport.screenY(pearlDepth, diverDepth, logical) / logical
-        val fractionRetina = Viewport.screenY(pearlDepth, diverDepth, retina) / retina
+        val fractionLogical = Viewport.screenY(pearlDepth, Viewport.targetCameraDepth(diverDepth), logical) / logical
+        val fractionRetina = Viewport.screenY(pearlDepth, Viewport.targetCameraDepth(diverDepth), retina) / retina
 
         assertEquals(fractionLogical, fractionRetina, 0.0001f,
             "doubling the framebuffer must not move content relative to the screen")
@@ -76,7 +76,7 @@ class ViewportTest
     @Test
     fun `camera keeps the diver above the top edge of visible water`() {
         val diverDepth = 100f
-        val top = Viewport.cameraDepth(diverDepth)
+        val top = Viewport.targetCameraDepth(diverDepth)
         assertTrue(top < diverDepth, "camera top must be shallower than the diver")
         assertEquals(Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_SCREEN_FRACTION, diverDepth - top, 0.001f)
     }

@@ -5,7 +5,12 @@ object Tuning
 {
     // Run structure
     const val RUN_SECONDS = 90f
-    const val BASE_AIR_SECONDS = 20f
+
+    // Was 20f. Raised after the first play session: 20s was not enough air.
+    // At BASE_DESCENT the trip down to the trench alone costs ~15s, leaving nothing
+    // for gathering or the slower loaded ascent, so the deep zones were effectively
+    // unreachable-and-returnable and every run ended in a blackout.
+    const val BASE_AIR_SECONDS = 30f
 
     // Buoyancy
     const val BASE_ASCENT = 8f

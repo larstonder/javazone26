@@ -10,8 +10,9 @@ class TuningTest {
     }
 
     @Test
-    fun `base air is 20 seconds`() {
-        assertEquals(20f, Tuning.BASE_AIR_SECONDS)
+    fun `base air is 30 seconds`() {
+        // Raised from 20f after the first play session — 20s was too little air.
+        assertEquals(30f, Tuning.BASE_AIR_SECONDS)
     }
 
     @Test
