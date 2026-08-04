@@ -222,4 +222,20 @@ class DiveSimTest {
         run(sim, 10f)
         assertFalse(sim.runOver)
     }
+
+    @Test
+    fun `a blackout ends the tick - no pickup or bank after losing consciousness`() {
+        val sim = DiveSim(seed = 1L)
+        // A pearl sits at roughly x=-21.93, depth=2.205 — within pickup radius of depth 0.
+        val shallowPearl = sim.pearls.minByOrNull { it.depth }!!
+        sim.debugMoveTo(shallowPearl.x, 40f)
+        sim.debugSetHeld(count = 1000, mass = 0f)
+        sim.debugSetAir(0.001f)          // next tick exhausts air
+
+        sim.tick(1f / 60f, idle)
+
+        assertEquals(100, sim.banked, "blackout banks exactly 10% and nothing else")
+        assertEquals(0, sim.held, "nothing may be collected after blacking out")
+        assertTrue(!shallowPearl.collected, "a pearl must not be swept up post-blackout")
+    }
 }

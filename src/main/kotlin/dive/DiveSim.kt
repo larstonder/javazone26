@@ -41,7 +41,9 @@ class DiveSim(seed: Long)
 
         updateBleed(dt, input)
         updateMovement(dt, input)
-        updateAir(dt, input)
+        val justBlackedOut = updateAir(dt, input)
+        if (justBlackedOut) return   // blacking out ends the tick — no pickup, no surface bank
+
         collectPearls()
 
         if (depth <= Tuning.SURFACE_DEPTH) surface()
@@ -58,7 +60,7 @@ class DiveSim(seed: Long)
         heldMass = max(0f, heldMass - massDropped)
         held = max(0, held - (held * fraction).toInt())
 
-        if (heldMass <= 0.001f) { heldMass = 0f; held = 0 }
+        if (heldMass <= Tuning.BLEED_EPSILON) { heldMass = 0f; held = 0 }
     }
 
     private fun updateMovement(dt: Float, input: DiveInput)
@@ -81,11 +83,13 @@ class DiveSim(seed: Long)
         maxDepthThisDive = max(maxDepthThisDive, depth)
     }
 
-    private fun updateAir(dt: Float, input: DiveInput)
+    /** @return true if this call caused a blackout — the caller must end the tick when it does. */
+    private fun updateAir(dt: Float, input: DiveInput): Boolean
     {
         val burn = zone.airBurn * (if (input.kick) Tuning.KICK_AIR_MULT else 1f)
         air -= dt * burn
-        if (air <= 0f) blackout()
+        if (air <= 0f) { blackout(); return true }
+        return false
     }
 
     private fun collectPearls()
@@ -137,4 +141,5 @@ class DiveSim(seed: Long)
     internal fun debugMoveTo(newX: Float, newDepth: Float) { x = newX; depth = newDepth }
     internal fun debugSurface() { surface() }
     internal fun debugSetClock(value: Float) { clock = value }
+    internal fun debugSetAir(value: Float) { air = value }
 }

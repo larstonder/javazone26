@@ -20,6 +20,9 @@ object Tuning
     // Ballast
     const val BLEED_RATE = 8f
 
+    // Floating-point cleanliness guard for the ballast bleed
+    const val BLEED_EPSILON = 0.001f
+
     // Scoring
     const val BLACKOUT_KEEP = 0.10f
     const val DEPTH_BONUS_DIVISOR = 30f
