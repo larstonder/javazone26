@@ -137,6 +137,29 @@ rises in the mix.
 
 ---
 
+## 6b. Air vents *(added after playtesting — see amendment log)*
+
+**Swimming into a vent refills the breath.**
+
+Without them the deep zones are not reachable-and-returnable at all. Descending to
+the abyss costs roughly 29 of the 30 seconds of air, so the diver arrives with
+nothing left for the slower loaded climb home — and kicking does not help, because
+it triples speed and burn together, leaving air-per-metre unchanged. Depth was a
+hard wall rather than a risk.
+
+| Rule | Why |
+|---|---|
+| One vent each in **Kelp, Twilight and Trench** | A ladder: each vent lets you push one zone deeper. Knowing where the next sits is what separates a good run from a novice one. |
+| **No vent in the Abyss** | The deepest, most valuable water stays a gamble on whatever breath you arrive with. The risk at the top end must survive. |
+| **One use per dive** | Stops a vent being camped or farmed within a single breath. |
+| **Rearmed on surfacing** | Not an exploit — surfacing already banks and refills air anyway. |
+| **Checked before air burns** | A vent reached on the dying breath saves you, rather than missing by one tick. |
+| **Spent vents dim, they do not vanish** | Knowing where a used vent was is what lets you plan the next dive around it. |
+
+Vent placement is seeded independently of pearl placement so the two do not correlate.
+
+---
+
 ## 7. The anglerfish
 
 The only enemy in the game, and it lives only in the Abyss — where the only real money
@@ -314,3 +337,22 @@ game.
   re-testing if first-timers find it harsh.
 - **Second screen** — is one available at the booth for the leaderboard and dive
   profiles, or does it share the game screen between runs?
+
+---
+
+## 17. Amendment log
+
+The design was locked on 2026-08-04 and then playtested. Changes made since, with
+the reason each was needed:
+
+| Change | Reason |
+|---|---|
+| `BASE_AIR_SECONDS` 20 → 30 | 20s was not enough air. The descent to the trench alone cost ~15s, leaving nothing for gathering or the loaded ascent. |
+| **Smoothed camera** (§12) | The camera was locked exactly to the diver, which makes fast movement feel static — you never move relative to the frame however hard you kick. It now eases, so a hard descent visibly outruns it. Bounded to 15–75% of screen height so lag can never lose the diver. |
+| **Momentum and drag** (§4) | Movement was direct position control: velocity snapped to target and stopped dead. Now velocity is persistent state that eases toward the target, and response falls as the diver loads up — so a full haul is sluggish to start *and* to stop. Terminal speeds are unchanged, so the buoyancy tuning still holds. |
+| **Air vents** (§6b) | The deep zones were unreachable-and-returnable. See §6b. |
+
+### Platform findings that constrain implementation
+
+- **`engine.window.width/height` returns physical framebuffer pixels**, not the logical size in `application.cfg` (2400×1800 on a Retina Mac, not 1200×900). All rendering scale must derive from the actual surface height. See `render/Viewport.kt`.
+- **`Surface.drawQuad()` and `drawLine()` render nothing on macOS/Apple Silicon**, silently and with no GL error. Their vertex shaders are `#version 150 core`; the ones that work (`drawText`, `drawTexture`) are `#version 330 core`. Use `Surface.fillRect()` in `render/Draw.kt`, which draws a tinted blank texture. **This has not yet been verified for the `GlobalIlluminationSystem` / `Lamp` path used in the lighting task.**
