@@ -7,16 +7,18 @@ object Tuning
     const val RUN_SECONDS = 90f
 
     // Was 20f. Raised after the first play session: 20s was not enough air.
-    // At BASE_DESCENT the trip down to the trench alone costs ~15s, leaving nothing
-    // for gathering or the slower loaded ascent, so the deep zones were effectively
-    // unreachable-and-returnable and every run ended in a blackout.
+    // A trip down to the trench and a laden swim back costs most of a breath, so the
+    // deep zones were effectively unreachable-and-returnable and every run ended in a
+    // blackout at the old value.
     const val BASE_AIR_SECONDS = 30f
 
-    // Buoyancy
-    const val BASE_ASCENT = 8f
-    const val BASE_DESCENT = 6f
-    const val K_ASCENT = 40f
-    const val K_DESCENT = 120f
+    // Buoyancy — real buoyancy: an empty diver is neutral and hovers. Carried mass is what
+    // makes you sink (SINK_FORCE_PER_MASS) and what makes you sluggish in every direction
+    // (K_DRAG). See Buoyancy.kt.
+    const val SWIM_THRUST = 11f
+    const val LATERAL_THRUST = 6f
+    const val SINK_FORCE_PER_MASS = 0.06f
+    const val K_DRAG = 200f
 
     // Kick
     const val KICK_SPEED_MULT = 3f
@@ -31,9 +33,6 @@ object Tuning
     // Scoring
     const val BLACKOUT_KEEP = 0.10f
     const val DEPTH_BONUS_DIVISOR = 30f
-
-    // Horizontal movement
-    const val SWIM_SPEED = 5f
 
     // Hydrodynamics — how fast the diver reaches target speed. Velocity eases toward the
     // target instead of snapping to it, so the diver glides on after you let go and takes

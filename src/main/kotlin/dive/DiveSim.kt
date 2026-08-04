@@ -52,10 +52,17 @@ class DiveSim(seed: Long)
         // Surfacing is checked before the air burn: a diver who touches the surface on the
         // same tick their air would hit zero has visibly made it home and must bank, not
         // black out. This mirrors why air-pocket refills are already checked before the burn.
+        //
+        // An empty diver now hovers, so resting exactly at depth 0 with no vertical intent
+        // is a stable state, not a one-tick fly-through like it was under constant sink.
+        // Only run the bank-and-reset pipeline when there is an actual dive to close out
+        // (something held, or the diver went below the surface this dive) — otherwise a
+        // diver idling at the surface would re-surface every single tick, and surface()'s
+        // reset of vx/vy would cancel any horizontal swimming before it could build up speed.
         if (depth <= Tuning.SURFACE_DEPTH)
         {
             collectPearls()
-            surface()
+            if (held > 0 || maxDepthThisDive > 0f) surface()
             return
         }
 
@@ -83,16 +90,13 @@ class DiveSim(seed: Long)
     {
         val boost = if (input.kick) Tuning.KICK_SPEED_MULT else 1f
 
-        // Target velocity — what the diver would eventually reach and hold.
-        // Neutral stick still sinks: the diver is never truly still.
-        // Swimming up is capped by ascentSpeed, which is what makes weight bite.
-        val targetVx = input.horizontal * Tuning.SWIM_SPEED * boost
-        val targetVy = when
-        {
-            input.vertical < 0f -> input.vertical * Buoyancy.ascentSpeed(heldMass) * boost
-            input.vertical > 0f -> input.vertical * Buoyancy.descentSpeed(heldMass) * boost
-            else                -> Buoyancy.descentSpeed(heldMass)
-        }
+        // Target velocity — what the diver would eventually reach and hold. An empty diver
+        // is neutrally buoyant: neutral stick with no mass targets zero, so it hovers rather
+        // than sinking. Carried mass adds a sink force the stroke has to fight, and adds
+        // drag that saps every direction, so a laden diver is sluggish and, past enough
+        // mass, cannot out-swim its own sink force at all.
+        val targetVx = Buoyancy.lateralSpeed(heldMass, input.horizontal, boost)
+        val targetVy = Buoyancy.verticalSpeed(heldMass, input.vertical, boost)
 
         // Drag: velocity eases toward the target rather than snapping to it, so the diver
         // accelerates into a stroke and glides out of it. Using 1 - e^(-k*dt) keeps this

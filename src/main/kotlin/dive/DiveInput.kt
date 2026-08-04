@@ -7,7 +7,8 @@ package dive
  * direction you are heading, which is why the spec calls it both the descent
  * tool and the escape tool — and why escaping costs just as much air as diving.
  *
- * @param vertical -1 = swim up, +1 = swim down, 0 = neutral (passive sink)
+ * @param vertical -1 = swim up, +1 = swim down, 0 = neutral (an empty diver hovers here;
+ * carried mass turns neutral into a passive sink)
  */
 data class DiveInput(
     val horizontal: Float,

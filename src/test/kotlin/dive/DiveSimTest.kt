@@ -26,10 +26,22 @@ class DiveSimTest {
     }
 
     @Test
-    fun `diver sinks passively`() {
+    fun `an empty diver does not sink passively - it hovers`() {
+        // Superseded by the buoyancy rework: an unladen diver used to sink at a base rate.
+        // Now it is neutrally buoyant, which is the entire point of the change.
         val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }   // isolate from incidental pickups
         run(sim, 1f)
-        assertTrue(sim.depth > 0f, "diver should sink without input")
+        assertEquals(0f, sim.depth, 0.001f, "an empty diver must not sink without input")
+    }
+
+    @Test
+    fun `a laden diver sinks passively, and the deeper pull is felt`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        sim.debugSetHeld(count = 0, mass = 64f)
+        run(sim, 1f)
+        assertTrue(sim.depth > 0f, "carried mass must pull a diver down even with no input")
     }
 
     @Test
@@ -42,9 +54,13 @@ class DiveSimTest {
     }
 
     @Test
-    fun `neutral stick sinks but kick does nothing without a direction`() {
+    fun `kick does nothing without a direction, even while sinking under load`() {
+        // Kick multiplies thrust in the direction you push; with no direction there is
+        // nothing to multiply, so a laden diver's passive sink must be unaffected by it.
         val drifting = DiveSim(seed = 1L)
         val kicking = DiveSim(seed = 1L)
+        drifting.debugSetHeld(count = 0, mass = 64f)
+        kicking.debugSetHeld(count = 0, mass = 64f)
         run(drifting, 1f, idle)
         run(kicking, 1f, idle.copy(kick = true))
         assertEquals(drifting.depth, kicking.depth, 0.001f)
@@ -196,14 +212,19 @@ class DiveSimTest {
 
     @Test
     fun `swimming up beats passive sink`() {
+        // Passive sink is now a mass-driven force, not a base rate, so this needs a
+        // laden diver to be a real test of "swimming up wins against the pull down".
         val sinking = DiveSim(seed = 1L)
         val rising = DiveSim(seed = 1L)
         sinking.debugSetDepth(50f)
         rising.debugSetDepth(50f)
+        sinking.debugSetHeld(count = 0, mass = 64f)
+        rising.debugSetHeld(count = 0, mass = 64f)
 
         run(sinking, 1f, idle)
         run(rising, 1f, swimUp)
 
+        assertTrue(sinking.depth > 50f, "the laden control diver should actually be sinking")
         assertTrue(rising.depth < sinking.depth, "swimming up must rise against the sink")
     }
 
@@ -292,7 +313,7 @@ class DiveSimTest {
         sim.pearls.forEach { it.collected = true }
         sim.tick(1f / 60f, swimDown.copy(kick = true))
 
-        val terminal = Buoyancy.descentSpeed(0f) * Tuning.KICK_SPEED_MULT
+        val terminal = Buoyancy.verticalSpeed(0f, 1f, Tuning.KICK_SPEED_MULT)
         assertTrue(sim.vy > 0f, "should have started moving")
         assertTrue(sim.vy < terminal * 0.5f, "one frame must not reach terminal velocity")
     }
@@ -302,7 +323,7 @@ class DiveSimTest {
         val sim = DiveSim(seed = 1L)
         sim.pearls.forEach { it.collected = true }
         run(sim, 4f, swimDown)
-        assertEquals(Buoyancy.descentSpeed(0f), sim.vy, 0.2f)
+        assertEquals(Buoyancy.verticalSpeed(0f, 1f, 1f), sim.vy, 0.2f)
     }
 
     @Test
@@ -315,8 +336,8 @@ class DiveSimTest {
         run(empty, 0.3f, swimDown)
         run(loaded, 0.3f, swimDown)
 
-        val emptyFraction = empty.vy / Buoyancy.descentSpeed(0f)
-        val loadedFraction = loaded.vy / Buoyancy.descentSpeed(120f)
+        val emptyFraction = empty.vy / Buoyancy.verticalSpeed(0f, 1f, 1f)
+        val loadedFraction = loaded.vy / Buoyancy.verticalSpeed(120f, 1f, 1f)
         assertTrue(
             loadedFraction < emptyFraction,
             "a loaded diver should take longer to get going (empty=$emptyFraction loaded=$loadedFraction)"

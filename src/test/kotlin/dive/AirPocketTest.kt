@@ -129,7 +129,6 @@ class AirPocketTest
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("fails until air/ascent tuning is decided — see review finding 3")
     fun `a laden diver can return from the trench vent`() {
         val sim = DiveSim(seed = 1L)
         sim.pearls.forEach { it.collected = true }
