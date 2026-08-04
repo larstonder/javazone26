@@ -15,10 +15,15 @@ repositories {
 
 dependencies {
     implementation("no.njoh:pulse-engine:0.13.0")
+    testImplementation(kotlin("test"))
 }
 
 kotlin {
     jvmToolchain(23)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 ////////////////////////////////////////////////////////////////////////////////// Windows release
