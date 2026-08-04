@@ -108,8 +108,9 @@ class AirPocketTest
     }
 
     @Test
-    fun `the trench is now reachable and returnable`() {
-        // The whole point of the mechanic. Descend to the trench vent, refill, come back.
+    fun `an EMPTY diver is reachable and returnable from the trench vent`() {
+        // This only demonstrates the empty-handed case, which is worth zero — see the
+        // laden-diver test below for the case the mechanic actually exists to serve.
         val sim = DiveSim(seed = 1L)
         sim.pearls.forEach { it.collected = true }
         val trenchVent = sim.airPockets.first { it.zone == Zone.TRENCH }
@@ -125,5 +126,22 @@ class AirPocketTest
 
         assertTrue(sim.depth <= 0.5f, "diver failed to reach the surface from the trench vent")
         assertFalse(sim.blackedOut, "the ascent from a refilled trench vent must be survivable")
+    }
+
+    @Test
+    @org.junit.jupiter.api.Disabled("fails until air/ascent tuning is decided — see review finding 3")
+    fun `a laden diver can return from the trench vent`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        val vent = sim.airPockets.first { it.zone == Zone.TRENCH }
+        sim.debugMoveTo(vent.x, vent.depth)
+        sim.debugSetHeld(count = 600, mass = 32f)   // four trench pearls, the smallest haul worth the trip
+        sim.tick(1f / 60f, DiveInput.NONE)          // refill at the vent
+
+        val up = DiveInput(0f, -1f, kick = false, bleed = false)
+        var ticks = 0
+        while (sim.depth > 0.5f && !sim.blackedOut && ticks < 60 * 90) { sim.tick(1f / 60f, up); ticks++ }
+
+        assertFalse(sim.blackedOut, "a laden diver must be able to get home from the trench vent")
     }
 }

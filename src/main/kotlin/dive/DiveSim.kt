@@ -48,12 +48,21 @@ class DiveSim(seed: Long)
         updateBleed(dt, input)
         updateMovement(dt, input)
         refillAtAirPockets()
+
+        // Surfacing is checked before the air burn: a diver who touches the surface on the
+        // same tick their air would hit zero has visibly made it home and must bank, not
+        // black out. This mirrors why air-pocket refills are already checked before the burn.
+        if (depth <= Tuning.SURFACE_DEPTH)
+        {
+            collectPearls()
+            surface()
+            return
+        }
+
         val justBlackedOut = updateAir(dt, input)
         if (justBlackedOut) return   // blacking out ends the tick — no pickup, no surface bank
 
         collectPearls()
-
-        if (depth <= Tuning.SURFACE_DEPTH) surface()
     }
 
     private fun updateBleed(dt: Float, input: DiveInput)

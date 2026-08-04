@@ -1,5 +1,6 @@
 package dive
 
+import kotlin.math.max
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -59,10 +60,23 @@ class DiveSimTest {
     }
 
     @Test
-    fun `max depth this dive is tracked`() {
+    fun `max depth keys off the deepest point reached, not the current depth`() {
+        // Descend, then ascend, tracking the true running maximum ourselves from sim.depth
+        // sampled every tick (not sim.maxDepthThisDive) so this test does not simply restate
+        // whatever the field under test already believes. Because of hydrodynamic inertia the
+        // diver keeps sinking briefly even after the stick is pushed up, so the true peak lands
+        // partway into the ascent phase, not at the moment the input direction flips.
         val sim = DiveSim(seed = 1L)
-        run(sim, 2f, swimDown.copy(kick = true))
-        assertTrue(sim.maxDepthThisDive >= sim.depth)
+        sim.pearls.forEach { it.collected = true }
+        val dt = 1f / 60f
+        var trueDeepest = 0f
+
+        repeat((3f / dt).toInt()) { sim.tick(dt, swimDown.copy(kick = true)); trueDeepest = max(trueDeepest, sim.depth) }
+        repeat((2f / dt).toInt()) { sim.tick(dt, swimUp.copy(kick = true)); trueDeepest = max(trueDeepest, sim.depth) }
+
+        assertTrue(sim.depth < trueDeepest, "diver should have risen from the deepest point")
+        assertEquals(trueDeepest, sim.maxDepthThisDive, 0.01f,
+            "the depth bonus keys off the deepest point REACHED")
     }
 
     @Test
@@ -240,6 +254,20 @@ class DiveSimTest {
         assertEquals(100, sim.banked, "blackout banks exactly 10% and nothing else")
         assertEquals(0, sim.held, "nothing may be collected after blacking out")
         assertTrue(!shallowPearl.collected, "a pearl must not be swept up post-blackout")
+    }
+
+    @Test
+    fun `surfacing on the dying breath banks in full rather than blacking out`() {
+        val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }
+        sim.debugSetDepth(120f)          // locks a x5 depth bonus
+        sim.debugSetHeld(count = 2400, mass = 0f)
+        sim.debugSetAir(0.001f)          // would black out this tick
+        sim.debugMoveTo(sim.x, 0.003f)   // one tick from the surface
+
+        sim.tick(1f / 60f, DiveInput(0f, -1f, kick = false, bleed = false))
+
+        assertEquals(12000, sim.banked, "touching the surface must bank in full, not black out")
     }
 
     // --- Hydrodynamics: it should feel like swimming through water ---------------
