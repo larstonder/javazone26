@@ -4,6 +4,7 @@ import dive.Tuning
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
 import no.njoh.pulseengine.core.input.GamepadAxis
+import no.njoh.pulseengine.core.input.GamepadButton
 import no.njoh.pulseengine.core.input.Key
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.metrics.MetricViewer
@@ -44,7 +45,12 @@ class EnPustTil : PulseEngineGame()
         // the fixed tick — that keeps it smooth independently of the simulation rate.
         camera.update(engine.data.deltaTime, sim.depth)
 
-        if (engine.input.wasClicked(Key.R) || (sim.runOver && engine.input.wasClicked(Key.SPACE)))
+        // Restart is only reachable once the run is over — a stray keypress or bumped
+        // arcade button must never destroy a leaderboard attempt mid-run. Key.R
+        // (unconditional restart) was removed for this reason; see fix-gamepad-report.md.
+        val pad = engine.input.gamepads.firstOrNull()
+        val padRestart = pad?.let { it.isPressed(RESTART_BUTTON) || it.isPressed(RESTART_BUTTON_ALT) } ?: false
+        if (sim.runOver && (engine.input.wasClicked(Key.SPACE) || padRestart))
         {
             sim = DiveSim(seed = DAILY_SEED)
             camera.snapTo(sim.depth)
@@ -78,8 +84,8 @@ class EnPustTil : PulseEngineGame()
         return DiveInput(
             horizontal = if (padX != 0f) padX else keyX,
             vertical   = if (padY != 0f) padY else keyY,
-            kick       = engine.input.isPressed(Key.Z),
-            bleed      = engine.input.isPressed(Key.X)
+            kick       = (pad?.isPressed(KICK_BUTTON) ?: false) || engine.input.isPressed(Key.Z),
+            bleed      = (pad?.isPressed(BLEED_BUTTON) ?: false) || engine.input.isPressed(Key.X)
         )
     }
 
@@ -103,12 +109,20 @@ class EnPustTil : PulseEngineGame()
         s.drawText("HELD   ${sim.held}  (mass %.1f)".format(sim.heldMass), 20f, 120f, fontSize = 24f)
         s.drawText("BANKED ${sim.banked}", 20f, 150f, fontSize = 24f)
         s.drawText("ZONE   ${sim.zone}", 20f, 180f, fontSize = 24f)
-        if (sim.runOver) s.drawText("RUN OVER - SPACE to restart", 20f, 220f, fontSize = 32f)
+        if (sim.runOver) s.drawText("RUN OVER — press A or SPACE", 20f, 220f, fontSize = 32f)
     }
 
     private companion object
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
+
+        // Booth hardware is a joystick plus two arcade buttons on a USB encoder,
+        // which enumerates as a gamepad with a standard button layout. Remap here
+        // if the encoder wiring puts the buttons on different codes.
+        val KICK_BUTTON = GamepadButton.A
+        val BLEED_BUTTON = GamepadButton.B
+        val RESTART_BUTTON = GamepadButton.A
+        val RESTART_BUTTON_ALT = GamepadButton.START
     }
 }
