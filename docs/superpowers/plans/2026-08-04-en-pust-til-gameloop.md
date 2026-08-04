@@ -748,10 +748,11 @@ class DiveSimTest {
     @Test
     fun `running out of air blacks out and banks ten percent`() {
         val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }   // isolate: no pickups en route
         sim.debugSetHeld(count = 2400, mass = 0f)
         run(sim, 40f, swimDown.copy(kick = true))
         assertEquals(0, sim.held, "held must be cleared after blackout")
-        assertTrue(sim.banked in 200..260, "expected ~240, got ${sim.banked}")
+        assertEquals(240, sim.banked, "blackout banks exactly 10% with no depth bonus")
     }
 
     @Test
@@ -783,10 +784,16 @@ class DiveSimTest {
 
     @Test
     fun `held pearls are lost when the clock runs out`() {
+        // Air lasts 20s and the run is 90s, so a full-length run ALWAYS blacks out
+        // at least once. Scope this to the 0:00 rule by starting near expiry.
         val sim = DiveSim(seed = 1L)
+        sim.pearls.forEach { it.collected = true }   // isolate from pickups
+        sim.debugSetDepth(60f)
         sim.debugSetHeld(count = 5000, mass = 0f)
-        run(sim, Tuning.RUN_SECONDS + 1f)
+        sim.debugSetClock(0.5f)
+        run(sim, 1f)
         assertTrue(sim.runOver)
+        assertEquals(0, sim.held, "held pearls are lost, not banked")
         assertEquals(0, sim.banked, "unbanked pearls must not be scored at 0:00")
     }
 
@@ -815,9 +822,14 @@ class DiveSimTest {
         val pearl = sim.pearls.first { it.zone == Zone.SHALLOWS }
         sim.debugMoveTo(pearl.x, pearl.depth)
         sim.tick(1f / 60f, idle)
-        assertTrue(pearl.collected)
-        assertEquals(pearl.value, sim.held)
-        assertEquals(pearl.mass, sim.heldMass, 0.001f)
+
+        assertTrue(pearl.collected, "the pearl the diver is sitting on must be collected")
+
+        // Pearls cluster within PEARL_PICKUP_RADIUS, so more than one may be swept
+        // up in a single tick. Assert held tracks exactly what was collected.
+        val collected = sim.pearls.filter { it.collected }
+        assertEquals(collected.sumOf { it.value }, sim.held)
+        assertEquals(collected.map { it.mass }.sum(), sim.heldMass, 0.001f)
     }
 
     @Test
@@ -1064,6 +1076,7 @@ class DiveSim(seed: Long)
 
     // --- Test hooks ---------------------------------------------------------
 
+    internal fun debugSetClock(value: Float) { clock = value }
     internal fun debugSetDepth(value: Float) { depth = value; maxDepthThisDive = max(maxDepthThisDive, value) }
     internal fun debugSetHeld(count: Int, mass: Float) { held = count; heldMass = mass }
     internal fun debugMoveTo(newX: Float, newDepth: Float) { x = newX; depth = newDepth }
