@@ -2,6 +2,7 @@ import dive.DiveInput
 import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
+import no.njoh.pulseengine.core.graphics.api.Multisampling
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.input.GamepadAxis
 import no.njoh.pulseengine.core.input.GamepadButton
@@ -18,6 +19,7 @@ import render.Hud
 import render.RunLifecycle
 import render.RunLifecycleState
 import render.anyLifecycleActionPressed
+import render.drawTextWithOutline
 import score.ScoreRepository
 
 fun main() = PulseEngine.run<EnPustTil>()
@@ -122,7 +124,34 @@ class EnPustTil : PulseEngineGame()
         // black. A separate surface outside GI's target ("main") keeps the HUD fully lit
         // regardless of world darkness, which is what "the HUD remains readable over the
         // darkened scene" requires.
-        val hudSurface = engine.gfx.createSurface("hud")
+        // Explicit rather than all-default (verified against the decompiled
+        // Graphics/GraphicsImpl interface in the engine jar, not assumed):
+        //   - backgroundColor: engine default IS already Color.BLANK (transparent) —
+        //     confirmed from Graphics.createSurface$default's bytecode. Named here so that
+        //     stays true on purpose rather than by accident.
+        //   - multisampling: engine default is Multisampling.NONE. MSAA16 smooths the
+        //     bubble-ring/depth-tape edges and outlined text at negligible cost for a
+        //     screen-space overlay this small (see the reference's SceneRenderSystem,
+        //     which uses MSAA16 for both of its overlay surfaces).
+        //   - zOrder: left null, the engine assigns an auto-decrementing counter
+        //     (`lastZOrder--`) in creation order — so simply reordering DiveLighting.setup()
+        //     and this call would silently change the HUD's layering. HUD_Z_ORDER pins it
+        //     explicitly instead, matching the reference's SURFACE_MENU_UI (-90): smaller
+        //     zOrder sorts later in GraphicsImpl's composite pass (sorted by -zOrder
+        //     ascending, confirmed in the decompiled comparator), i.e. drawn ON TOP —
+        //     comfortably past anything GlobalIlluminationSystem creates, which derives its
+        //     own surfaces' zOrder relative to mainSurface's rather than through this
+        //     counter, so it can never collide with this value.
+        //   - camera: left null (default) deliberately — the engine default IS "create a
+        //     fresh orthographic camera", which is exactly what a screen-space HUD needs
+        //     (it must not ride engine.gfx.mainCamera, which the GI Camera entity above
+        //     drives). Naming this explicitly would just restate the default.
+        val hudSurface = engine.gfx.createSurface(
+            name = "hud",
+            backgroundColor = Color.BLANK,
+            multisampling = Multisampling.MSAA16,
+            zOrder = HUD_Z_ORDER
+        )
 
         System.getenv("EPT_SCREENSHOT")?.let {
             engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
@@ -277,16 +306,19 @@ class EnPustTil : PulseEngineGame()
      */
     private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
     {
-        hud.setDrawColor(Color.WHITE)
-        hud.drawText(
+        // The world (DiveRenderer) still renders behind this surface while IDLE — the
+        // attract screen shows the live shallows, not a static image — so this title text
+        // sits over the same bright-to-dark gradient as everything else. Outlined for the
+        // same reason as the rest of the HUD (see render/Hud.kt, render/Draw.kt).
+        hud.drawTextWithOutline(
             "ÉN PUST TIL",
             w * 0.5f, h * 0.44f,
-            fontSize = h * 0.07f, xOrigin = 0.5f
+            h * 0.07f, h, Color.WHITE, xOrigin = 0.5f
         )
-        hud.drawText(
+        hud.drawTextWithOutline(
             "PRESS START",
             w * 0.5f, h * 0.54f,
-            fontSize = h * 0.035f, xOrigin = 0.5f
+            h * 0.035f, h, Color.WHITE, xOrigin = 0.5f
         )
         drawLeaderboard(hud, w, h)
     }
@@ -301,29 +333,29 @@ class EnPustTil : PulseEngineGame()
         val startY = h * 0.62f
         val cold = Color(0.75f, 0.85f, 1f)
 
-        hud.setDrawColor(cold)
-        hud.drawText("TODAY'S DIVERS", w * 0.5f, startY, fontSize = fontSize, xOrigin = 0.5f)
+        hud.drawTextWithOutline("TODAY'S DIVERS", w * 0.5f, startY, fontSize, h, cold, xOrigin = 0.5f)
 
         top.forEachIndexed { i, entry ->
             val y = startY + lineHeight * (i + 1)
-            hud.drawText("${i + 1}.", w * 0.42f, y, fontSize = fontSize, xOrigin = 1f)
-            hud.drawText(entry.initials, w * 0.46f, y, fontSize = fontSize, xOrigin = 0f)
-            hud.drawText("${entry.score}", w * 0.58f, y, fontSize = fontSize, xOrigin = 1f)
+            hud.drawTextWithOutline("${i + 1}.", w * 0.42f, y, fontSize, h, cold, xOrigin = 1f)
+            hud.drawTextWithOutline(entry.initials, w * 0.46f, y, fontSize, h, cold, xOrigin = 0f)
+            hud.drawTextWithOutline("${entry.score}", w * 0.58f, y, fontSize, h, cold, xOrigin = 1f)
         }
     }
 
     private fun drawRunOverScreen(hud: Surface, w: Float, h: Float)
     {
-        hud.setDrawColor(Color.WHITE)
-        hud.drawText(
+        // A run can end at any depth, so this can land anywhere from bright shallows to
+        // near-black abyss — outlined for the same reason as the rest of the HUD.
+        hud.drawTextWithOutline(
             "RUN OVER — BANKED ${sim.banked}",
             w * 0.5f, h * 0.5f,
-            fontSize = h * 0.04f, xOrigin = 0.5f
+            h * 0.04f, h, Color.WHITE, xOrigin = 0.5f
         )
-        hud.drawText(
+        hud.drawTextWithOutline(
             "SPACE / START to play again",
             w * 0.5f, h * 0.5f + h * 0.045f,
-            fontSize = h * 0.022f, xOrigin = 0.5f
+            h * 0.022f, h, Color.WHITE, xOrigin = 0.5f
         )
     }
 
@@ -335,26 +367,25 @@ class EnPustTil : PulseEngineGame()
      */
     private fun drawInitialsEntryScreen(hud: Surface, w: Float, h: Float)
     {
-        hud.setDrawColor(Color.WHITE)
-        hud.drawText(
+        hud.drawTextWithOutline(
             "NEW SCORE — BANKED ${sim.banked}",
             w * 0.5f, h * 0.46f,
-            fontSize = h * 0.032f, xOrigin = 0.5f
+            h * 0.032f, h, Color.WHITE, xOrigin = 0.5f
         )
 
         val letters = lifecycle.currentInitials
         val slot = lifecycle.currentInitialsSlot
         val display = letters.mapIndexed { i, c -> if (i == slot) "[$c]" else " $c " }.joinToString(" ")
-        hud.drawText(
+        hud.drawTextWithOutline(
             display,
             w * 0.5f, h * 0.54f,
-            fontSize = h * 0.06f, xOrigin = 0.5f
+            h * 0.06f, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        hud.drawText(
+        hud.drawTextWithOutline(
             "UP/DOWN: change letter   A / START: next",
             w * 0.5f, h * 0.6f,
-            fontSize = h * 0.02f, xOrigin = 0.5f
+            h * 0.02f, h, Color.WHITE, xOrigin = 0.5f
         )
     }
 
@@ -530,6 +561,9 @@ class EnPustTil : PulseEngineGame()
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
+
+        /** See the comment at the "hud" createSurface call for why this value and sign. */
+        const val HUD_Z_ORDER = -90
 
         /** Rows shown on the attract-screen leaderboard. */
         const val LEADERBOARD_SIZE = 8

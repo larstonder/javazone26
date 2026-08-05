@@ -119,6 +119,25 @@ object DiveLighting
         val system = GlobalIlluminationSystem()
         system.lightTexScale = 0.25f
         system.localSceneTexScale = 0.25f
+        // Default dithering (0.2, verified by decompiling GlobalIlluminationSystem's
+        // <init>) is tuned for a light map close to native resolution. Ours is upscaled
+        // from a quarter-res source (lightTexScale/localSceneTexScale above) onto an
+        // enormous smooth vertical gradient (DiveRenderer.drawZoneBands / updateAmbient
+        // below) — close to the worst case for visible banding, and worse the larger the
+        // display. The reference (caesars-salads) sets 0.6 for the same reason.
+        //
+        // Tried to A/B this visually (0.2 vs 0.6, captured at several depths on this
+        // Retina display) and could NOT confirm a difference by eye in the captures —
+        // honestly reported rather than claimed: the observable background gradient in
+        // the 8-bit PNG screenshots was already crushed to raw values of 0-3 out of 255
+        // at every reachable depth, below where 8-bit quantization itself dominates
+        // whatever dithering noise is or isn't doing (see visual-polish-report.md for
+        // the actual pixel dumps). That is a limitation of judging this from a
+        // screenshot, not evidence the setting does nothing on the real HDR framebuffer.
+        // Kept 0.6, matching the reference: it costs nothing at runtime, and it is
+        // GI's own documented remedy for exactly this "upscaled low-res light map over a
+        // smooth gradient" scenario, tuned by the reference for the same lighting system.
+        system.dithering = 0.6f
         engine.scene.addSystem(system)
         gi = system
 

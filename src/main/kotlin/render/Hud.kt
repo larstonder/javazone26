@@ -84,8 +84,9 @@ object Hud
     {
         val margin = h * MARGIN_FRACTION
         val fontSize = h * BANKED_FONT_FRACTION
-        surface.setDrawColor(cold)
-        surface.drawText("BANKED ${sim.banked}", margin, margin + fontSize, fontSize = fontSize)
+        // Top-left, same bright-shallows-to-black-abyss background as everything else on
+        // this surface (see class doc) — outlined so it stays legible at the surface.
+        surface.drawTextWithOutline("BANKED ${sim.banked}", margin, margin + fontSize, fontSize, h, cold)
     }
 
     private fun drawClock(surface: Surface, sim: DiveSim, w: Float, h: Float)
@@ -93,11 +94,13 @@ object Hud
         val fontSize = h * CLOCK_FONT_FRACTION
         val minutes = (sim.clock / 60f).toInt()
         val seconds = (sim.clock % 60f).toInt()
-        surface.setDrawColor(if (sim.clock < CLOCK_DANGER_SECONDS) danger else cold)
-        surface.drawText(
+        val color = if (sim.clock < CLOCK_DANGER_SECONDS) danger else cold
+        // Top-centre — exactly where the bright Shallows water sits. Flat cold-blue text
+        // here is the low-contrast pairing that motivated this outline in the first place.
+        surface.drawTextWithOutline(
             "%d:%02d".format(minutes, seconds),
             w * 0.5f, h * MARGIN_FRACTION + fontSize,
-            fontSize = fontSize, xOrigin = 0.5f
+            fontSize, h, color, xOrigin = 0.5f
         )
     }
 
@@ -139,12 +142,15 @@ object Hud
         val wobble = sin(sim.clock * HELD_WOBBLE_HZ) * HELD_WOBBLE_METRES * ppm
 
         // Cold amber -> hot red-amber as the haul grows. No Color allocation per frame —
-        // interpolate the floats directly into the 4-float setDrawColor overload.
-        surface.setDrawColor(1f, 0.72f - heat * 0.47f, 0.25f - heat * 0.15f, 1f)
-        surface.drawText(
+        // interpolate the floats directly into the rgba drawTextWithOutline overload.
+        // Attached to the diver, so it travels through every zone from bright Shallows to
+        // near-black Abyss over a single run — outlined so it reads at both ends.
+        surface.drawTextWithOutline(
             "${sim.held}",
             diverX + wobble, diverY + HELD_OFFSET_METRES * ppm,
-            fontSize = fontSize, xOrigin = 0.5f
+            fontSize, h,
+            1f, 0.72f - heat * 0.47f, 0.25f - heat * 0.15f, 1f,
+            xOrigin = 0.5f
         )
     }
 
@@ -175,11 +181,13 @@ object Hud
         surface.setDrawColor(if (sim.canStillReturn()) cold else danger)
         surface.fillRect(x - tapeWidth, depthY - markerHeight * 0.5f, tapeWidth * 3f, markerHeight)
 
-        surface.setDrawColor(cold)
-        surface.drawText(
+        // The marker travels the whole tape as depth increases — the same bright-to-black
+        // span everything else on this surface crosses — so this label needs the outline
+        // just as much as the clock does.
+        surface.drawTextWithOutline(
             "%.0fm".format(sim.depth),
             x - margin * 0.5f, depthY + h * TAPE_LABEL_FONT_FRACTION,
-            fontSize = h * TAPE_LABEL_FONT_FRACTION, xOrigin = 1f
+            h * TAPE_LABEL_FONT_FRACTION, h, cold, xOrigin = 1f
         )
     }
 }
