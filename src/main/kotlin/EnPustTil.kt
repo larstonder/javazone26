@@ -18,6 +18,7 @@ import render.Hud
 import render.RunLifecycle
 import render.RunLifecycleState
 import render.anyLifecycleActionPressed
+import score.ScoreRepository
 
 fun main() = PulseEngine.run<EnPustTil>()
 
@@ -25,16 +26,24 @@ fun main() = PulseEngine.run<EnPustTil>()
  * Engine shell. Reads input, ticks the pure simulation on the fixed update,
  * and draws it. All game logic lives in the `dive` package.
  *
- * The IDLE / PLAYING / RUN_OVER state machine (attract screen, dwell before restart,
- * idle timeout) lives in [RunLifecycle] — a pure, engine-free, unit-tested class. This
- * file only reacts to it: gates whether [sim] gets ticked, decides which HUD screen to
- * draw, and constructs a fresh [DiveSim] on [RunLifecycle.justStarted].
+ * The IDLE / PLAYING / RUN_OVER / ENTER_INITIALS state machine (attract screen +
+ * leaderboard, dwell before restart, initials entry for a qualifying score, idle
+ * timeout) lives in [RunLifecycle] — a pure, engine-free, unit-tested class. This file
+ * only reacts to it: gates whether [sim] gets ticked, decides which HUD screen to draw,
+ * constructs a fresh [DiveSim] on [RunLifecycle.justStarted], and persists a completed
+ * initials entry via [scoreRepository] on [RunLifecycle.initialsJustCompleted].
  */
 class EnPustTil : PulseEngineGame()
 {
     private var sim = DiveSim(seed = DAILY_SEED)
     private val camera = DiveCamera()
     private val lifecycle = RunLifecycle()
+
+    // Score persistence — registered as an engine Service in onCreate below, which
+    // gives it onCreate (load from disk)/onDestroy (final save) hooks driven by the
+    // engine's own lifecycle. See ScoreRepository's class doc for the verified call
+    // order and the durability guarantees actually achieved.
+    private val scoreRepository = ScoreRepository(todaySeed = DAILY_SEED)
 
     // Read once at construction, same as MetricViewer's gate below — everything downstream
     // that checks this field (the input overlay in onRender) is then a single boolean read,
@@ -59,6 +68,12 @@ class EnPustTil : PulseEngineGame()
         engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
+
+        // Registering as a Service (rather than calling its methods directly) gives
+        // ScoreRepository its own onCreate (load scores from disk) and onDestroy (final
+        // save) hooks, driven by the engine's own lifecycle — see its class doc for the
+        // verified call order.
+        engine.service.add(scoreRepository)
 
         logGamepadDiagnostics()
 
@@ -125,7 +140,23 @@ class EnPustTil : PulseEngineGame()
         }
         val actionPressed = anyLifecycleActionPressed(engine.input.wasClicked(Key.SPACE), gamepadActionPressed)
 
-        lifecycle.update(engine.data.deltaTime, actionPressed, sim.runOver)
+        // Initials entry (ENTER_INITIALS only — harmless to compute unconditionally
+        // otherwise, RunLifecycle simply ignores these outside that state). Reuses the
+        // SAME actionPressed signal as the restart/confirm button — "the button that
+        // started your run also advances your initials" — rather than introducing a
+        // third physical input the cabinet does not have. See readInitialsCycle's doc
+        // for the up/down source.
+        val (cycleUp, cycleDown) = readInitialsCycle()
+
+        lifecycle.update(
+            dt = engine.data.deltaTime,
+            anyInputPressed = actionPressed,
+            runOver = sim.runOver,
+            bankedScore = sim.banked,
+            cycleUp = cycleUp,
+            cycleDown = cycleDown,
+            confirmPressed = actionPressed
+        )
 
         if (lifecycle.justStarted)
         {
@@ -133,8 +164,29 @@ class EnPustTil : PulseEngineGame()
             camera.snapTo(sim.depth)
             DiveLighting.resetAim()
         }
+
+        // The tick initials entry finishes (confirmed or auto-submitted on timeout —
+        // see RunLifecycle's ENTER_INITIALS doc), persist the score. `sim` is still the
+        // DiveSim that scored this run: a completed entry moves to IDLE, not PLAYING, so
+        // no new DiveSim has been constructed yet this frame (justStarted is false here).
+        if (lifecycle.initialsJustCompleted)
+            scoreRepository.registerScore(engine, lifecycle.completedInitials, sim.banked)
     }
 
+    /**
+     * The actual score-saving guarantee on a clean shutdown comes from
+     * [ScoreRepository.onDestroy] — it is registered as a [no.njoh.pulseengine.core
+     * .service.Service] (see [onCreate]) and the engine calls every service's
+     * `onDestroy` automatically (verified by decompiling `ServiceManagerImpl`, right
+     * after this method returns — see [ScoreRepository]'s class doc for the exact
+     * order). This method exists to satisfy that explicit requirement in its own right
+     * and to leave a clean, on-site-diagnosable log line distinguishing a graceful
+     * shutdown from a crash/power-cut, which this line never gets the chance to log.
+     */
+    override fun onDestroy()
+    {
+        Logger.info { "Én Pust Til shutting down cleanly" }
+    }
 
     override fun onRender()
     {
@@ -168,6 +220,12 @@ class EnPustTil : PulseEngineGame()
                 Hud.render(hud, sim, camera, w, h)
                 drawRunOverScreen(hud, w, h)
             }
+
+            RunLifecycleState.ENTER_INITIALS ->
+            {
+                Hud.render(hud, sim, camera, w, h)
+                drawInitialsEntryScreen(hud, w, h)
+            }
         }
 
         // Dev-only diagnostic overlay for finding 4 (the arcade encoder risk): completely
@@ -177,7 +235,13 @@ class EnPustTil : PulseEngineGame()
         if (devMode) renderGamepadOverlay(hud, w, h)
     }
 
-    /** Placeholder attract screen: engine default font only, no assets. */
+    /**
+     * Placeholder attract screen: engine default font only, no assets. Also the booth's
+     * whole social hook — the leaderboard the queue can see before they play — so it
+     * draws today's top scores under the title. Scoped to TODAY's seed only (see
+     * ScoreRepository.topN's default), which is what gives day two a fresh, empty board
+     * for free.
+     */
     private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
     {
         hud.setDrawColor(Color.WHITE)
@@ -191,6 +255,28 @@ class EnPustTil : PulseEngineGame()
             w * 0.5f, h * 0.54f,
             fontSize = h * 0.035f, xOrigin = 0.5f
         )
+        drawLeaderboard(hud, w, h)
+    }
+
+    private fun drawLeaderboard(hud: Surface, w: Float, h: Float)
+    {
+        val top = scoreRepository.topN(LEADERBOARD_SIZE)
+        if (top.isEmpty()) return
+
+        val fontSize = h * 0.024f
+        val lineHeight = fontSize * 1.5f
+        val startY = h * 0.62f
+        val cold = Color(0.75f, 0.85f, 1f)
+
+        hud.setDrawColor(cold)
+        hud.drawText("TODAY'S DIVERS", w * 0.5f, startY, fontSize = fontSize, xOrigin = 0.5f)
+
+        top.forEachIndexed { i, entry ->
+            val y = startY + lineHeight * (i + 1)
+            hud.drawText("${i + 1}.", w * 0.42f, y, fontSize = fontSize, xOrigin = 1f)
+            hud.drawText(entry.initials, w * 0.46f, y, fontSize = fontSize, xOrigin = 0f)
+            hud.drawText("${entry.score}", w * 0.58f, y, fontSize = fontSize, xOrigin = 1f)
+        }
     }
 
     private fun drawRunOverScreen(hud: Surface, w: Float, h: Float)
@@ -205,6 +291,37 @@ class EnPustTil : PulseEngineGame()
             "SPACE / START to play again",
             w * 0.5f, h * 0.5f + h * 0.045f,
             fontSize = h * 0.022f, xOrigin = 0.5f
+        )
+    }
+
+    /**
+     * Three-letter arcade initials entry — see design spec §12 ("never a form field")
+     * and RunLifecycle's ENTER_INITIALS doc for when this is offered. The current slot
+     * is bracketed so it reads clearly even with the engine's default font and no
+     * cursor/caret asset.
+     */
+    private fun drawInitialsEntryScreen(hud: Surface, w: Float, h: Float)
+    {
+        hud.setDrawColor(Color.WHITE)
+        hud.drawText(
+            "NEW SCORE — BANKED ${sim.banked}",
+            w * 0.5f, h * 0.46f,
+            fontSize = h * 0.032f, xOrigin = 0.5f
+        )
+
+        val letters = lifecycle.currentInitials
+        val slot = lifecycle.currentInitialsSlot
+        val display = letters.mapIndexed { i, c -> if (i == slot) "[$c]" else " $c " }.joinToString(" ")
+        hud.drawText(
+            display,
+            w * 0.5f, h * 0.54f,
+            fontSize = h * 0.06f, xOrigin = 0.5f
+        )
+
+        hud.drawText(
+            "UP/DOWN: change letter   A / START: next",
+            w * 0.5f, h * 0.6f,
+            fontSize = h * 0.02f, xOrigin = 0.5f
         )
     }
 
@@ -228,6 +345,21 @@ class EnPustTil : PulseEngineGame()
             kick       = (pad?.isPressed(KICK_BUTTON) ?: false) || engine.input.isPressed(Key.Z),
             bleed      = (pad?.isPressed(BLEED_BUTTON) ?: false) || engine.input.isPressed(Key.X)
         )
+    }
+
+    /**
+     * Initials-entry cycling input: stick up/down (any connected gamepad — same "any
+     * button" reasoning as [anyLifecycleActionPressed], since this is menu navigation,
+     * not gameplay) OR the UP/DOWN keys, so keyboard development keeps working. Level
+     * readings, same as [readInput] — [score.InitialsEntry] does its own edge-tracking.
+     */
+    private fun readInitialsCycle(): Pair<Boolean, Boolean>
+    {
+        val padUp = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) < -STICK_DEADZONE }
+        val padDown = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) > STICK_DEADZONE }
+        val up = padUp || engine.input.isPressed(Key.UP)
+        val down = padDown || engine.input.isPressed(Key.DOWN)
+        return up to down
     }
 
     private fun axis(negative: Key, positive: Key) = when
@@ -365,6 +497,9 @@ class EnPustTil : PulseEngineGame()
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
+
+        /** Rows shown on the attract-screen leaderboard. */
+        const val LEADERBOARD_SIZE = 8
 
         // Booth hardware is a joystick plus two arcade buttons on a USB encoder,
         // which enumerates as a gamepad with a standard button layout. Remap here
