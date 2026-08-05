@@ -20,11 +20,11 @@ import no.njoh.pulseengine.core.shared.primitives.Color
 object DiveRenderer
 {
     private val zoneColors = mapOf(
-        Zone.SHALLOWS to Color(0.20f, 0.55f, 0.80f),
-        Zone.KELP     to Color(0.14f, 0.42f, 0.62f),
-        Zone.TWILIGHT to Color(0.09f, 0.28f, 0.46f),
-        Zone.TRENCH   to Color(0.05f, 0.16f, 0.30f),
-        Zone.ABYSS    to Color(0.02f, 0.06f, 0.14f)
+        Zone.SHALLOWS to Color(0.10f, 0.34f, 0.52f),
+        Zone.KELP     to Color(0.06f, 0.22f, 0.36f),
+        Zone.TWILIGHT to Color(0.03f, 0.12f, 0.22f),
+        Zone.TRENCH   to Color(0.015f, 0.06f, 0.12f),
+        Zone.ABYSS    to Color(0.004f, 0.015f, 0.035f)
     )
 
     private val pearlColor = Color(1f, 0.78f, 0.35f)

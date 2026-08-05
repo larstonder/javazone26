@@ -8,6 +8,7 @@ import no.njoh.pulseengine.core.input.Key
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import render.DiveCamera
+import render.DiveLighting
 import render.DiveRenderer
 import render.Hud
 
@@ -29,8 +30,23 @@ class EnPustTil : PulseEngineGame()
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
 
+        DiveLighting.setup(engine)
+
+        // The HUD is drawn to its OWN transparent surface, composited on top of mainSurface
+        // at the backbuffer stage, rather than onto mainSurface itself. GlobalIlluminationSystem
+        // (wired up by DiveLighting) adds a multiply post-processing effect that relights
+        // whatever mainSurface holds by the computed light map — that is exactly what makes
+        // the Abyss go dark, but it would ALSO multiply the HUD into near-invisibility, since
+        // BANKED/the clock/depth tape sit far from any lamp. Verified empirically: with the
+        // HUD on mainSurface, "BANKED 7" in the Abyss reads as RGB(11,8,1) — practically
+        // black. A separate surface outside GI's target ("main") keeps the HUD fully lit
+        // regardless of world darkness, which is what "the HUD remains readable over the
+        // darkened scene" requires.
+        val hudSurface = engine.gfx.createSurface("hud")
+
         System.getenv("EPT_SCREENSHOT")?.let {
             engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
+            hudSurface.addPostProcessingEffect(render.ScreenshotEffect(it.replace(".png", "") + "-hud"))
         }
     }
 
@@ -41,6 +57,8 @@ class EnPustTil : PulseEngineGame()
 
     override fun onUpdate()
     {
+        DiveLighting.sync(engine, sim, camera)
+
         // Camera easing is presentation only, so it runs on the render clock rather than
         // the fixed tick — that keeps it smooth independently of the simulation rate.
         camera.update(engine.data.deltaTime, sim.depth)
@@ -60,16 +78,22 @@ class EnPustTil : PulseEngineGame()
 
     override fun onRender()
     {
-        val surface = engine.gfx.mainSurface
         val w = engine.window.width.toFloat()
         val h = engine.window.height.toFloat()
-        DiveRenderer.render(surface, sim, camera, w, h)
-        Hud.render(surface, sim, camera, w, h)
+
+        // World: lit by GlobalIlluminationSystem, which multiplies mainSurface by the
+        // computed light map — this is what makes the Abyss genuinely dark.
+        DiveRenderer.render(engine.gfx.mainSurface, sim, camera, w, h)
+
+        // HUD: its own surface, composited on top unaffected by GI — see the comment in
+        // onCreate for why it cannot share mainSurface.
+        val hud = engine.gfx.getSurfaceOrDefault("hud")
+        Hud.render(hud, sim, camera, w, h)
 
         if (sim.runOver)
         {
-            surface.setDrawColor(Color.WHITE)
-            surface.drawText(
+            hud.setDrawColor(Color.WHITE)
+            hud.drawText(
                 "RUN OVER — SPACE to restart",
                 w * 0.5f, h * 0.5f,
                 fontSize = h * 0.04f, xOrigin = 0.5f
