@@ -2,6 +2,7 @@ import dive.DiveInput
 import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
+import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.input.GamepadAxis
 import no.njoh.pulseengine.core.input.GamepadButton
 import no.njoh.pulseengine.core.input.Key
@@ -12,17 +13,25 @@ import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
 import render.Hud
+import render.RunLifecycle
+import render.RunLifecycleState
 
 fun main() = PulseEngine.run<EnPustTil>()
 
 /**
  * Engine shell. Reads input, ticks the pure simulation on the fixed update,
  * and draws it. All game logic lives in the `dive` package.
+ *
+ * The IDLE / PLAYING / RUN_OVER state machine (attract screen, dwell before restart,
+ * idle timeout) lives in [RunLifecycle] — a pure, engine-free, unit-tested class. This
+ * file only reacts to it: gates whether [sim] gets ticked, decides which HUD screen to
+ * draw, and constructs a fresh [DiveSim] on [RunLifecycle.justStarted].
  */
 class EnPustTil : PulseEngineGame()
 {
     private var sim = DiveSim(seed = DAILY_SEED)
     private val camera = DiveCamera()
+    private val lifecycle = RunLifecycle()
 
     override fun onCreate()
     {
@@ -64,7 +73,12 @@ class EnPustTil : PulseEngineGame()
 
     override fun onFixedUpdate()
     {
-        sim.tick(engine.data.fixedDeltaTime, readInput())
+        // IDLE = attract mode: the clock must not run, and nothing should be reachable
+        // by a bumped button while the machine sits unattended between players. Ticking
+        // is otherwise unconditional — DiveSim.tick already no-ops once runOver is true,
+        // so RUN_OVER need not be special-cased here.
+        if (lifecycle.state != RunLifecycleState.IDLE)
+            sim.tick(engine.data.fixedDeltaTime, readInput())
     }
 
     override fun onUpdate()
@@ -77,12 +91,26 @@ class EnPustTil : PulseEngineGame()
         // the fixed tick — that keeps it smooth independently of the simulation rate.
         camera.update(engine.data.deltaTime, sim.depth)
 
-        // Restart is only reachable once the run is over — a stray keypress or bumped
-        // arcade button must never destroy a leaderboard attempt mid-run. Key.R
-        // (unconditional restart) was removed for this reason; see fix-gamepad-report.md.
+        // Start/restart is a LEVEL reading here — deliberately. The engine's Gamepad only
+        // exposes isPressed/getAxis (confirmed against the engine jar: no gamepad
+        // wasClicked), so there is no engine-provided edge detection for a controller
+        // button. RunLifecycle does its own previous-frame edge-tracking internally (see
+        // its class doc) specifically so a held or stuck button cannot fire this every
+        // frame — feeding it a level reading is exactly what it is built to consume.
+        // Key.SPACE's wasClicked is already an edge; OR-ing it in here is harmless since
+        // RunLifecycle re-edges the combined signal anyway.
+        //
+        // Movement/kick/bleed are deliberately excluded — a stray keypress or bumped
+        // arcade button must never destroy a leaderboard attempt mid-run, nor spuriously
+        // wake the attract screen. Key.R (unconditional restart) was removed for the same
+        // reason; see fix-gamepad-report.md.
         val pad = engine.input.gamepads.firstOrNull()
-        val padRestart = pad?.let { it.isPressed(RESTART_BUTTON) || it.isPressed(RESTART_BUTTON_ALT) } ?: false
-        if (sim.runOver && (engine.input.wasClicked(Key.SPACE) || padRestart))
+        val actionPressed = engine.input.wasClicked(Key.SPACE) ||
+            (pad?.let { it.isPressed(RESTART_BUTTON) || it.isPressed(RESTART_BUTTON_ALT) } ?: false)
+
+        lifecycle.update(engine.data.deltaTime, actionPressed, sim.runOver)
+
+        if (lifecycle.justStarted)
         {
             sim = DiveSim(seed = DAILY_SEED)
             camera.snapTo(sim.depth)
@@ -107,19 +135,54 @@ class EnPustTil : PulseEngineGame()
         DiveLighting.render(engine, sim, camera, engine.data.deltaTime, w, h)
 
         // HUD: its own surface, composited on top unaffected by GI — see the comment in
-        // onCreate for why it cannot share mainSurface.
+        // onCreate for why it cannot share mainSurface. What it shows depends on the
+        // lifecycle state: the numeric HUD (BANKED/clock/air/depth tape) only makes sense
+        // once a run actually exists, so IDLE gets its own simple attract text instead.
         val hud = engine.gfx.getSurfaceOrDefault("hud")
-        Hud.render(hud, sim, camera, w, h)
 
-        if (sim.runOver)
+        when (lifecycle.state)
         {
-            hud.setDrawColor(Color.WHITE)
-            hud.drawText(
-                "RUN OVER — SPACE to restart",
-                w * 0.5f, h * 0.5f,
-                fontSize = h * 0.04f, xOrigin = 0.5f
-            )
+            RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
+
+            RunLifecycleState.PLAYING -> Hud.render(hud, sim, camera, w, h)
+
+            RunLifecycleState.RUN_OVER ->
+            {
+                Hud.render(hud, sim, camera, w, h)
+                drawRunOverScreen(hud, w, h)
+            }
         }
+    }
+
+    /** Placeholder attract screen: engine default font only, no assets. */
+    private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
+    {
+        hud.setDrawColor(Color.WHITE)
+        hud.drawText(
+            "EN PUST TIL",
+            w * 0.5f, h * 0.44f,
+            fontSize = h * 0.07f, xOrigin = 0.5f
+        )
+        hud.drawText(
+            "PRESS START",
+            w * 0.5f, h * 0.54f,
+            fontSize = h * 0.035f, xOrigin = 0.5f
+        )
+    }
+
+    private fun drawRunOverScreen(hud: Surface, w: Float, h: Float)
+    {
+        hud.setDrawColor(Color.WHITE)
+        hud.drawText(
+            "RUN OVER — BANKED ${sim.banked}",
+            w * 0.5f, h * 0.5f,
+            fontSize = h * 0.04f, xOrigin = 0.5f
+        )
+        hud.drawText(
+            "SPACE / START to play again",
+            w * 0.5f, h * 0.5f + h * 0.045f,
+            fontSize = h * 0.022f, xOrigin = 0.5f
+        )
     }
 
     /**
@@ -163,7 +226,16 @@ class EnPustTil : PulseEngineGame()
         // if the encoder wiring puts the buttons on different codes.
         val KICK_BUTTON = GamepadButton.A
         val BLEED_BUTTON = GamepadButton.B
-        val RESTART_BUTTON = GamepadButton.A
-        val RESTART_BUTTON_ALT = GamepadButton.START
+
+        // Restart/start gets its OWN button (START), separate from KICK_BUTTON, so
+        // holding A to kick toward the surface at 0:00 can never itself restart the run
+        // (see RunLifecycle's class doc for the incident this fixes). A is kept as a
+        // secondary in case the encoder wiring leaves START unmapped — it is safe to
+        // double up because RunLifecycle edge-triggers this signal internally regardless
+        // of which physical button produced it, so a held A during actual play has no
+        // effect (PLAYING ignores input entirely) and a held A after the run ends cannot
+        // repeatedly restart (no NEW edge without a release-then-press).
+        val RESTART_BUTTON = GamepadButton.START
+        val RESTART_BUTTON_ALT = GamepadButton.A
     }
 }
