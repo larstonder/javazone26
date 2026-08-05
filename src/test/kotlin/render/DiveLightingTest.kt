@@ -2,6 +2,7 @@ package render
 
 import dive.Zone
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -94,5 +95,109 @@ class DiveLightingTest
         // one pixel before the pearl itself scrolls out of view.
         assertTrue(DiveLighting.isOnScreen(screenY = -10f, screenHeight = 1800f))
         assertTrue(DiveLighting.isOnScreen(screenY = 1810f, screenHeight = 1800f))
+    }
+
+    // ---- Flashlight beam -------------------------------------------------------------
+    //
+    // These cover the cone maths described at length in DiveLighting.coneMaskPeak. The
+    // numbers below are not arbitrary: they are what GI's own scene.frag computes, so a
+    // failure here means the beam no longer matches the shader that draws it.
+
+    /** A representative diver base intensity — the table value for every zone but the abyss. */
+    private val base = 2f
+
+    @Test
+    fun `a 360 degree cone is GI's unattenuated omnidirectional case`()
+    {
+        // scene.frag guards its cone attenuation with `if (coneAngle < PI)`, and 360 degrees
+        // is exactly PI after the metadata.r * PI decode — so the whole block is skipped and
+        // every direction gets the full, unreduced radiance. That is what made the hovering
+        // diver a symmetric bloom blob.
+        assertEquals(1f, DiveLighting.coneMaskPeak(360f), 1e-6f)
+    }
+
+    @Test
+    fun `a 180 degree cone is the exact forward hemisphere, needing no intensity correction`()
+    {
+        // Half-angle 90 degrees, so cos(halfAngle) is 0 and the mask collapses to plain
+        // max(cos(theta), 0) — a Lambertian hemisphere whose on-axis peak is already 1.
+        // This is the landmark that separates "lights something behind the diver" from
+        // "does not", and it is why the hovering cone is kept at or below it.
+        assertEquals(1f, DiveLighting.coneMaskPeak(180f), 1e-6f)
+    }
+
+    @Test
+    fun `a narrow cone throttles its own peak, which is why a narrow beam needs more nominal intensity`()
+    {
+        // The counter-intuitive core of the whole defect: scene.frag's mask is
+        // clamp(dot - cos(halfAngle), 0, 1), which is NOT normalised. At 50 degrees the very
+        // brightest the cone can ever be is 1 - cos(25 degrees) = 0.0937 of nominal — so
+        // narrowing a cone makes it DIMMER unless the intensity is scaled back up.
+        assertTrue(
+            DiveLighting.coneMaskPeak(50f) < 0.1f,
+            "a 50-degree cone should peak near 0.094, was ${DiveLighting.coneMaskPeak(50f)}"
+        )
+        assertTrue(DiveLighting.coneMaskPeak(50f) < DiveLighting.coneMaskPeak(150f))
+    }
+
+    @Test
+    fun `a hovering diver still casts a directional cone rather than an omnidirectional blob`()
+    {
+        // THE regression test for the reported defect. Standing still used to widen the cone
+        // all the way to 360, throwing away the held heading and lighting the diver equally
+        // in every direction.
+        assertTrue(
+            DiveLighting.beamConeAngle(0f) < 360f,
+            "a hovering diver must still point the torch somewhere"
+        )
+    }
+
+    @Test
+    fun `the hovering cone lights nothing behind the diver, so it reads as a torch and not a halo`()
+    {
+        // At most the forward hemisphere (see the 180-degree test above). Anything wider
+        // starts spilling light behind the diver, which is the symmetric-halo look again.
+        assertTrue(
+            DiveLighting.beamConeAngle(0f) <= 180f,
+            "hovering cone was ${DiveLighting.beamConeAngle(0f)} degrees, which lights the diver's back"
+        )
+    }
+
+    @Test
+    fun `swimming focuses the beam - a moving diver's cone is narrower than a hovering diver's`()
+    {
+        assertTrue(DiveLighting.beamConeAngle(5f) < DiveLighting.beamConeAngle(0f))
+    }
+
+    @Test
+    fun `at full focus the beam is exactly the 50-degree, 25x beam that was signed off in playtest`()
+    {
+        // The moving beam is known-good and must not regress. 25x at 50 degrees is what it
+        // has always sent to drawLight; the normalisation below has to reproduce it exactly.
+        assertEquals(50f, DiveLighting.beamConeAngle(1.5f), 1e-4f)
+        assertEquals(base * 25f, DiveLighting.beamIntensity(base, 1.5f), 0.01f)
+        assertEquals(base * 25f, DiveLighting.beamIntensity(base, 40f), 0.01f)
+    }
+
+    @Test
+    fun `hovering is no brighter on-axis than the old omnidirectional light was`()
+    {
+        // The blob complaint is about total light, not about the diver going dark. Peak
+        // on-axis radiance is intensity * coneMaskPeak, and holding that at the old omni
+        // value (base * 1.0) means nothing anywhere on screen gets brighter than it is
+        // today — the fix only ever removes light, from the sides and from behind.
+        val peakRadiance = DiveLighting.beamIntensity(base, 0f) * DiveLighting.coneMaskPeak(DiveLighting.beamConeAngle(0f))
+        assertEquals(base, peakRadiance, 0.01f)
+    }
+
+    @Test
+    fun `cone and intensity are continuous across the stationary threshold, so the beam does not pop`()
+    {
+        // The old code branched hard at 1.5 m/s, so crossing it teleported the cone between
+        // 50 and 360 degrees. Sample a hair either side and require near-equality.
+        val justBelow = 1.5f - 0.001f
+        val justAbove = 1.5f + 0.001f
+        assertEquals(DiveLighting.beamConeAngle(justBelow), DiveLighting.beamConeAngle(justAbove), 0.5f)
+        assertEquals(DiveLighting.beamIntensity(base, justBelow), DiveLighting.beamIntensity(base, justAbove), 0.5f)
     }
 }

@@ -11,11 +11,29 @@ import kotlin.math.exp
  * counter-clockwise in whatever coordinate system its two arguments are already in. It makes
  * no claim about screen space or engine convention; the caller ([DiveLighting]) is
  * responsible for handing it components in whatever axis convention `GiSceneRenderer.drawLight`
- * actually expects for its `angle`/cone-direction parameter, which was confirmed **empirically**
- * (screenshot: a straight vertical descent produced a beam pointing straight UP, opposite of
- * travel) to be Y-flipped relative to [Viewport]'s screen-space-Y-down convention — the local
- * GI scene surface's projection inverts Y where `Viewport` does not. See the call site in
- * `DiveLighting.drawDiverBeam`.
+ * actually expects for its `angle`/cone-direction parameter.
+ *
+ * That convention is Y-flipped relative to [Viewport]'s screen-space-Y-down convention. This
+ * was originally recorded as an empirical screenshot finding (a straight vertical descent
+ * produced a beam pointing straight UP, opposite of travel) with the caveat that it might
+ * have been read off an already-broken beam. It is no longer a guess — it now falls out of
+ * the engine's own shader source, which is the authority:
+ *
+ *   - `scene.frag` stores the heading as `metadata.g = fract(sourceAngle / 360.0)`, so
+ *     negative angles wrap cleanly and no sign information is lost on the way through.
+ *   - `radiance_cascades.frag` decodes it into a direction vector as
+ *     `coneDir = vec2(cos(sourceDir + camAngle), sin(sourceDir + camAngle))` — a plain
+ *     +sin, i.e. counter-clockwise from +x, in the light texture's own pixel space.
+ *   - That pixel space is a GL framebuffer, so its +y runs UP the screen, whereas
+ *     `Viewport.screenY` grows DOWNWARD. (The same shader builds its march directions as
+ *     `rayDir = vec2(cos(rayAngle), -sin(rayAngle))`, negating sin precisely because ray
+ *     angles are quoted in the opposite handedness — the two conventions coexist in one
+ *     file, which is exactly how this is easy to get wrong.)
+ *
+ * So an `angle` of -90 points DOWN the screen, and `DiveLighting.drawDiverBeam` negates
+ * `sim.vy` to convert a Y-down world velocity into that Y-up heading. Verified twice over:
+ * derived from the shader above, and confirmed in play — the moving beam points where the
+ * diver is actually swimming. See the call site in `DiveLighting.drawDiverBeam`.
  */
 object AimAngle
 {

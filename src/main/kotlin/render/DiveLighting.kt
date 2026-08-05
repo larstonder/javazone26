@@ -13,6 +13,7 @@ import no.njoh.pulseengine.modules.lighting.global.GlobalIlluminationSystem
 import no.njoh.pulseengine.modules.scene.entities.Camera
 import no.njoh.pulseengine.modules.scene.systems.EntityRendererImpl
 import no.njoh.pulseengine.modules.scene.systems.EntityUpdater
+import kotlin.math.cos
 import kotlin.math.hypot
 
 /**
@@ -37,6 +38,16 @@ import kotlin.math.hypot
  * `camera.depth` on the SAME frame — which is what makes the light and the object it
  * illuminates agree pixel-for-pixel. There is nothing left to pool: no entities, no
  * per-frame entity-system update pass, no repositioning step that can fall out of sync.
+ *
+ * ONE CONE, RAMPED BY SPEED. The diver's light used to switch between a 50-degree beam while
+ * moving and `coneAngle = 360` while stopped. The second of those is not "a very wide torch":
+ * 360 trips a guard in GI's own shader that disables cone attenuation altogether, so a
+ * hovering diver emitted full radiance in every direction and read as an intense symmetric
+ * bloom blob rather than as someone holding a flashlight. [drawDiverBeam] now keeps the beam
+ * directional at all speeds and ramps its width and brightness instead of branching. The
+ * per-parameter semantics of `drawLight`, read off the shader source rather than assumed, are
+ * documented on [coneMaskPeak] — they are unintuitive enough that the old 25x-versus-1x
+ * pairing looked reasonable while being roughly a factor of five out.
  */
 object DiveLighting
 {
@@ -63,17 +74,56 @@ object DiveLighting
     private val pearlIntensityByZone = floatArrayOf(0.6f, 1.0f, 1.8f, 2.6f, 4.0f)
     private val diverIntensityByZone = floatArrayOf(2.0f, 2.0f, 2.0f, 2.0f, 1.2f)
 
-    /** Below this speed (m/s) the direction of travel is noise, not intent — see [drawDiverBeam]. */
+    /**
+     * Speed (m/s) at which the beam reaches full focus. Also the cutoff below which the
+     * direction of travel is `atan2` noise rather than intent, so the aim stops tracking —
+     * see [drawDiverBeam].
+     *
+     * Sanity-checked against the movement model: an unladen diver with no input settles at
+     * exactly zero (Buoyancy.verticalSpeed is neutral when mass is zero), so "hovering" is a
+     * real, common state and not a rounding artefact. Any held direction converges on at
+     * least `LATERAL_THRUST / dragCoefficient` — 6 m/s empty, still 3 m/s under a 200-mass
+     * haul — so 1.5 m/s is crossed almost the instant the player commits to a direction. The
+     * wide end of the ramp is therefore the "hovering, deciding where to go" look, and the
+     * narrow end is essentially all of actual swimming.
+     */
     private const val STATIONARY_SPEED_THRESHOLD = 1.5f
 
-    private const val BEAM_CONE_ANGLE = 50f
-    private const val WIDE_GLOW_CONE_ANGLE = 360f
+    private const val FULL_CIRCLE_DEGREES = 360f
+    private const val WIDE_GLOW_CONE_ANGLE = FULL_CIRCLE_DEGREES
 
-    // A directional beam concentrates the same light budget into a much smaller solid angle
-    // than the old omnidirectional glow, so it needs a higher nominal intensity to actually
-    // read as a bright flashlight rather than a dim smear — matched empirically against
-    // screenshots, the same way the old zoneIntensityFor values were tuned.
+    // Cone width at the two ends of the focus ramp. Swimming narrows the beam to a torch;
+    // hovering opens it to a pool. STATIONARY_CONE_ANGLE is deliberately at-or-below the
+    // 180-degree hemisphere landmark documented on coneMaskPeak, so that even at its widest
+    // the light never reaches behind the diver — "no light behind you" is precisely what
+    // stops this reading as the symmetric halo it used to be.
+    private const val BEAM_CONE_ANGLE = 50f
+    private const val STATIONARY_CONE_ANGLE = 150f
+
+    // Nominal intensity of the focused beam, unchanged from the version that was signed off
+    // in playtest. It is only ever used via BEAM_PEAK_RADIANCE below; see coneMaskPeak for
+    // why a bare multiplier like this cannot be compared across two different cone widths.
     private const val BEAM_INTENSITY_MULT = 25f
+
+    // Guard so a degenerate cone width can never divide by zero in beamIntensity.
+    private const val MIN_CONE_MASK_PEAK = 1e-4f
+
+    // Target PEAK ON-AXIS RADIANCE at each end of the ramp, in multiples of the diver's base
+    // intensity. This is the quantity that actually reaches the screen — see coneMaskPeak —
+    // and expressing the two ends in the same unit is what makes them comparable at all.
+    //
+    // The focused end is derived from the old constants rather than retyped, so the moving
+    // beam is reproduced exactly (25 * 0.0937 = 2.342 x base) by construction rather than by
+    // a hand-copied decimal that could drift.
+    private val BEAM_PEAK_RADIANCE = BEAM_INTENSITY_MULT * coneMaskPeak(BEAM_CONE_ANGLE)
+
+    // 1.0 is exactly what the old 360-degree fallback delivered: coneAngle 360 skips the
+    // shader's attenuation entirely, so its radiance was base * 1.0 in every direction.
+    // Holding the hovering peak there means the fix cannot make anything on screen brighter
+    // than it already is — it only ever removes light, from the sides and from behind. That
+    // is the conservative reading of a "too intense" complaint, and it keeps the diver
+    // exactly as legible straight ahead as players are used to.
+    private const val STATIONARY_PEAK_RADIANCE = 1f
 
     /** Aim-angle smoothing rate, per second — same `1 - e^(-k*dt)` family as DiveCamera. */
     private const val AIM_SMOOTHING_RATE = 6f
@@ -234,16 +284,35 @@ object DiveLighting
     }
 
     /**
-     * The diver's own light: a flashlight beam in the direction of travel, replacing the old
-     * omnidirectional lamp. Two things this must get right (both playtest-driven):
+     * The diver's own light: a flashlight beam, always pointed somewhere. Three things this
+     * must get right (all playtest-driven):
      *
      *   - It must track `sim.x` (the old lamp was hardcoded to screen centre) — done simply
      *     by using the same `Viewport.screenX(sim.x, w, h)` call `DiveRenderer.drawDiver` uses.
      *   - Near-zero velocity gives `atan2` a meaningless direction that would jitter wildly
-     *     frame to frame, so below [STATIONARY_SPEED_THRESHOLD] the beam widens into a soft
-     *     glow (coneAngle 360) instead of chasing noise, and the last aimed heading is held
-     *     rather than re-targeted — so the cone does not snap back to some default the
-     *     instant the diver coasts to a stop.
+     *     frame to frame, so below [STATIONARY_SPEED_THRESHOLD] the aim STOPS TRACKING and
+     *     the last heading is held. That gate is genuinely a threshold and stays one.
+     *   - The beam must stay directional while the player holds still. It previously widened
+     *     to coneAngle 360 when stopped, which does not mean "a very wide torch" — it trips
+     *     the `coneAngle < PI` guard in GI's scene.frag and disables cone attenuation
+     *     outright, emitting full radiance in all 360 degrees. Combined with `radius = 0`
+     *     (no distance falloff at all, see below) that is a large, perfectly symmetric,
+     *     over-bloom-threshold disc centred on the diver — the "intense bloom blob" report.
+     *     A held torch still points where you last pointed it, so the heading [beamAngleDeg]
+     *     was already being preserved for is now actually used.
+     *
+     * Cone width and intensity are RAMPED by speed rather than branched on it. Two reasons:
+     * the old hard branch teleported the cone between 50 and 360 degrees the moment the
+     * diver drifted across 1.5 m/s, which pops visibly; and once both ends are expressed as
+     * a peak radiance ([beamIntensity]) there is no longer anything to branch on — focusing
+     * is a continuous property of how hard you are swimming. At or above the threshold the
+     * ramp is saturated, so everything a moving diver sees is bit-identical to before.
+     *
+     * `radius` stays 0 throughout. In scene.frag that is not "unbounded radius" so much as
+     * "skip the falloff term": `radius > 0` enables an inverse-square `radius*camScale/d^2`
+     * attenuation, and 0 disables it. Bounding the glow that way is a real option for
+     * tightening this further, but it would change the focused beam too, and the focused
+     * beam is known-good.
      */
     private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Float, dt: Float, w: Float, h: Float)
     {
@@ -252,13 +321,13 @@ object DiveLighting
         val screenY = Viewport.screenY(sim.depth, cam, h)
 
         val speed = hypot(sim.vx, sim.vy)
-        val moving = speed >= STATIONARY_SPEED_THRESHOLD
-        if (moving)
+        if (speed >= STATIONARY_SPEED_THRESHOLD)
         {
             // GiSceneRenderer's cone direction is Y-flipped relative to Viewport's
-            // screen-space-Y-down convention — confirmed empirically (a straight vertical
-            // descent produced a beam pointing straight UP, opposite of travel, before this
-            // negation). See AimAngle's class doc.
+            // screen-space-Y-down convention. Originally found empirically; now confirmed
+            // from the shader source — scene.frag builds the cone direction as
+            // `vec2(cos(a), sin(a))` in a framebuffer whose +y runs UP the screen, while
+            // Viewport's screenY runs DOWN. See AimAngle's class doc.
             val target = AimAngle.headingDegrees(sim.vx, -sim.vy)
             beamAngleDeg = if (beamInitialized) AimAngle.smooth(beamAngleDeg, target, dt, AIM_SMOOTHING_RATE) else target
             beamInitialized = true
@@ -271,10 +340,72 @@ object DiveLighting
             texture = Texture.BLANK,
             x = screenX, y = screenY, w = size, h = size,
             angle = beamAngleDeg,
-            intensity = if (moving) baseIntensity * BEAM_INTENSITY_MULT else baseIntensity,
-            coneAngle = if (moving) BEAM_CONE_ANGLE else WIDE_GLOW_CONE_ANGLE,
+            intensity = beamIntensity(baseIntensity, speed),
+            coneAngle = beamConeAngle(speed),
             radius = 0f
         )
+    }
+
+    /**
+     * How focused the beam is, 0 while hovering to 1 at [STATIONARY_SPEED_THRESHOLD] and above.
+     */
+    private fun beamFocus(speed: Float): Float = (speed / STATIONARY_SPEED_THRESHOLD).coerceIn(0f, 1f)
+
+    /**
+     * Peak value of GI's cone mask for a cone of [coneAngleDegrees] FULL width, i.e. the
+     * largest fraction of nominal intensity that ever reaches the screen from this light.
+     *
+     * Read straight off `pulseengine/shaders/lighting/global/scene.frag`, which is the only
+     * place the semantics actually live. `GiSceneRenderer.drawLight` passes `coneAngle`
+     * through untouched into a vertex attribute; scene.frag packs it as
+     * `metadata.r = coneAngle / 360`; and radiance_cascades.frag decodes and applies it:
+     *
+     *     float coneAngle = metadata.r * PI;              // == radians(coneAngleDegrees / 2)
+     *     if (coneAngle < PI)                             // 360 degrees skips this entirely
+     *     {
+     *         float dotK = max(dot(coneDir, -rayDir), 0.0);
+     *         color.rgb *= clamp((dotK - cos(coneAngle)), 0, 1);
+     *     }
+     *
+     * So: the parameter is DEGREES, and it is the FULL cone width — the shader halves it
+     * itself. 360 is not merely the widest cone, it is a distinct omnidirectional case that
+     * bypasses the mask.
+     *
+     * The trap, and the reason this function exists at all, is that the mask is NOT
+     * normalised. `dotK` is at most 1 (a ray dead on axis), so the mask can never exceed
+     * `1 - cos(halfAngle)`. Narrowing a cone therefore makes it DIMMER, not more
+     * concentrated: a 50-degree cone peaks at 1 - cos(25 degrees) = 0.094, throwing away
+     * more than 90% of its nominal intensity even along its own axis, while a 360-degree
+     * one keeps all of it. That single factor is why the old code needed an unexplained 25x
+     * on the moving branch just to compete with an un-multiplied stationary glow, and why
+     * the two branches could not be reasoned about side by side.
+     *
+     * Landmark worth knowing: at 180 degrees the half-angle is 90, `cos` is 0, and the mask
+     * degenerates to plain `max(cos(theta), 0)` — a Lambertian forward hemisphere with a
+     * peak of exactly 1. At or below 180 a cone puts no light behind its own origin.
+     */
+    internal fun coneMaskPeak(coneAngleDegrees: Float): Float
+    {
+        if (coneAngleDegrees >= FULL_CIRCLE_DEGREES) return 1f
+        val halfAngle = Math.toRadians((coneAngleDegrees / 2f).toDouble())
+        return (1.0 - cos(halfAngle)).toFloat().coerceIn(0f, 1f)
+    }
+
+    /** Cone width in degrees for a diver moving at [speed] m/s — wide hovering, narrow swimming. */
+    internal fun beamConeAngle(speed: Float): Float =
+        STATIONARY_CONE_ANGLE + (BEAM_CONE_ANGLE - STATIONARY_CONE_ANGLE) * beamFocus(speed)
+
+    /**
+     * Nominal intensity to hand `drawLight`, such that the light's PEAK ON-AXIS RADIANCE is
+     * the ramped target regardless of how wide the cone currently is. Dividing out
+     * [coneMaskPeak] is what makes "hovering" and "swimming" comparable: without it, widening
+     * the cone silently brightens the light by up to 10x and narrowing it silently dims it,
+     * which is exactly how the original 25x-versus-1x pairing came to be so far off.
+     */
+    internal fun beamIntensity(baseIntensity: Float, speed: Float): Float
+    {
+        val peak = STATIONARY_PEAK_RADIANCE + (BEAM_PEAK_RADIANCE - STATIONARY_PEAK_RADIANCE) * beamFocus(speed)
+        return baseIntensity * peak / coneMaskPeak(beamConeAngle(speed)).coerceAtLeast(MIN_CONE_MASK_PEAK)
     }
 
     /**
