@@ -2,6 +2,7 @@ import dive.DiveInput
 import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
+import no.njoh.pulseengine.core.asset.types.Font
 import no.njoh.pulseengine.core.graphics.api.Multisampling
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.input.GamepadAxis
@@ -35,6 +36,258 @@ fun main() = PulseEngine.run<EnPustTil>()
  * never crash the booth machine; it just silently reuses day one's seed instead).
  */
 fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
+
+/**
+ * What the engine's default font can actually draw — which is a good deal narrower than
+ * "anything you can type into a string literal", and fails silently when you exceed it.
+ *
+ * ESTABLISHED BY DECOMPILING pulse-engine-0.13.0.jar, not by guessing:
+ *
+ *   Font's `<clinit>`  DEFAULT = Font("/pulseengine/assets/FiraSans-Regular.ttf", "default_font", 80f)
+ *   Font.load()        stbtt_BakeFontBitmap(ttf, 80f, bitmap, 1024, 1024, FIRST_CHAR_CODE,
+ *                                           STBTTBakedChar.malloc(MAX_CHAR_COUNT))
+ *   Font's constants   FIRST_CHAR_CODE = 32 (private), MAX_CHAR_COUNT = 256 (public)
+ *
+ * `stbtt_BakeFontBitmap` bakes a CONTIGUOUS run of code points, so the atlas holds exactly
+ * U+0020..U+011F: printable ASCII, the whole Latin-1 Supplement, and the first half of
+ * Latin Extended-A. The TTF itself has thousands more glyphs — FiraSans certainly contains
+ * an em dash — but they are never baked into the atlas, so nothing downstream can reach
+ * them. The limit is the atlas, not the typeface.
+ *
+ * `TextRenderer`'s glyph loop then does, per code point (bytecode offsets 133..143 of its
+ * text pass):
+ *
+ *     val i = codePoint - 32
+ *     if (i < 0 || i >= 256) continue     // no glyph, NO ADVANCE, no exception, no log
+ *
+ * That `continue` skips the x-advance as well as the quad, which is exactly what
+ * `runover-view.png` shows: `"RUN OVER — BANKED 0"` came out as `RUN OVER  BANKED 0`, the
+ * two spaces that flanked the dash and nothing between them. The dash contributed literally
+ * zero width. Nothing anywhere reports it — on a booth machine with no console attached,
+ * the first anyone would know is a photograph of the cabinet.
+ *
+ * `É` (U+00C9 = 201) sits comfortably inside the range, which is why `"ÉN PUST TIL"` was
+ * fine and made this look like a mystery rather than a bounds check.
+ *
+ * PRACTICAL RULE FOR EVERY DRAWN STRING IN THIS FILE:
+ *   - Norwegian is safe. Æ Ø Å æ ø å are U+00C5..U+00F8, inside the atlas.
+ *   - General punctuation is NOT. Em dash U+2014, en dash U+2013, curly quotes
+ *     U+2018/2019/201C/201D, ellipsis U+2026 and bullet U+2022 all live above U+2000 and
+ *     will vanish. These are precisely the characters a word processor, a chat client or
+ *     an editor's smart-quotes feature substitutes in for you.
+ * [ScreenText.all] enumerates every string this file draws and AttractScreenTest asserts
+ * every one of them is drawable, so reintroducing an em dash fails the build rather than
+ * shipping to the booth.
+ */
+object DefaultFont
+{
+    /** `Font.FIRST_CHAR_CODE`. Private on the engine class, so it has to be restated here. */
+    const val FIRST_CODE_POINT = 32
+
+    /**
+     * `Font.MAX_CHAR_COUNT`. Referenced rather than hardcoded so that an engine upgrade
+     * which enlarges the atlas relaxes this rule automatically, instead of leaving us
+     * pessimistic against a limit that no longer exists.
+     */
+    const val CODE_POINT_COUNT = Font.MAX_CHAR_COUNT
+
+    /**
+     * Newline is consumed by `TextRenderer` BEFORE the range check (it records a line
+     * break and skips the glyph path entirely), so it is drawable in the only sense that
+     * matters here: it does not silently disappear.
+     */
+    private const val NEWLINE = 10
+
+    /** Whether the default font's baked atlas has a glyph slot for [codePoint]. */
+    fun canDraw(codePoint: Int) = codePoint == NEWLINE ||
+        (codePoint >= FIRST_CODE_POINT && codePoint < FIRST_CODE_POINT + CODE_POINT_COUNT)
+
+    /**
+     * The code points of [text] that would render as nothing at all. Empty means the
+     * string is safe to draw. Walks code points, not chars, because `TextRenderer` does
+     * (`Font.CodePoint.of` recombines surrogate pairs first) — so an emoji is reported
+     * once, as the supplementary code point that actually gets rejected.
+     */
+    fun undrawableCodePointsIn(text: String): List<Int> = text.codePoints().toArray().filterNot(::canDraw)
+}
+
+/**
+ * Every string this file draws, in one place, so [DefaultFont] can be asserted against all
+ * of them at once (AttractScreenTest) rather than trusting a reviewer to spot a character
+ * that renders as nothing.
+ *
+ * Engine-free and pure for the same reason [parseDailySeed] is: it can be tested without
+ * standing up a PulseEngine.
+ */
+object ScreenText
+{
+    /**
+     * Replaces the em dash that silently vanished (see [DefaultFont]). A middle dot
+     * (U+00B7 = 183) is inside the baked atlas, and unlike a hyphen it is unmistakably a
+     * separator rather than a subtraction sign or a stray mark on a word.
+     *
+     * The double spaces are load-bearing, not sloppiness: at arcade viewing distance a
+     * tight `A·B` reads as one smudged word, whereas a dot given a full space of air on
+     * each side reads as a deliberate beat — which is the job the em dash was doing. The
+     * dot is drawn through [render.drawTextWithOutline] like everything else on this
+     * surface, so it keeps its black rim and does not disappear into bright Shallows water.
+     */
+    const val SEPARATOR = "  ·  "
+
+    const val TITLE = "ÉN PUST TIL"
+    const val PRESS_START = "PRESS START"
+    const val LEADERBOARD_HEADING = "TODAY'S DIVERS"
+    const val PLAY_AGAIN = "SPACE / START to play again"
+    const val INITIALS_HELP = "UP/DOWN: change letter   A / START: next"
+
+    /** Dev overlay (EPT_DEV only) — see [EnPustTil.renderGamepadOverlay]. Still drawn text. */
+    const val UNMAPPED_JOYSTICK_WARNING = "!! joystick present but NOT gamepad-mapped${SEPARATOR}invisible to this game !!"
+
+    fun runOver(banked: Int) = "RUN OVER${SEPARATOR}BANKED $banked"
+
+    fun newScore(banked: Int) = "NEW SCORE${SEPARATOR}BANKED $banked"
+
+    /**
+     * The three initials slots, with the one being edited bracketed so the cursor reads
+     * without a caret asset. The un-edited slots are padded to the same width so the
+     * letters do not shuffle sideways as the bracket moves between them.
+     */
+    fun initialsSlots(letters: String, slot: Int) =
+        letters.mapIndexed { i, c -> if (i == slot) "[$c]" else " $c " }.joinToString(" ")
+
+    /**
+     * Every drawable string, with the interpolated ones instantiated at values that
+     * exercise their widest form. Used only by the test; cheap enough not to warrant
+     * hiding behind a flag.
+     */
+    fun all(): List<String> = listOf(
+        SEPARATOR,
+        TITLE,
+        PRESS_START,
+        LEADERBOARD_HEADING,
+        PLAY_AGAIN,
+        INITIALS_HELP,
+        UNMAPPED_JOYSTICK_WARNING,
+        runOver(0),
+        runOver(99999),
+        newScore(12345),
+        initialsSlots("AAA", 0),
+        initialsSlots("ØYA", 2)
+    )
+}
+
+/**
+ * Pure, engine-free layout for the attract screen — extracted for the same reason
+ * [render.Viewport] and [render.DepthBlend] are: the interesting property is a RELATIONSHIP
+ * between numbers ("the title clears the diver", "the leaderboard is centred under its own
+ * heading"), and a relationship can be asserted without a GL context.
+ *
+ * WHY THIS EXISTS: the world keeps rendering behind the attract screen on purpose (see
+ * [EnPustTil.drawIdleScreen]) — the queue watches live water, not a static image. That is a
+ * good decision that had a bad consequence: the title was drawn at 0.44 of screen height,
+ * and the diver is pinned by [render.Viewport.DIVER_SCREEN_FRACTION] to 0.40 with a large
+ * additive glow around it. `idle-view.png` shows the result — "ÉN PUST TIL" landed inside
+ * the diver's halo with a pearl sitting in the bowl of the U, and the waterline (which is
+ * also at 0.40 whenever the diver is at the surface) ran immediately above it, so the title
+ * read as a caption pinned to a horizontal rule. It looked like a rendering fault, not like
+ * layered art.
+ *
+ * The fix is compositional rather than cosmetic: leave the middle third of the screen to the
+ * diver and the waterline, put the sign (title + call to action) in the dark water above
+ * them, and put the leaderboard below. Everything stays a fraction of screen HEIGHT — never
+ * a pixel count and never a fraction of width — because `engine.window.width/height` are
+ * PHYSICAL framebuffer pixels and the booth display may be 16:9, 16:10 or 4K (see
+ * [render.Viewport]'s doc for the HiDPI bug this convention exists to prevent).
+ *
+ * VERTICAL ANCHORS ARE THE TOP OF THE TEXT BOX, not the baseline. Measured off the captures
+ * at commit 44a3902: the clock is drawn at `y = h*0.02 + h*0.05` and its glyph tops land at
+ * 0.0675h on a 1200px capture; the old title at `y = h*0.44` had its cap-tops at 0.451h.
+ * Text grows DOWNWARD from these values, so a block occupies `y .. y + fontSize`.
+ */
+object AttractLayout
+{
+    /**
+     * Half-height of the screen band the diver and its glow occupy, centred on
+     * [render.Viewport.DIVER_SCREEN_FRACTION]. The diver itself is only
+     * `DIVER_SIZE_METRES / VISIBLE_DEPTH_METRES` = 0.05 of screen height, so this is
+     * almost entirely the light: measured off `idle-view.png`, the blue halo is still
+     * clearly reading 0.14h above and below the diver before it fades into the ambient
+     * gradient. Attract text must stay outside this band, which is the whole point of the
+     * anchors below.
+     */
+    const val DIVER_HALO_HALF_HEIGHT = 0.14f
+
+    // --- The sign: title + call to action, in the dark water above the waterline --------
+    // Sized up as well as moved. The old title was h*0.07 competing with a bright diver
+    // directly behind it; with the halo out of the way it can afford to be a title.
+    const val TITLE_Y = 0.085f
+    const val TITLE_FONT = 0.09f
+
+    const val PRESS_START_Y = 0.20f
+    const val PRESS_START_FONT = 0.038f
+
+    // --- The leaderboard: below the diver, the last thing on screen ---------------------
+    const val HEADING_Y = 0.56f
+    const val ROW_FONT = 0.028f
+
+    /** Baseline-to-baseline spacing, as a multiple of [ROW_FONT]. */
+    const val ROW_LINE_SPACING = 1.5f
+
+    /**
+     * Half the width of a leaderboard row, as a fraction of screen HEIGHT — height, so the
+     * row keeps the same proportions relative to its own text (which is also height-derived)
+     * on a 4:3 booth panel and on a 16:9 one alike. A width fraction would stretch the row
+     * on a wide display while the glyphs inside it stayed the same size.
+     *
+     * The row is laid out symmetrically about the screen centre by construction: rank
+     * LEFT-aligned at `centre - halfSpan`, initials CENTRED on `centre`, score RIGHT-aligned
+     * at `centre + halfSpan`. So the block's outer edges are exactly `halfSpan` either side
+     * of the same x the "TODAY'S DIVERS" heading is centred on, and no font metric is needed
+     * to know that.
+     *
+     * That is what was wrong before: rank right-aligned at 0.42w, initials left-aligned at
+     * 0.46w and score right-aligned at 0.58w put the row's ink between roughly 0.40w and
+     * 0.58w — visual centre 0.49w, left of the heading's 0.50w — and left a 0.09w hole
+     * between the initials and the score. Three independently chosen width fractions cannot
+     * be balanced except by accident, and cannot stay balanced across aspect ratios at all.
+     *
+     * 0.14 is about 5 em at [ROW_FONT], which clears a five-digit score on the right and a
+     * two-character rank on the left without the columns drifting apart.
+     */
+    const val ROW_HALF_SPAN = 0.14f
+
+    /**
+     * Rows shown on the attract-screen leaderboard. Lives here rather than in
+     * [EnPustTil]'s private companion because it is half a layout decision — the board has
+     * to end above the bottom of the screen, and only this object knows where its rows land.
+     */
+    const val LEADERBOARD_SIZE = 8
+
+    /** Top of leaderboard row [index] (0-based), as a fraction of screen height. */
+    fun rowY(index: Int) = HEADING_Y + ROW_FONT * ROW_LINE_SPACING * (index + 1)
+
+    /** Where the lowest pixel of a full board lands — must stay on screen. */
+    fun bottomOfBoard(rowCount: Int) = rowY(rowCount - 1) + ROW_FONT
+
+    /** Total width of a leaderboard row, as a fraction of screen height. */
+    fun rowWidth() = ROW_HALF_SPAN * 2f
+
+    // The three column anchors, in pixels, given the screen centre and height. Returned
+    // from here rather than computed at the draw site so the balance they exist to
+    // guarantee is assertable (AttractScreenTest) rather than merely intended: the rank's
+    // LEFT edge and the score's RIGHT edge must be equidistant from the centre the heading
+    // is drawn on. Each anchor states the xOrigin it must be drawn with, because the
+    // symmetry is a property of the pair (anchor, alignment), not of the anchor alone.
+
+    /** Left edge of the rank column. Draw with `xOrigin = 0`. */
+    fun rankX(centreX: Float, screenHeight: Float) = centreX - screenHeight * ROW_HALF_SPAN
+
+    /** Centre of the initials column. Draw with `xOrigin = 0.5`. */
+    fun initialsX(centreX: Float) = centreX
+
+    /** Right edge of the score column. Draw with `xOrigin = 1`. */
+    fun scoreX(centreX: Float, screenHeight: Float) = centreX + screenHeight * ROW_HALF_SPAN
+}
 
 /**
  * Engine shell. Reads input, ticks the pure simulation on the fixed update,
@@ -307,39 +560,57 @@ class EnPustTil : PulseEngineGame()
     private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
     {
         // The world (DiveRenderer) still renders behind this surface while IDLE — the
-        // attract screen shows the live shallows, not a static image — so this title text
-        // sits over the same bright-to-dark gradient as everything else. Outlined for the
-        // same reason as the rest of the HUD (see render/Hud.kt, render/Draw.kt).
+        // attract screen shows the live shallows, not a static image — so this text sits
+        // over the same bright-to-dark gradient as everything else. Outlined for the same
+        // reason as the rest of the HUD (see render/Hud.kt, render/Draw.kt).
+        //
+        // WHERE things go is [AttractLayout]'s problem, not this method's, and it is not a
+        // free choice: the diver is pinned to 0.40 of screen height with a large glow, and
+        // the waterline sits on top of it whenever the diver is at the surface — which is
+        // exactly where a fresh attract screen starts. See AttractLayout's doc for the
+        // collision this arrangement fixes, and AttractScreenTest for the assertion that
+        // stops it coming back. The sign goes in the dark water above the diver; the
+        // leaderboard goes below it.
         hud.drawTextWithOutline(
-            "ÉN PUST TIL",
-            w * 0.5f, h * 0.44f,
-            h * 0.07f, h, Color.WHITE, xOrigin = 0.5f
+            ScreenText.TITLE,
+            w * 0.5f, h * AttractLayout.TITLE_Y,
+            h * AttractLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
         hud.drawTextWithOutline(
-            "PRESS START",
-            w * 0.5f, h * 0.54f,
-            h * 0.035f, h, Color.WHITE, xOrigin = 0.5f
+            ScreenText.PRESS_START,
+            w * 0.5f, h * AttractLayout.PRESS_START_Y,
+            h * AttractLayout.PRESS_START_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
         drawLeaderboard(hud, w, h)
     }
 
     private fun drawLeaderboard(hud: Surface, w: Float, h: Float)
     {
-        val top = scoreRepository.topN(LEADERBOARD_SIZE)
+        val top = scoreRepository.topN(AttractLayout.LEADERBOARD_SIZE)
         if (top.isEmpty()) return
 
-        val fontSize = h * 0.024f
-        val lineHeight = fontSize * 1.5f
-        val startY = h * 0.62f
+        val fontSize = h * AttractLayout.ROW_FONT
+        val centreX = w * 0.5f
         val cold = Color(0.75f, 0.85f, 1f)
 
-        hud.drawTextWithOutline("TODAY'S DIVERS", w * 0.5f, startY, fontSize, h, cold, xOrigin = 0.5f)
+        hud.drawTextWithOutline(
+            ScreenText.LEADERBOARD_HEADING,
+            centreX, h * AttractLayout.HEADING_Y,
+            fontSize, h, cold, xOrigin = 0.5f
+        )
 
+        // Rank hard against the left edge of the row, initials on the centre line, score
+        // hard against the right edge — so the block is symmetric about the same centreX
+        // the heading above is centred on, without needing to know how wide any glyph is.
+        // See AttractLayout.ROW_HALF_SPAN for what the three unrelated width fractions this
+        // replaces were doing wrong. Left-aligning the rank and right-aligning the score
+        // also keeps both columns aligned down the board — "8." under "1.", units under
+        // units — which three-digit and five-digit scores in the same list otherwise lose.
         top.forEachIndexed { i, entry ->
-            val y = startY + lineHeight * (i + 1)
-            hud.drawTextWithOutline("${i + 1}.", w * 0.42f, y, fontSize, h, cold, xOrigin = 1f)
-            hud.drawTextWithOutline(entry.initials, w * 0.46f, y, fontSize, h, cold, xOrigin = 0f)
-            hud.drawTextWithOutline("${entry.score}", w * 0.58f, y, fontSize, h, cold, xOrigin = 1f)
+            val y = h * AttractLayout.rowY(i)
+            hud.drawTextWithOutline("${i + 1}.", AttractLayout.rankX(centreX, h), y, fontSize, h, cold, xOrigin = 0f)
+            hud.drawTextWithOutline(entry.initials, AttractLayout.initialsX(centreX), y, fontSize, h, cold, xOrigin = 0.5f)
+            hud.drawTextWithOutline("${entry.score}", AttractLayout.scoreX(centreX, h), y, fontSize, h, cold, xOrigin = 1f)
         }
     }
 
@@ -348,12 +619,12 @@ class EnPustTil : PulseEngineGame()
         // A run can end at any depth, so this can land anywhere from bright shallows to
         // near-black abyss — outlined for the same reason as the rest of the HUD.
         hud.drawTextWithOutline(
-            "RUN OVER — BANKED ${sim.banked}",
+            ScreenText.runOver(sim.banked),
             w * 0.5f, h * 0.5f,
             h * 0.04f, h, Color.WHITE, xOrigin = 0.5f
         )
         hud.drawTextWithOutline(
-            "SPACE / START to play again",
+            ScreenText.PLAY_AGAIN,
             w * 0.5f, h * 0.5f + h * 0.045f,
             h * 0.022f, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -368,22 +639,19 @@ class EnPustTil : PulseEngineGame()
     private fun drawInitialsEntryScreen(hud: Surface, w: Float, h: Float)
     {
         hud.drawTextWithOutline(
-            "NEW SCORE — BANKED ${sim.banked}",
+            ScreenText.newScore(sim.banked),
             w * 0.5f, h * 0.46f,
             h * 0.032f, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        val letters = lifecycle.currentInitials
-        val slot = lifecycle.currentInitialsSlot
-        val display = letters.mapIndexed { i, c -> if (i == slot) "[$c]" else " $c " }.joinToString(" ")
         hud.drawTextWithOutline(
-            display,
+            ScreenText.initialsSlots(lifecycle.currentInitials, lifecycle.currentInitialsSlot),
             w * 0.5f, h * 0.54f,
             h * 0.06f, h, Color.WHITE, xOrigin = 0.5f
         )
 
         hud.drawTextWithOutline(
-            "UP/DOWN: change letter   A / START: next",
+            ScreenText.INITIALS_HELP,
             w * 0.5f, h * 0.6f,
             h * 0.02f, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -539,7 +807,7 @@ class EnPustTil : PulseEngineGame()
         if (pads.isEmpty() && rawUnmapped > 0)
         {
             hud.setDrawColor(Color.RED)
-            hud.drawText("!! joystick present but NOT gamepad-mapped — invisible to this game !!", x, y, fontSize = fontSize)
+            hud.drawText(ScreenText.UNMAPPED_JOYSTICK_WARNING, x, y, fontSize = fontSize)
             y += lineHeight
             hud.setDrawColor(Color.GREEN)
         }
@@ -564,9 +832,6 @@ class EnPustTil : PulseEngineGame()
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90
-
-        /** Rows shown on the attract-screen leaderboard. */
-        const val LEADERBOARD_SIZE = 8
 
         // Booth hardware is a joystick plus two arcade buttons on a USB encoder,
         // which enumerates as a gamepad with a standard button layout. Remap here
