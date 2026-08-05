@@ -4,6 +4,21 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 
+/** How a dive closed out — see [DiveSim.diveEnded]. */
+enum class DiveOutcome { SURFACED, BLACKED_OUT }
+
+/**
+ * Fired for exactly the tick a dive ends. A HUD (or anything else) that wants to react
+ * to a cash-out — sag the music, flash the screen, fly digits into the banked total —
+ * reads this on the tick it is non-null. It is cleared at the start of the next tick,
+ * so nothing downstream can read stale state from a dive that ended long ago.
+ *
+ * [banked] is the amount THIS dive contributed, not the running total ([DiveSim.banked]
+ * is that). [depth] is the deepest point this dive reached (`maxDepthThisDive` at the
+ * moment it closed), which is also what the depth-bonus multiplier was computed from.
+ */
+data class DiveEnded(val outcome: DiveOutcome, val banked: Int, val depth: Float)
+
 /**
  * All run state and the tick function. Contains no engine code by design —
  * everything here is unit-testable pure Kotlin.
@@ -22,8 +37,21 @@ class DiveSim(seed: Long)
     var air = Tuning.BASE_AIR_SECONDS; private set
     var maxDepthThisDive = 0f;         private set
     var runOver = false;               private set
-    var lastBankAmount = 0;            private set
-    var blackedOut = false;            private set
+
+    /**
+     * Non-null for exactly the tick a dive ended; cleared at the start of every [tick].
+     * See [DiveEnded] for why this replaced the old `lastBankAmount` (never cleared —
+     * stale forever) and `blackedOut` (latched true forever after the first blackout,
+     * never reset even by [resetDive]) fields.
+     */
+    var diveEnded: DiveEnded? = null;  private set
+
+    /**
+     * Convenience view onto [diveEnded]: true only for the tick a blackout just closed
+     * out a dive, false again the tick after. Unlike the field this replaced, it cannot
+     * latch — it is derived fresh from [diveEnded] every read.
+     */
+    val blackedOut: Boolean get() = diveEnded?.outcome == DiveOutcome.BLACKED_OUT
 
     /** Non-null only while the diver is in the Abyss. See [updateAnglerfish]. */
     var anglerfish: Anglerfish? = null; private set
@@ -36,6 +64,11 @@ class DiveSim(seed: Long)
 
     fun tick(dt: Float, input: DiveInput)
     {
+        // diveEnded is an event, valid for exactly one tick — clear it before this tick
+        // has a chance to decide whether a new one fires. Cleared even when runOver is
+        // about to short-circuit the rest of this tick, since a dive cannot end twice.
+        diveEnded = null
+
         if (runOver) return
 
         clock -= dt
@@ -205,9 +238,9 @@ class DiveSim(seed: Long)
 
     private fun blackout()
     {
-        blackedOut = true
-        lastBankAmount = Scoring.blackoutBank(held)
-        banked += lastBankAmount
+        val amount = Scoring.blackoutBank(held)
+        banked += amount
+        diveEnded = DiveEnded(DiveOutcome.BLACKED_OUT, amount, maxDepthThisDive)
         resetDive()
     }
 
@@ -215,8 +248,9 @@ class DiveSim(seed: Long)
     {
         if (held > 0 || maxDepthThisDive > 0f)
         {
-            lastBankAmount = Scoring.bank(held, maxDepthThisDive)
-            banked += lastBankAmount
+            val amount = Scoring.bank(held, maxDepthThisDive)
+            banked += amount
+            diveEnded = DiveEnded(DiveOutcome.SURFACED, amount, maxDepthThisDive)
         }
         resetDive()
     }
@@ -232,6 +266,37 @@ class DiveSim(seed: Long)
         vy = 0f
         airPockets.forEach { it.usedThisDive = false }
     }
+
+    /**
+     * How deep the diver could still be and expect to reach the surface on the air
+     * remaining, given the mass currently carried. Drives the faint point-of-no-return
+     * marker on the depth tape — a mercy for first-timers that teaches the economy
+     * without a word of text.
+     *
+     * Uses the CURRENT zone's air burn as the climb rate for the whole ascent. That is
+     * an approximation — a real climb crosses zones with different burn rates — but it
+     * is the honest one to make from where the diver is standing right now, and it is
+     * cheap enough to recompute every frame.
+     *
+     * Past roughly mass 183 (the point where [Buoyancy.sinkForce] exceeds
+     * [Tuning.SWIM_THRUST]), the diver cannot climb against its own sink force at all —
+     * no amount of remaining air helps. maxSafeDepth is 0 in that case, not a
+     * divide-by-zero or a negative number.
+     */
+    fun maxSafeDepth(): Float
+    {
+        // verticalSpeed is positive when sinking; swimming up (-1) against the sink
+        // force gives a NEGATIVE result while the diver can still climb at all. Negate
+        // it to get a climb speed that is positive exactly when climbing is possible.
+        val climbSpeed = -Buoyancy.verticalSpeed(heldMass, verticalInput = -1f, boost = 1f)
+        if (climbSpeed <= 0f) return 0f
+
+        val reachable = climbSpeed * (air / zone.airBurn)
+        return reachable.coerceIn(0f, Tuning.MAX_DEPTH)
+    }
+
+    /** Whether the diver, right now, could still make it back to the surface. */
+    fun canStillReturn(): Boolean = depth <= maxSafeDepth()
 
     // --- Test hooks ---------------------------------------------------------
 
