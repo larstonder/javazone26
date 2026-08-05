@@ -74,6 +74,27 @@ class ViewportTest
     }
 
     @Test
+    fun `depthAt inverts screenY`() {
+        val depth = 73f
+        val cameraDepth = 20f
+        val screenY = Viewport.screenY(depth, cameraDepth, retina)
+        assertEquals(depth, Viewport.depthAt(screenY, cameraDepth, retina), 0.001f)
+    }
+
+    @Test
+    fun `depthAt is resolution independent, like screenY`() {
+        val depth = 55f
+        val cameraDepth = 10f
+        val screenFractionLogical = Viewport.screenY(depth, cameraDepth, logical) / logical
+        val screenFractionRetina = Viewport.screenY(depth, cameraDepth, retina) / retina
+        assertEquals(
+            Viewport.depthAt(screenFractionLogical * logical, cameraDepth, logical),
+            Viewport.depthAt(screenFractionRetina * retina, cameraDepth, retina),
+            0.001f
+        )
+    }
+
+    @Test
     fun `camera keeps the diver above the top edge of visible water`() {
         val diverDepth = 100f
         val top = Viewport.targetCameraDepth(diverDepth)

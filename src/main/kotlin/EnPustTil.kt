@@ -57,7 +57,9 @@ class EnPustTil : PulseEngineGame()
 
     override fun onUpdate()
     {
-        DiveLighting.sync(engine, sim, camera)
+        // Ambient is a continuous function of depth only — no camera/screen dependence — so
+        // unlike the positional light draws in onRender, timing here doesn't matter.
+        DiveLighting.updateAmbient(sim)
 
         // Camera easing is presentation only, so it runs on the render clock rather than
         // the fixed tick — that keeps it smooth independently of the simulation rate.
@@ -72,6 +74,7 @@ class EnPustTil : PulseEngineGame()
         {
             sim = DiveSim(seed = DAILY_SEED)
             camera.snapTo(sim.depth)
+            DiveLighting.resetAim()
         }
     }
 
@@ -84,6 +87,12 @@ class EnPustTil : PulseEngineGame()
         // World: lit by GlobalIlluminationSystem, which multiplies mainSurface by the
         // computed light map — this is what makes the Abyss genuinely dark.
         DiveRenderer.render(engine.gfx.mainSurface, sim, camera, w, h)
+
+        // Lights: immediate-mode drawLight calls issued HERE, in onRender, reading the SAME
+        // camera.depth DiveRenderer just used above — not repositioned earlier in onUpdate,
+        // which is what let the light and the object it illuminates drift apart by a frame
+        // whenever the camera was still easing. See DiveLighting's class doc.
+        DiveLighting.render(engine, sim, camera, engine.data.deltaTime, w, h)
 
         // HUD: its own surface, composited on top unaffected by GI — see the comment in
         // onCreate for why it cannot share mainSurface.

@@ -49,6 +49,10 @@ object Viewport
     fun screenY(depth: Float, cameraDepth: Float, screenHeight: Float) =
         (depth - cameraDepth) * pixelsPerMetre(screenHeight)
 
+    /** Inverse of [screenY] — the depth a given screen row corresponds to. */
+    fun depthAt(screenY: Float, cameraDepth: Float, screenHeight: Float) =
+        cameraDepth + screenY / pixelsPerMetre(screenHeight)
+
     fun screenX(x: Float, screenWidth: Float, screenHeight: Float) =
         screenWidth * 0.5f + x * pixelsPerMetre(screenHeight)
 }
