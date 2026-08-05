@@ -113,10 +113,17 @@ class DiveCameraTest
     @Test
     fun `a zero or negative timestep does not move or corrupt the camera`() {
         val cam = DiveCamera()
-        cam.snapTo(30f)
+
+        // Settle the camera off-target for a diver at 30f (still inside the visible clamp
+        // band, so the clamp itself is a no-op here and cannot mask what dt <= 0 does).
+        // snapTo(30f) would put depth exactly on target, making (target - depth) zero and
+        // the test blind to any t no matter how corrupt — see the mutation this replaced.
+        cam.snapTo(10f)
         val before = cam.depth
+
         cam.update(0f, 30f)
         cam.update(-1f, 30f)
+
         assertTrue(abs(cam.depth - before) < 0.0001f, "camera must be stable at dt <= 0")
     }
 }
