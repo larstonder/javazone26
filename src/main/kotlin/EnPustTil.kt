@@ -6,6 +6,7 @@ import no.njoh.pulseengine.core.input.GamepadAxis
 import no.njoh.pulseengine.core.input.GamepadButton
 import no.njoh.pulseengine.core.input.Key
 import no.njoh.pulseengine.core.shared.primitives.Color
+import no.njoh.pulseengine.core.shared.utils.LogLevel
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import render.DiveCamera
 import render.DiveLighting
@@ -25,7 +26,18 @@ class EnPustTil : PulseEngineGame()
 
     override fun onCreate()
     {
-        engine.service.add(MetricViewer()) // F3
+        // Booth mode is the default (see application.cfg: FULLSCREEN, quiet logging, no
+        // title bar an attendee could drag or close). screenMode and window size cannot be
+        // changed here — the window is already built from application.cfg before onCreate
+        // ever runs, and neither has a runtime setter (confirmed against the engine's
+        // Configuration API) — so that split lives in application.cfg/application-dev.cfg,
+        // not here. What CAN be gated at runtime is gated behind this one env var, mirroring
+        // how EPT_SCREENSHOT already gates ScreenshotEffect below.
+        if (System.getenv("EPT_DEV") != null)
+        {
+            engine.config.logLevel = LogLevel.DEBUG   // belt-and-braces: works even against a built release .exe
+            engine.service.add(MetricViewer())        // F3
+        }
         engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
