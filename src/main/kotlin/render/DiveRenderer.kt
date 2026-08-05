@@ -37,10 +37,15 @@ object DiveRenderer
     private val diverColor = Color(1f, 1f, 1f)
     private val surfaceColor = Color(0.55f, 0.80f, 0.95f)
 
+    /** Rock walls bounding the playable column — see [drawColumnWalls]. Warm and near-black
+     *  so they read as stone rather than as more (blue) water or a UI border. */
+    private val wallColor = Color(0.05f, 0.045f, 0.045f)
+
     fun render(surface: Surface, sim: DiveSim, camera: DiveCamera, screenWidth: Float, screenHeight: Float)
     {
         val cam = camera.depth
         drawZoneBands(surface, cam, screenWidth, screenHeight)
+        drawColumnWalls(surface, screenWidth, screenHeight)
         drawSurfaceLine(surface, cam, screenWidth, screenHeight)
         drawAirPockets(surface, sim, cam, screenWidth, screenHeight)
         drawPearls(surface, sim, cam, screenWidth, screenHeight)
@@ -70,6 +75,28 @@ object DiveRenderer
             surface.fillRect(0f, y, w, stripBottom - y)
             y = stripBottom
         }
+    }
+
+    /**
+     * Solid rock bounding the playable column outside +-[Tuning.COLUMN_HALF_WIDTH]. Without
+     * this the boundary is invisible: on a 16:9 booth screen (see [Viewport.screenX], which
+     * derives pixels-per-metre from screen HEIGHT) the visible half-width is ~53m versus the
+     * 40m column, so the diver stops dead in open water with no visual reason — the stick
+     * reads as broken rather than blocked. Drawn onto the world surface (not "hud"), so it is
+     * behind [no.njoh.pulseengine.core.PulseEngineGame]'s lighting pass like everything else
+     * DiveRenderer draws, and it frames the play area rather than looking like a UI chrome.
+     *
+     * On a narrower aspect ratio (e.g. the 4:3 dev window) the column may fill the whole
+     * screen and these rects fall entirely off both edges — that is fine and needs no special
+     * case, since [Surface.fillRect] with a non-positive width simply draws nothing visible.
+     */
+    private fun drawColumnWalls(surface: Surface, w: Float, h: Float)
+    {
+        val leftEdge = Viewport.screenX(-Tuning.COLUMN_HALF_WIDTH, w, h)
+        val rightEdge = Viewport.screenX(Tuning.COLUMN_HALF_WIDTH, w, h)
+        surface.setDrawColor(wallColor)
+        if (leftEdge > 0f) surface.fillRect(0f, 0f, leftEdge, h)
+        if (rightEdge < w) surface.fillRect(rightEdge, 0f, w - rightEdge, h)
     }
 
     /** The waterline. Without it there is no visual cue for where banking happens. */
