@@ -8,6 +8,7 @@ import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * The real HUD, replacing the temporary numeric readout. Per the design spec (§12):
@@ -34,12 +35,42 @@ import kotlin.math.sin
 object Hud
 {
     // --- Bubble ring: air is never a number -----------------------------------------
-    private const val AIR_BUBBLE_COUNT = 14
-    private const val AIR_LOW_THRESHOLD = 3
+    const val AIR_BUBBLE_COUNT = 14
+    const val AIR_LOW_THRESHOLD = 3
     private const val AIR_RING_RADIUS_METRES = 5.5f
     private const val AIR_BUBBLE_SIZE_METRES = 0.9f
     private const val HEARTBEAT_HZ = 8f
     private const val HEARTBEAT_AMPLITUDE = 0.15f
+
+    /**
+     * Extra bubble size per bubble lost below [AIR_LOW_THRESHOLD]: 1.6x at three bubbles,
+     * 2.8x at the last one. The ring cannot warn you by being a ring once there is almost
+     * nothing left of it — at 1.5s of a 30s breath the honest bubble count is ONE, and one
+     * 0.9 m dot at the far side of the diver was genuinely easy to miss (see lowair-view.png,
+     * where it is a single red speck). Rather than lie about the count or fall back on a
+     * number — air is NEVER a number, design spec §12 — the fewer bubbles remain, the bigger
+     * and heavier each one is drawn, so the warning gets louder exactly as it gets emptier.
+     * The heartbeat pulses that size too (see [drawAirRing]), so the last bubble throbs.
+     */
+    private const val AIR_LOW_SIZE_GAIN = 0.6f
+
+    /**
+     * The golden angle, 137.5 degrees — the phyllotaxis spacing sunflowers use to pack seeds.
+     *
+     * WHY NOT `index / AIR_BUBBLE_COUNT * TAU`: that gives every bubble a slot on an evenly
+     * divided circle, but the bubbles that SURVIVE are always the first indices, so a draining
+     * ring collapses into an arc that starts at 3 o'clock and sweeps down. Three bubbles left
+     * occupied a 51-degree wedge and left 86% of the circle empty (abyss-view.png: three dots
+     * off to the diver's lower right, unrecognisable as a ring).
+     *
+     * The golden angle's defining property is that EVERY prefix of the sequence is spread
+     * near-evenly around the circle: 3 bubbles leave at most 38% of it empty, 5 leave 24%,
+     * 14 leave 9%. So the ring thins in place — each bubble keeps one fixed angle for its
+     * whole life and pops out of a standing ring — instead of re-shuffling the survivors,
+     * which is what dividing by the surviving count would do.
+     */
+    private val GOLDEN_RATIO = (1.0 + sqrt(5.0)) / 2.0
+    private val GOLDEN_ANGLE = (PI * 2.0 * (1.0 - 1.0 / GOLDEN_RATIO)).toFloat()
 
     // --- HELD: enormous, amber, attached to the diver --------------------------------
     private const val HELD_OFFSET_METRES = 8f        // below the diver, clear of the air ring
@@ -59,14 +90,82 @@ object Hud
     private const val TAPE_RIGHT_MARGIN_FRACTION = 0.035f
     private const val TAPE_LABEL_FONT_FRACTION = 0.018f
 
-    private const val CLOCK_DANGER_SECONDS = 20f
+    /** Backing rectangle overhang, as a fraction of the tape width. See [tapeShadow]. */
+    private const val TAPE_OUTLINE_RATIO = 0.5f
 
-    private val TAU = (PI * 2.0).toFloat()
+    private const val CLOCK_DANGER_SECONDS = 20f
 
     private val cold = Color(0.75f, 0.85f, 1f)
     private val danger = Color(1f, 0.25f, 0.2f)
-    private val tapeBg = Color(1f, 1f, 1f, 0.15f)
-    private val noReturnMark = Color(1f, 0.9f, 0.35f, 0.65f)
+
+    /**
+     * ALPHA ON THE HUD SURFACE IS SQUARED. Do not "tidy" these back down to a tasteful 0.15.
+     *
+     * MEASURED (trench-hud, 1920x1200 — the raw HUD surface, before compositing): a
+     * `Color(1f, 1f, 1f, 0.15f)` fill landed as RGBA(38, 38, 38, 6). 38 = 255 x 0.15, so the
+     * engine pre-multiplies the colour by alpha; 6 = 255 x 0.15 x 0.15, so it ALSO stores
+     * alpha squared. An element authored at 15% opacity therefore displays at roughly 2% and
+     * reads as nothing — which is exactly what became of the depth tape: every gameplay
+     * screenshot showed an orphan amber dash and a lone depth marker floating at the right
+     * edge with no scale behind them, so the point-of-no-return mercy the tape exists to
+     * teach was unreadable. (The same capture shows colour is gamma-encoded on write —
+     * `cold` (0.75, 0.85, 1) landed as (133, 175, 255) ~ (0.75, 0.85, 1)^2.2 — which is why
+     * the tape body below is a near-white rather than the mid grey it looks like it wants
+     * to be.)
+     *
+     * So every semi-transparent colour here states the opacity it wants to DISPLAY at and
+     * runs it through [authoredAlphaFor]. This surface is not relit by global illumination
+     * (see the "hud" surface comment in `EnPustTil.onCreate`), so what is authored here is
+     * what is shown; there is no later pass to rescue a value that is too faint.
+     */
+    val tapeBg = Color(0.9f, 0.94f, 1f, authoredAlphaFor(0.55f))
+
+    /**
+     * A near-black backing drawn a hair proud of the tape on every side, for the same reason
+     * HUD text gets [drawTextWithOutline]: a pale tape has no contrast against sunlit
+     * Shallows water and a dark one has none against the near-black Abyss, but a pale bar
+     * with a dark edge reads against both ends of a run. Still [fillRect] only —
+     * `drawQuad`/`drawLine` render nothing at all on macOS (render/Draw.kt).
+     */
+    val tapeShadow = Color(0f, 0f, 0f, authoredAlphaFor(0.8f))
+
+    /** The mercy marker: nearly opaque, because it has to out-read the tape it sits on. */
+    val noReturnMark = Color(1f, 0.9f, 0.35f, authoredAlphaFor(0.9f))
+
+    /**
+     * The authored alpha that lands at [displayedAlpha] on the HUD surface, given that the
+     * surface stores alpha squared (see the measurement above [tapeBg]). Ask for 55% opacity
+     * and get 55%, not 55% of 55%.
+     *
+     * Public and pure so it is unit-testable without a `Surface`/GL context — same reason as
+     * [textOutlineOffset] in render/Draw.kt.
+     */
+    fun authoredAlphaFor(displayedAlpha: Float): Float = sqrt(displayedAlpha.coerceIn(0f, 1f))
+
+    /** How many bubbles are left in the ring for [air] seconds out of [capacity]. */
+    fun airBubblesRemaining(air: Float, capacity: Float): Int
+    {
+        val fraction = (air / capacity).coerceIn(0f, 1f)
+        return ceil(fraction * AIR_BUBBLE_COUNT).toInt().coerceIn(0, AIR_BUBBLE_COUNT)
+    }
+
+    /**
+     * The fixed orbital angle, in radians, of bubble [index] — golden-angle spaced so that
+     * whatever is left of the ring is the survivors of a ring rather than the front of a
+     * queue. See [GOLDEN_ANGLE] for why this is not `index / AIR_BUBBLE_COUNT * TAU`.
+     * It depends only on the bubble's own index, never on how many are left, so no bubble
+     * ever moves: the ring thins in place instead of re-shuffling every time one pops.
+     */
+    fun airBubbleAngle(index: Int): Float = index * GOLDEN_ANGLE
+
+    /**
+     * Bubble size multiplier for a ring that is down to [remaining] bubbles: 1x until the
+     * ring turns red at [AIR_LOW_THRESHOLD], then one more [AIR_LOW_SIZE_GAIN] for every
+     * bubble lost after that — 1.6x at three, 2.2x at two, 2.8x at the last one.
+     */
+    fun airBubbleSizeScale(remaining: Int): Float =
+        if (remaining > AIR_LOW_THRESHOLD) 1f
+        else 1f + (AIR_LOW_THRESHOLD - remaining + 1) * AIR_LOW_SIZE_GAIN
 
     fun render(surface: Surface, sim: DiveSim, camera: DiveCamera, w: Float, h: Float)
     {
@@ -108,23 +207,32 @@ object Hud
      * Air is NEVER a number. A ring of bubbles orbiting the diver, thinning as the
      * breath runs out. At [AIR_LOW_THRESHOLD] bubbles or fewer, the ring turns red and
      * pulses like a heartbeat — the only warning the player gets, no text involved.
+     *
+     * The bubbles are golden-angle spaced ([airBubbleAngle]) so the ring THINS rather than
+     * collapsing into an arc, and the last few are drawn oversized ([airBubbleSizeScale]) so
+     * that "almost out of air" is still a shout when there is only one bubble left to shout
+     * with. Both were defects in the shipped version; both are explained where the constants
+     * are declared.
      */
     private fun drawAirRing(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, h: Float)
     {
-        val fraction = (sim.air / Tuning.BASE_AIR_SECONDS).coerceIn(0f, 1f)
-        val remaining = ceil(fraction * AIR_BUBBLE_COUNT).toInt().coerceIn(0, AIR_BUBBLE_COUNT)
+        val remaining = airBubblesRemaining(sim.air, Tuning.BASE_AIR_SECONDS)
         if (remaining <= 0) return
 
         val low = remaining <= AIR_LOW_THRESHOLD
         val ppm = Viewport.pixelsPerMetre(h)
         val pulse = if (low) 1f + sin(sim.clock * HEARTBEAT_HZ) * HEARTBEAT_AMPLITUDE else 1f
         val radius = AIR_RING_RADIUS_METRES * ppm * pulse
-        val bubbleSize = AIR_BUBBLE_SIZE_METRES * ppm
+        // The heartbeat pulses the bubbles themselves as well as the orbit. A pulsing ORBIT
+        // is only legible while there is a ring to see breathing; with one bubble left it is
+        // just a dot jittering a few pixels sideways. Pulsing the size makes that last bubble
+        // throb in place, which is the actual warning at the moment it matters most.
+        val bubbleSize = AIR_BUBBLE_SIZE_METRES * ppm * airBubbleSizeScale(remaining) * pulse
 
         surface.setDrawColor(if (low) danger else cold)
         for (i in 0 until remaining)
         {
-            val angle = (i.toFloat() / AIR_BUBBLE_COUNT) * TAU
+            val angle = airBubbleAngle(i)
             val bx = diverX + cos(angle) * radius
             val by = diverY + sin(angle) * radius
             surface.fillRect(bx - bubbleSize * 0.5f, by - bubbleSize * 0.5f, bubbleSize, bubbleSize)
@@ -163,6 +271,15 @@ object Hud
         val top = h * TAPE_TOP_FRACTION
         val bottom = h - h * TAPE_BOTTOM_FRACTION
         val span = bottom - top
+
+        // Dark backing first, a hair proud of the tape on every side, then the pale tape on
+        // top of it — the rectangle equivalent of drawTextWithOutline, and for the same
+        // reason: neither a pale nor a dark bar alone reads across both the sunlit Shallows
+        // and the near-black Abyss. The outline width scales with the tape, not with a fixed
+        // pixel count, because `h` here is PHYSICAL framebuffer pixels (see the class doc).
+        val outline = tapeWidth * TAPE_OUTLINE_RATIO
+        surface.setDrawColor(tapeShadow)
+        surface.fillRect(x - outline, top - outline, tapeWidth + outline * 2f, span + outline * 2f)
 
         surface.setDrawColor(tapeBg)
         surface.fillRect(x, top, tapeWidth, span)
