@@ -51,4 +51,13 @@ object Tuning
 
     // Vents are a lifeline, so they are more forgiving to hit than a pearl.
     const val AIR_POCKET_PICKUP_RADIUS = 4f
+
+    // Anglerfish — the only enemy, lives only in the abyss. Its lure is drawn identically
+    // to a pearl; the drift speed is deliberately slow so the tell (motion) is learnable
+    // in two runs rather than obvious on sight or invisible entirely. It must never end
+    // the run — it only eats a fraction of what you are currently holding.
+    const val ANGLERFISH_DRIFT_SPEED = 1.2f    // m/s toward the diver — the tell
+    const val ANGLERFISH_BITE_RADIUS = 3f
+    const val ANGLERFISH_STEAL_FRACTION = 0.4f
+    const val ANGLERFISH_COOLDOWN = 4f
 }

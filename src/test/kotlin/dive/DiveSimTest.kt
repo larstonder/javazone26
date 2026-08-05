@@ -291,6 +291,49 @@ class DiveSimTest {
         assertEquals(12000, sim.banked, "touching the surface must bank in full, not black out")
     }
 
+    @Test
+    fun `tick pipeline order is pinned - vent, then surface, then blackout, then collect`() {
+        // DiveSim.tick has a deliberate, fragile order: air-vent refill and the surface
+        // check both run BEFORE the air burn, so a dying breath that reaches a vent or the
+        // surface is saved rather than blacked out; and collection only happens AFTER the
+        // blackout early return, so nothing is picked up on a blackout tick. Individual
+        // tests for each of these already exist elsewhere; this one pins the *sequence* in
+        // a single test so reordering any one step fails loudly here, not just subtly
+        // somewhere else.
+
+        // (a) a vent reached on the dying breath saves the diver — vent refill must run
+        // before the air burn check.
+        val vented = DiveSim(seed = 1L)
+        val vent = vented.airPockets.first()
+        vented.debugMoveTo(vent.x, vent.depth)
+        vented.debugSetAir(0.001f)                 // would black out this very tick
+        vented.tick(1f / 60f, idle)
+        assertFalse(vented.blackedOut, "reaching a vent on the dying breath must refill air before the burn check")
+
+        // (b) surfacing on the dying breath banks in full rather than blacking out —
+        // the surface check must run before the air burn check.
+        val surfacing = DiveSim(seed = 1L)
+        surfacing.pearls.forEach { it.collected = true }
+        surfacing.debugSetDepth(120f)               // locks a x5 depth bonus
+        surfacing.debugSetHeld(count = 2400, mass = 0f)
+        surfacing.debugSetAir(0.001f)               // would black out this very tick
+        surfacing.debugMoveTo(surfacing.x, 0.003f)  // one tick from the surface
+        surfacing.tick(1f / 60f, swimUp)
+        assertFalse(surfacing.blackedOut, "touching the surface on the dying breath must not black out")
+        assertEquals(12000, surfacing.banked, "touching the surface must bank in full before air burns")
+
+        // (c) nothing is collected on a blackout tick — collection must run after the
+        // blackout early return, not before it.
+        val blackingOut = DiveSim(seed = 1L)
+        val shallowPearl = blackingOut.pearls.minByOrNull { it.depth }!!
+        blackingOut.debugMoveTo(shallowPearl.x, 40f)
+        blackingOut.debugSetHeld(count = 1000, mass = 0f)
+        blackingOut.debugSetAir(0.001f)             // next tick exhausts air
+        blackingOut.tick(1f / 60f, idle)
+        assertTrue(blackingOut.blackedOut, "sanity: this tick must actually black out")
+        assertFalse(shallowPearl.collected, "a pearl must not be swept up on the same tick as a blackout")
+    }
+
     // --- Hydrodynamics: it should feel like swimming through water ---------------
 
     @Test

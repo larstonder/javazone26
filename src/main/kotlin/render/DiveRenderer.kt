@@ -40,6 +40,7 @@ object DiveRenderer
         drawSurfaceLine(surface, cam, screenWidth, screenHeight)
         drawAirPockets(surface, sim, cam, screenWidth, screenHeight)
         drawPearls(surface, sim, cam, screenWidth, screenHeight)
+        drawAnglerfish(surface, sim, cam, screenWidth, screenHeight)
         drawDiver(surface, sim, cam, screenWidth, screenHeight)
     }
 
@@ -95,6 +96,22 @@ object DiveRenderer
             val screenX = Viewport.screenX(pearl.x, w, h)
             surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
         }
+    }
+
+    /**
+     * The anglerfish's lure. Drawn IDENTICALLY to a pearl, deliberately — in the Abyss,
+     * where pearls are the only light, you cannot tell treasure from predator by looking.
+     * The tell is motion: a real pearl never moves, this drifts slowly toward the diver.
+     */
+    private fun drawAnglerfish(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)
+    {
+        val fish = sim.anglerfish ?: return
+        val size = Viewport.PEARL_SIZE_METRES * Viewport.pixelsPerMetre(h)
+        val screenY = Viewport.screenY(fish.depth, cam, h)
+        if (screenY < -size || screenY > h + size) return
+        val screenX = Viewport.screenX(fish.x, w, h)
+        surface.setDrawColor(pearlColor)
+        surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
     }
 
     private fun drawDiver(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)

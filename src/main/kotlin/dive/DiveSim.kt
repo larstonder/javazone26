@@ -25,6 +25,9 @@ class DiveSim(seed: Long)
     var lastBankAmount = 0;            private set
     var blackedOut = false;            private set
 
+    /** Non-null only while the diver is in the Abyss. See [updateAnglerfish]. */
+    var anglerfish: Anglerfish? = null; private set
+
     /** Current velocity. Water has inertia — these persist between ticks. */
     var vx = 0f;                       private set
     var vy = 0f;                       private set
@@ -67,9 +70,51 @@ class DiveSim(seed: Long)
         }
 
         val justBlackedOut = updateAir(dt, input)
-        if (justBlackedOut) return   // blacking out ends the tick — no pickup, no surface bank
+        if (justBlackedOut) return   // blacking out ends the tick — no pickup, no surface bank, no bite
 
         collectPearls()
+
+        // The anglerfish is updated last, deliberately after every early-return above:
+        //   - after updateMovement, so it chases the diver's position AS OF THIS TICK,
+        //     not the position left over from last tick.
+        //   - after the blackout check's early return, so a diver who blacks out this
+        //     tick cannot also be bitten this same tick (bite-then-blackout would let a
+        //     10% blackout bank be computed on an already-fish-reduced `held`, which is
+        //     the same class of nonsense interaction the vent/surface ordering above
+        //     exists to prevent).
+        updateAnglerfish(dt)
+    }
+
+    /**
+     * The anglerfish exists ONLY in the Abyss — it is what stops players camping the
+     * highest-value water. It is created the first tick the diver enters the Abyss and
+     * destroyed the moment the diver leaves it (torn down here rather than left to drift
+     * off pointlessly).
+     */
+    private fun updateAnglerfish(dt: Float)
+    {
+        if (zone != Zone.ABYSS)
+        {
+            anglerfish = null
+            return
+        }
+
+        val fish = anglerfish ?: Anglerfish(x = -Tuning.COLUMN_HALF_WIDTH, depth = Tuning.MAX_DEPTH)
+            .also { anglerfish = it }
+
+        fish.update(dt, x, depth)
+
+        if (fish.canBite(x, depth)) bite(fish)
+    }
+
+    /** A bite scatters a fraction of what is currently held. It must NEVER end the run. */
+    private fun bite(fish: Anglerfish)
+    {
+        val stolenValue = (held * Tuning.ANGLERFISH_STEAL_FRACTION).toInt()
+        val stolenMass = heldMass * Tuning.ANGLERFISH_STEAL_FRACTION
+        held = max(0, held - stolenValue)
+        heldMass = max(0f, heldMass - stolenMass)
+        fish.onBite()
     }
 
     private fun updateBleed(dt: Float, input: DiveInput)
@@ -196,4 +241,6 @@ class DiveSim(seed: Long)
     internal fun debugSurface() { surface() }
     internal fun debugSetClock(value: Float) { clock = value }
     internal fun debugSetAir(value: Float) { air = value }
+    internal fun debugForceBite() { bite(anglerfish ?: Anglerfish(x, depth).also { anglerfish = it }) }
+    internal fun debugSpawnAnglerfish(fishX: Float, fishDepth: Float) { anglerfish = Anglerfish(fishX, fishDepth) }
 }
