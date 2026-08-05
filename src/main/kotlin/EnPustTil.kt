@@ -23,6 +23,18 @@ import score.ScoreRepository
 fun main() = PulseEngine.run<EnPustTil>()
 
 /**
+ * Parses the "dailySeed" override read from application.cfg (see [EnPustTil.onCreate]).
+ * Pure and engine-free specifically so it is unit testable without standing up a
+ * PulseEngine instance — see EnPustTilSeedTest.
+ *
+ * Returns [fallback] (the compile-time [EnPustTil.DAILY_SEED]) for both cases a
+ * technician's text-file edit can produce: [raw] is null (key absent — day one, before
+ * anyone has touched the file) or [raw] is present but not a valid Long (a typo must
+ * never crash the booth machine; it just silently reuses day one's seed instead).
+ */
+fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
+
+/**
  * Engine shell. Reads input, ticks the pure simulation on the fixed update,
  * and draws it. All game logic lives in the `dive` package.
  *
@@ -35,7 +47,7 @@ fun main() = PulseEngine.run<EnPustTil>()
  */
 class EnPustTil : PulseEngineGame()
 {
-    private var sim = DiveSim(seed = DAILY_SEED)
+    private lateinit var sim: DiveSim
     private val camera = DiveCamera()
     private val lifecycle = RunLifecycle()
 
@@ -43,7 +55,19 @@ class EnPustTil : PulseEngineGame()
     // gives it onCreate (load from disk)/onDestroy (final save) hooks driven by the
     // engine's own lifecycle. See ScoreRepository's class doc for the verified call
     // order and the durability guarantees actually achieved.
-    private val scoreRepository = ScoreRepository(todaySeed = DAILY_SEED)
+    private lateinit var scoreRepository: ScoreRepository
+
+    // The seed driving both today's water column ([DiveSim]) and which leaderboard rows
+    // count as "today's" (ScoreRepository.topN filters entries by seed — see
+    // drawLeaderboard). Resolved in onCreate from application.cfg's "dailySeed" key
+    // (see [parseDailySeed]'s doc), NOT at field-init time like [sim]/[scoreRepository]
+    // used to be constructed: application.cfg is not loaded into engine.config until
+    // PulseEngineImpl's own initEngine() step, which runs after this object already
+    // exists but before onCreate is called (verified by decompiling PulseEngineImpl.run:
+    // initEngine() then initGame()/onCreate()) — reading engine.config any earlier would
+    // silently see an empty config and always fall back to DAILY_SEED regardless of what
+    // a technician wrote in the file.
+    private var dailySeed = DAILY_SEED
 
     // Read once at construction, same as MetricViewer's gate below — everything downstream
     // that checks this field (the input overlay in onRender) is then a single boolean read,
@@ -53,6 +77,15 @@ class EnPustTil : PulseEngineGame()
 
     override fun onCreate()
     {
+        // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
+        // application.cfg (loaded by the engine before onCreate runs — see dailySeed's
+        // doc) is the only source for a technician's day-two override. See
+        // application.cfg for the exact commented-out line to uncomment/edit on-site.
+        dailySeed = parseDailySeed(engine.config.getString("dailySeed"), DAILY_SEED)
+        sim = DiveSim(seed = dailySeed)
+        scoreRepository = ScoreRepository(todaySeed = dailySeed)
+        Logger.info { "Daily seed: $dailySeed" }
+
         // Booth mode is the default (see application.cfg: FULLSCREEN, quiet logging, no
         // title bar an attendee could drag or close). screenMode and window size cannot be
         // changed here — the window is already built from application.cfg before onCreate
@@ -160,7 +193,7 @@ class EnPustTil : PulseEngineGame()
 
         if (lifecycle.justStarted)
         {
-            sim = DiveSim(seed = DAILY_SEED)
+            sim = DiveSim(seed = dailySeed)
             camera.snapTo(sim.depth)
             DiveLighting.resetAim()
         }
