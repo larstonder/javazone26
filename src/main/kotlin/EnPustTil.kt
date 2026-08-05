@@ -1,6 +1,5 @@
 import dive.DiveInput
 import dive.DiveSim
-import dive.Tuning
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
 import no.njoh.pulseengine.core.input.GamepadAxis
@@ -10,6 +9,7 @@ import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import render.DiveCamera
 import render.DiveRenderer
+import render.Hud
 
 fun main() = PulseEngine.run<EnPustTil>()
 
@@ -61,11 +61,21 @@ class EnPustTil : PulseEngineGame()
     override fun onRender()
     {
         val surface = engine.gfx.mainSurface
-        DiveRenderer.render(surface, sim, camera, engine.window.width.toFloat(), engine.window.height.toFloat())
-        drawDebugReadout()
+        val w = engine.window.width.toFloat()
+        val h = engine.window.height.toFloat()
+        DiveRenderer.render(surface, sim, camera, w, h)
+        Hud.render(surface, sim, camera, w, h)
+
+        if (sim.runOver)
+        {
+            surface.setDrawColor(Color.WHITE)
+            surface.drawText(
+                "RUN OVER — SPACE to restart",
+                w * 0.5f, h * 0.5f,
+                fontSize = h * 0.04f, xOrigin = 0.5f
+            )
+        }
     }
-
-
 
     /**
      * Stick is a full 2D swim direction; A boosts whichever way you point.
@@ -97,20 +107,6 @@ class EnPustTil : PulseEngineGame()
     }
 
     private fun Float.deadzone() = if (kotlin.math.abs(this) < STICK_DEADZONE) 0f else this
-
-    /** Temporary numeric readout. Replaced by the real HUD in Task 8. */
-    private fun drawDebugReadout()
-    {
-        val s = engine.gfx.mainSurface
-        s.setDrawColor(Color.WHITE)
-        s.drawText("CLOCK  %.1f".format(sim.clock), 20f, 30f, fontSize = 24f)
-        s.drawText("DEPTH  %.1f m".format(sim.depth), 20f, 60f, fontSize = 24f)
-        s.drawText("AIR    %.1f".format(sim.air), 20f, 90f, fontSize = 24f)
-        s.drawText("HELD   ${sim.held}  (mass %.1f)".format(sim.heldMass), 20f, 120f, fontSize = 24f)
-        s.drawText("BANKED ${sim.banked}", 20f, 150f, fontSize = 24f)
-        s.drawText("ZONE   ${sim.zone}", 20f, 180f, fontSize = 24f)
-        if (sim.runOver) s.drawText("RUN OVER — press A or SPACE", 20f, 220f, fontSize = 32f)
-    }
 
     private companion object
     {
