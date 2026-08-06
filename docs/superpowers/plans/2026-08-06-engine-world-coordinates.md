@@ -817,7 +817,7 @@ Isolates the one part of `DiveRenderer` where the rewrite could disturb the refl
 Add to `DiveRendererTest`:
 - consecutive strip centres are exactly `BAND_STRIP_METRES` apart (expose the constant as `internal`);
 - the strips tile `[worldTop, worldBottom]` with no gap and no overlap, and the last one is clipped to `worldBottom`;
-- the count depends only on `worldBottom - worldTop`, not on resolution — assert the same count for a rect derived from a 900 px screen and from a 2160 px screen;
+- the count depends only on `worldBottom - worldTop`, not on resolution — assert the same count for a rect derived from a 900 px screen and from a 2160 px screen. **Watch the shape of this one.** Once `stripCount(worldTop, worldBottom)` takes only world depths, resolution is not an input and "the same count at 900 and 2160" is true by signature — the `f(x)·h/h` shape §3.0 measured as unkillable. Make it real by deriving both rects through `CameraRig.pixelsPerMetre` from the two heights (so a width-for-height substitution would move them), or label it in a comment as documentation of the signature's intent rather than a test. Do not leave it looking like verification;
 - the count for the standard 60 m rect is 120, and is clamped to a sane maximum for a degenerate or absurd rect (a camera that has not been applied yet — see risk 4.6);
 - every strip centre over `[0, 200]` still produces a colour clearing `GI_REFLECTANCE_FLOOR` once quantized. (The existing sweep test stays; this one asserts the *walk* hits those depths.)
 
