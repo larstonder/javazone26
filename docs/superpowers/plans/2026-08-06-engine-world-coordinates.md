@@ -979,10 +979,19 @@ git commit -m "fix: stop the GI scene camera scaling the world away from the HUD
 
 The thing that would have caught Task 1's bug the first time the window resized.
 
+> **Sequencing warning — this task turns `MainCameraOwnershipTest` red, and Step 5a is not optional.**
+> Its second case, `no production source touches the shared main camera`, fails on **any** production
+> source containing the string `mainCamera` after comment-stripping. Step 5 puts
+> `engine.gfx.mainCamera.topLeftWorldPosition` into `EnPustTil.kt`, so the guard goes red **in this
+> task**, and Task 3 makes it redder still by creating `CameraRig.kt`. Earlier drafts of this plan
+> listed neither, and then had Task 4 Step 4 claim `./gradlew test` → PASS, which was unachievable.
+> Fixed here.
+
 **Files:**
 - Create: `src/main/kotlin/render/CameraInvariants.kt`
 - Test: `src/test/kotlin/render/CameraInvariantsTest.kt`
 - Modify: `src/main/kotlin/EnPustTil.kt` (dev-only call in `onRender`)
+- **Modify: `src/test/kotlin/render/MainCameraOwnershipTest.kt`** (allow-list the two legitimate touches — Step 5a)
 
 **Interfaces:**
 - Consumes: `Framing.VISIBLE_DEPTH_METRES` (`Viewport.VISIBLE_DEPTH_METRES` until Task 5)
@@ -1018,10 +1027,24 @@ In `EnPustTil.onRender`, behind the existing `devMode` boolean, at most once per
 
 Rules 2 and 3 will fail until Task 5 — with the camera at identity the "world rect" is the pixel rect. Gate the depth/aspect rules behind a flag that Task 5 turns on, or accept a known-failing warning until then; state which in the commit message.
 
+- [ ] **Step 5a: Amend `MainCameraOwnershipTest` in the same commit, and re-red-test it**
+
+Step 5 just made the suite red. Run `./gradlew test --tests 'render.MainCameraOwnershipTest'` **first** and watch it fail on `no production source touches the shared main camera` — see it red before changing it, so you know the amendment is doing work and not papering over something else.
+
+Then narrow the second case from "no production source mentions `mainCamera`" to an **allow-list**:
+
+* `EnPustTil.kt` may **read** `mainCamera.topLeftWorldPosition` / `bottomRightWorldPosition` — reads cannot cause the bug the guard exists for, which is a *write* from a second place.
+* `render/CameraRig.kt` may write it (created next, in Task 3). Add the entry now, so Task 3 does not have to touch a test file at all.
+* Nothing else, anywhere.
+
+Implement it as "the set of production files containing `mainCamera` equals exactly `{EnPustTil.kt, render/CameraRig.kt}`" rather than as a substring skip, so **adding a third file fails and so does silently losing `CameraRig.kt`.** Update the class doc's "WHEN TO DELETE THIS" paragraph: it is not deleted here, it is narrowed, and Task 5 narrows it again.
+
+Then red-test the amendment the way `CLAUDE.md` requires: temporarily add `engine.gfx.mainCamera.scale.set(2f)` to `render/DiveRenderer.kt`, confirm the test fails and names that file, and remove it. A guard that has never been seen red is not a guard.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/main/kotlin/render/CameraInvariants.kt src/test/kotlin/render/CameraInvariantsTest.kt src/main/kotlin/EnPustTil.kt
+git add src/main/kotlin/render/CameraInvariants.kt src/test/kotlin/render/CameraInvariantsTest.kt src/main/kotlin/EnPustTil.kt src/test/kotlin/render/MainCameraOwnershipTest.kt
 git commit -m "feat: dev-mode camera invariants that check the real framebuffer"
 ```
 
@@ -1030,6 +1053,8 @@ git commit -m "feat: dev-mode camera invariants that check the real framebuffer"
 ### Task 3: `CameraRig` — the camera parameters, proven against the old transform
 
 Pure and tested. Not wired in.
+
+> **`MainCameraOwnershipTest` was already amended for this in Task 2 Step 5a**, so creating `CameraRig.kt` does not turn the suite red and this task touches no test file but its own. If it *does* go red here, Task 2 Step 5a was skipped — go back and do it, do not weaken the guard from inside this task.
 
 **Files:**
 - Create: `src/main/kotlin/render/CameraRig.kt`
@@ -1064,13 +1089,28 @@ private fun screenPos(w: Float, h: Float, camDepth: Float, worldX: Float, worldY
 }
 ```
 
-Then assert, over `listOf(1200f to 900f, 1600f to 900f, 1920f to 1080f, 2400f to 1800f, 3440f to 1440f, 3840f to 2160f)`:
+Then assert, over `listOf(1200f to 900f, 1600f to 900f, 1920f to 1080f, 2400f to 1800f, 3440f to 1440f, 3840f to 2160f)` — **a list whose value is that it contains 4:3, 16:9, 16:10 and 21:9, not that it contains six resolutions** (§3.1):
 
 - `screenPos(w, h, camDepth, 0f, camDepth) == (w/2, 0)`;
 - `screenPos(w, h, camDepth, 0f, camDepth + Viewport.VISIBLE_DEPTH_METRES) == (w/2, h)` — **exactly 60 m of water on every display**;
-- a given world point lands at the same fraction of `h` on all of them;
-- the visible horizontal extent, `w / CameraRig.pixelsPerMetre(h)`, equals `w/h * 60` — so 21:9 shows more water sideways and the same water vertically;
 - **parity with the old transform**: for a grid of `x ∈ {-40, -7.5, 0, 12.25, 40}`, `depth ∈ {0, 33, 94.5, 160}` and `camDepth ∈ {-24, 0, 61.75}`, `screenPos(...)` equals `(w/2 + x*h/60, (depth - camDepth)*h/60)` — the old `Viewport.screenX/screenY`, inlined in the test with a comment saying they are the pre-migration formulas and that the migration is defined to be a no-op.
+
+**Three assertions, not five. Two earlier candidates are deliberately absent and must not be added back** (§3(a); review finding 6):
+
+* ~~`w / CameraRig.pixelsPerMetre(h) == w/h * 60`~~ — `w / (h/60) = 60w/h` is an **algebraic identity**. It holds for any value `pixelsPerMetre` returns, including a wrong one, so no mutation of `CameraRig` can make it fail.
+* ~~"a given world point lands at the same fraction of `h` on all of them"~~ — the `f(x)·h/h == f(x)·h/h` shape that §3.0 **measured** as unkillable in `ViewportTest`.
+
+Before committing, confirm each of the three surviving assertions has a mutation that reddens it, and write the mutation next to the assertion in a comment:
+
+| assertion | mutation that must kill it |
+|---|---|
+| `(W/2, 0)` pin | drop `* 0.5f` from `originX` |
+| `(W/2, H)` pin | `pixelsPerMetre` divides by `Framing.VISIBLE_DEPTH_METRES * 2` |
+| old-transform parity grid | flip the sign of `positionY` |
+
+**And the one this test still cannot catch, stated rather than glossed.** The width-for-height substitution of §3.1 — the bug class that shipped — lives at the *call site*, `val s = pixelsPerMetre(h)` inside `CameraRig.apply`. `apply` takes a live `PulseEngine` and is therefore unreachable from a unit test, and `screenPos` above is a **transcription** that calls `pixelsPerMetre(h)` itself. So writing `pixelsPerMetre(w)` in `apply` would leave `CameraRigTest` entirely green. That substitution is caught by `CameraInvariants` rule 3 on the real framebuffer (the visible world rect would stop having the screen's aspect) and by the 21:9 capture in §3(d) — **by nothing in `./gradlew test`.** Put that sentence in `CameraRigTest`'s class doc; it is the single most useful thing the file can tell the next reader.
+
+If any assertion has no such mutation, it is documentation, not a test — say so in a comment rather than letting it read as verification.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -1151,7 +1191,9 @@ git commit -m "refactor: express the zone-band strip walk in world depths"
 
 **Files:**
 - Rename: `src/main/kotlin/render/Viewport.kt` → `src/main/kotlin/render/Framing.kt` (`object Viewport` → `object Framing`)
-- Delete: `src/test/kotlin/render/ViewportTest.kt`
+- Create: `src/test/kotlin/render/FramingTest.kt` (three cases moved out of `ViewportTest`, Step 2)
+- Delete: `src/test/kotlin/render/ViewportTest.kt` (the other six, Step 2)
+- Modify: `src/test/kotlin/render/MainCameraOwnershipTest.kt` (narrowed to its final guard, Step 2a)
 - Modify: `render/DiveCamera.kt`, `render/DiveRenderer.kt`, `render/DiveLighting.kt`, `render/Hud.kt`, `EnPustTil.kt`, `src/test/kotlin/render/DiveCameraTest.kt`, `src/test/kotlin/AttractScreenTest.kt`
 - Modify: `src/main/kotlin/render/CameraInvariants.kt` (enable the depth/aspect rules from Task 2)
 
@@ -1165,9 +1207,33 @@ Move the file, rename the object, delete `pixelsPerMetre`, `screenX`, `screenY`,
 
 The compiler will now list every call site. That is the point of renaming rather than gutting in place.
 
-- [ ] **Step 2: Delete `ViewportTest`**
+- [ ] **Step 2: Dissolve `ViewportTest` into `FramingTest` — do not simply delete it**
 
-Delete `src/test/kotlin/render/ViewportTest.kt`. Read §3 of this plan first and make sure `CameraRigTest` covers the properties worth keeping (they are the "same fraction on every display" ones); the rest were assertions that could not fail.
+> **The earlier version of this step was inverted and would have thrown away the working half of the file.** It said to keep "the 'same fraction on every display' ones" and to treat "the rest" as assertions that could not fail. §3.0's mutation run measures the opposite: **two of the three "same fraction" cases are the unkillable ones**, and six of the nine cases die to a real mutation. Follow §3.2's table, not the old sentence.
+
+Create `src/test/kotlin/render/FramingTest.kt` and move three cases into it, keeping their names so `git log --follow` and the mutation record stay meaningful:
+
+* `the diver is large enough to see` — re-expressed as `Framing.DIVER_SIZE_METRES / Framing.VISIBLE_DEPTH_METRES > 0.02f` (numerically the same; `pixelsPerMetre` is gone). Must still die to `DIVER_SIZE_METRES` 3 → 0.3.
+* `only part of the water column is visible so descending scrolls` — verbatim, `Framing.` for `Viewport.`. A one-sided bound, not a tautology; it fails at `VISIBLE_DEPTH_METRES` 60 → 100.
+* `camera keeps the diver above the top edge of visible water` — verbatim. Must still die to a `targetCameraDepth` sign flip.
+
+Then delete `src/test/kotlin/render/ViewportTest.kt` with the other six, and record in `FramingTest`'s class doc why each went: cases 2 and 3 were **measured** tautologies; case 1 was real but is redundant with case 9 once the transform is gone; case 6 becomes `CameraRigTest`'s `(W/2, 0)` pin; cases 7 and 8 lose their subject with `depthAt`, whose successor is `CameraInvariants` rule 2 on a real framebuffer and nothing in `./gradlew test`.
+
+**Before deleting, re-run the three mutations above and watch the moved cases go red in their new home.** They were killable in `ViewportTest`; the point of moving rather than rewriting them is that they stay killable, and the only way to know is to look.
+
+- [ ] **Step 2a: Replace `MainCameraOwnershipTest`'s guard, and be honest about what is lost**
+
+`CameraRig` is now wired in and writing `mainCamera` 60×/s. Narrow the Task 2 Step 5a allow-list to its final form:
+
+> **No production source outside `render/CameraRig.kt` writes `engine.gfx.mainCamera`.** Reads are allowed and named (`EnPustTil.kt`, for `CameraInvariants` and the HUD anchor).
+
+That is still a real, red-testable guard against a real bug — a second file easing or resetting the shared camera is exactly the fault `6ea1f53` fixed — so **do not delete the file.** Rewrite its class doc for the new invariant and re-red-test it (add a `mainCamera.scale.set(2f)` to `DiveRenderer`, see it fail, remove it).
+
+**What is no longer guaranteed, stated plainly because nothing replaces it.** Since `c47a4b0` the process has a *second* legitimate writer: `SceneEditor`'s `Camera2DController` (`SceneEditor.kt:347`) drives the same object under `EPT_EDITOR=1`. It lives in engine code, so no scan of `src/main/kotlin` can see it and the source guard stays green while the invariant is, at runtime, false.
+
+* **At the booth this does not exist.** `EPT_EDITOR` is unset, `SceneEditor` is never constructed (`EnPustTil.kt:386`), and `CameraRig` is the only writer in the process. The shipped configuration is fully guarded.
+* **In editor mode the invariant becomes "exactly one writer *at a time*"**, and the thing that enforces it is not a test — it is Task 10's gate, which skips `CameraRig.apply` while the editor service is running. Its failure mode is loud and immediate (you cannot pan the editor viewport), not silent, which is why a test is not bought for it.
+* **No test asserts that gate.** It is verified by hand, once, in Task 10 Step 3. Say so in `MainCameraOwnershipTest`'s class doc so the next reader does not assume the file covers more than it does.
 
 - [ ] **Step 3: Drive the camera from the fixed tick**
 
@@ -1242,7 +1308,7 @@ In `EnPustTil.onRender`, exactly as in §2.4 — including the comment about the
 - [ ] **Step 9: Run the suite**
 
 Run: `./gradlew test`
-Expected: PASS. Count should be 233 − 9 (`ViewportTest`) + the new `CameraRigTest`/`CameraInvariantsTest`/`DiveRendererTest` cases.
+Expected: PASS. Count should be 238 (at `231c6a6`) − 9 (`ViewportTest`) + 3 (`FramingTest`) + the new `CameraRigTest`/`CameraInvariantsTest`/`DiveRendererTest` cases. Do not treat the number as the check — the check is that every case moved in Step 2 has been seen red under its named mutation.
 
 - [ ] **Step 10: Verify on a real framebuffer, at three aspect ratios**
 
