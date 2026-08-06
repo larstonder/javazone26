@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `engine.gfx.mainCamera` the single authority on where a world point lands on screen, in world units (metres), so that the world, the GI light map and the diver-tracking parts of the HUD cannot disagree — at any framebuffer size or aspect ratio — and so that real art can be authored in metres.
+**Goal:** Make `engine.gfx.mainCamera` the single authority on where a world point lands on screen, in world units (metres), so that the world, the GI light map and the diver-tracking parts of the HUD cannot disagree — at any framebuffer size or aspect ratio — and so that real art can be authored in metres. The art is now known to be **2D sprite sheets with normal maps** (§1.9), which is drawn as the same world rect submitted to two surfaces — so "authored in metres" stopped being a convenience and became the thing that keeps those two draws from being derived separately.
 
 **Scope, after the review (2026-08-06, revised at `231c6a6`).** [`docs/superpowers/reports/2026-08-06-world-coordinates-plan-review.md`](../reports/2026-08-06-world-coordinates-plan-review.md) (commit `0a21992`) approved Stages A–C with required changes and rejected Stage D as written. The owner accepted it. What this plan now ships:
 
@@ -211,6 +211,38 @@ One quantity gets **better**: `jitterFix` (`GiSceneRenderer.kt:150-162`) derives
 
 > **Correction to an existing comment.** `DiveRenderer.kt:70-72` says the reflectance floor "cannot be avoided from here (it is the engine's…)". It can: `minReflectance` is a public `@Prop var` and setting `system.minReflectance = 0f` in `DiveLighting.setup` would remove the floor entirely. The current colour-side solution is measured, working and cheaper to trust than a lighting change made in the same pass as a coordinate change, so **we are not changing it** — but the comment should stop claiming impossibility. Task 9.
 
+### 1.9 The art will be 2D sprite sheets **with normal maps** — what that requires, and what it rules out
+
+*(New requirement from the owner, 2026-08-06, after the review. `§1.8` is deliberately skipped: it is deferred to §9 and its number is preserved there.)*
+
+This is the single most decision-relevant thing to arrive since the plan was written, because it is the first hard statement about what the render path has to be able to do, and it lands **before** the migration rather than after. `assets/diver.blend` already exists in the working tree (untracked at the time of writing) — a Blender source is exactly the pipeline that emits an albedo pass and a normal pass from the same render, so this is not speculative.
+
+**The question that mattered: does a normal-mapped sprite need scene entities?** It does not. Verified against the engine sources:
+
+| What it needs | Where |
+|---|---|
+| A `GlobalIlluminationSystem` in the active scene | we already have one, added in `DiveLighting.setup`, and the reduced Task 10 keeps it **Kotlin-owned**. `GiRadianceCascades.kt:47` and `GiInterior.kt:39` both `getSystemOfType<GlobalIlluminationSystem>() ?: return`, so the effect silently no-ops without it |
+| A draw into the `gi_normal_map` surface's `NormalMapRenderer` | `GlobalIlluminationSystem.kt:128-138` creates the surface **and** attaches the renderer (`.apply { addRenderer(NormalMapRenderer(...)) }`) — at line **128**, i.e. *before* the `getSystemOfType<EntityRenderer>() ?: return` at `:184` |
+| Nothing else | no `EntityRenderer`, no `SceneEntity`, no `Renderable`, no render-pass registration |
+
+`NormalMapRenderer.drawNormalMap(texture, x, y, w, h, rot, xOrigin, yOrigin, xTiling, yTiling, normalScale, orientation)` (`ENG/modules/lighting/shared/NormalMapRenderer.kt:91-123`) is a plain public method on a `BatchRenderer`. It appends to an instance buffer that the owning surface flushes in `gfx.drawFrame` (`SurfaceImpl.kt:97`); nothing checks who called it. **This is byte-for-byte the mechanism `GiSceneRenderer.drawLight` already uses** (§1.6), and the reference reaches renderers the same way (`REF/src/main/kotlin/entities/level/Torch.kt:81`, `REF/.../utils/Extensions.kt:62-65`).
+
+The `NormalMapped` entity interface (`ENG/modules/lighting/shared/NormalMapped.kt:15-42`) is **a convenience, not a gate**: its `onRenderNormalMap` default body is literally `surface.getRenderer<NormalMapRenderer>()?.drawNormalMap(...)`. All it buys is three Inspector `@Prop`s and the back-to-front z-sort. It also costs something — `NormalMapped.kt:32` passes `engine.asset.getOrNull(normalMapTexture)` **whole**, so for a `SpriteSheet` asset it stretches the entire sheet across the quad with no frame index. **An entity with an animated normal map has to override the interface method and call `drawNormalMap` itself anyway.** Immediate mode has no such limitation.
+
+**So: the target architecture in §2 does not foreclose normal-mapped sprites, and the entity layer deferred to §9 would not have bought them.** If anything this weakens the case for reviving Stage D — see §9's banner.
+
+**What it does change in this plan, concretely:**
+
+1. **`gi_normal_map` is a fourth surface riding `mainCamera`** (created with `camera = engine.gfx.mainCamera`, `GlobalIlluminationSystem.kt:128-138`, `zOrder = mainSurface.zOrder + 5`, `isVisible = false`, background `(0.5, 0.5, 1.0, 1)` = flat +Z). Added to §2.1's table. The normal draw must use **the identical world rect as the albedo draw** — same `(x, y, w, h, angle)` in metres. After this migration that is one tuple used twice. Before it, it would have been a screen-pixel rect that has to be recomputed per surface, which is precisely the class of duplication §1.1's bug came from. **This is an argument for doing the migration before the art, not after.**
+2. **Nothing about the normal path needs a `camScale` compensation, and §1.7's table stays complete.** `normal_map.vert` transforms position by the same `viewProjection`, and encodes the normal through `rotMatrix(angle + cameraAngle)` — camera *rotation*, not scale. `normalMapScale` (`GlobalIlluminationSystem.kt:54`, default `4f`) is uploaded as its reciprocal (`GiRadianceCascades.kt:88`, `GiInterior.kt:52`) and is the out-of-plane component of the ray direction — **a unitless ratio, not a length**. It does *not* change meaning when a world unit goes from 1 px to 1 m, and it must **not** be "compensated" the way `aoRadius` is in Task 6. Say so where the AO comment goes, because the next reader will reasonably wonder.
+3. **Authoring constraints for the artist, worth fixing now rather than after a hundred files exist.** `Extensions.kt:446-448`: a filename containing `_normal` is loaded as **`RGBA8`** (linear, not sRGB) with `maxMipLevels = 10` — the engine keys off the *name*. `Extensions.kt:427, 449-456`: a `_<cols>x<rows>.` suffix makes it a `SpriteSheet` whose asset name is everything before the last `_`. So **`diver_normal_4x4.png` loads as a linear 4×4 sprite sheet named `diver_normal`**, and `diver_4x4.png` as `diver`. Get the naming right at the export step. `normal_map.frag` also `discard`s where the **normal texture's** alpha < 0.5, so the normal pass must carry the sprite's alpha cutout, not just its RGB.
+4. **One real gotcha:** `SurfaceImpl.addRenderer` defers through `runOnInitFrame` (`SurfaceImpl.kt:371-378`), so `getSurface(GI_NORMAL_MAP)?.getRenderer<NormalMapRenderer>()` is **`null` until the frame after `onCreate`**. Use `?.` per frame; do not cache it eagerly in `setup`. `DiveLighting.render` already fetches `GiSceneRenderer` per frame with `?: return` (`DiveLighting.kt:288`) — copy that shape exactly.
+5. **`DirectLightingSystem` is a different path and is not ours.** It has its own `light_normal_map` surface created lazily inside `configureNormalMap` only when `useNormalMap == true` (`DirectLightingSystem.kt:169-186`, `:466`). We use GI. Do not follow a `normalMap` grep hit into that file and conclude a flag has to be flipped.
+
+**Still out of scope for this plan** (§8): no normal-mapped draw is added here, because there is no art yet and adding a second per-sprite draw call in the same pass as a coordinate change makes any regression unattributable. What this section buys is that the shape is known, nothing in Tasks 2–10 blocks it, and Task 8's centred-draw helper is deliberately shaped as the `(x, y, w, h, angle, xOrigin = 0.5f, yOrigin = 0.5f)` tuple both `drawTexture` and `drawNormalMap` take.
+
+**Two things the research could not settle, recorded rather than assumed:** whether `BatchRenderer`'s double-buffered instance buffers introduce a one-frame latency (they behave identically for `TextureRenderer` and `GiSceneRenderer`, so albedo and normals would lag together and the *relative* alignment §4.1 cares about is safe either way), and whether mipping the `gi_normal_map` surface (`LINEAR_MIPMAP` + `CustomMipmapGenerator`, `GlobalIlluminationSystem.kt:134-135`) bleeds between sprite-sheet cells at high mip levels. Both are questions for the first real sprite, and both are answered by looking, not by reading.
+
 ---
 
 ## 2. Target architecture
@@ -221,6 +253,7 @@ One quantity gets **better**: `jitterFix` (`GiSceneRenderer.kt:150-162`) derives
 |---|---|---|---|
 | `main` | `engine.gfx.mainCamera` | **world metres** | zone bands, column walls, waterline, air vents, pearls, anglerfish, diver |
 | `gi_local_scene` | the same `mainCamera` object (`GlobalIlluminationSystem.kt:78`) | **world metres** | `GiSceneRenderer.drawLight` calls |
+| `gi_normal_map` | the same `mainCamera` object (`GlobalIlluminationSystem.kt:128-138`) | **world metres** | nothing today (it clears to flat +Z). Listed because when the art lands, a normal-mapped sprite is a `drawNormalMap` here with **the identical world rect** as its albedo draw on `main` — §1.9 |
 | `hud` | its own `DefaultCamera` (created by passing `camera = null`) | **screen pixels** | all of `Hud`, the attract/run-over/initials screens, the dev overlay |
 
 World axes are **metres, +x right, +y down**. World `y` *is* `depth` and world `x` *is* `sim.x` — no sign flips, no offset, because the engine's orthographic projection is already y-down (`ortho(0, w, h, 0)`, `Camera.kt:108`) and `dive/` already measures depth downward. Nothing in `dive/` changes; nothing in `dive/` is even read differently.
@@ -532,6 +565,8 @@ Listed so nobody spends time on them: the alpha-squared HUD convention and `auth
 * **Stage D (reduced) — Task 10 alone, ~20 lines and no new files.** Depends on Task 5 for the `CameraRig` gate. Ships separately, after Stage B is verified, and can be abandoned without cost. **Tasks 11–14 are deferred to §9.**
 
 **Recommendation: do the migration, but ship Task 1 first and separately.** The bug is not the reason to migrate — Task 1 fixes the bug in five deleted lines. The reason to migrate is that the placeholder squares are about to become sprites, and every sprite authored in screen pixels is a sprite that has to be re-expressed in metres later, plus a `Viewport` call at every draw site that a designer tweaking a size will have to reason about. Doing this before the art lands is much cheaper than doing it after, and it is the only version of "make real art work easier" that survives contact with a 4K booth panel.
+
+**§1.9 sharpens that.** The art is normal-mapped sprite sheets, and a normal-mapped sprite is the *same rect drawn to two surfaces* — albedo on `main`, normal on `gi_normal_map`, both riding `mainCamera`. In metres that is one tuple used twice. In screen pixels it is two derivations of the same number on two surfaces, which is the exact shape of the bug in §1.1. The migration does not enable normal maps (nothing blocks them today) — it removes the duplication they would otherwise institutionalise, once, before there are dozens of call sites instead of seven.
 
 | Task | Depends on | Why |
 |---|---|---|
@@ -1053,9 +1088,11 @@ Capture the Abyss (≥120 m, several pearls in frame) at the same seed and depth
 
 `AO_RADIUS_METRES` is now a plain artistic quantity: *how many metres of water around an occluder are darkened*. Tune it by eye between roughly 1 m and 10 m and write down the value and the capture that chose it. **Do not reintroduce a screen-relative expression while tuning** — if 4 m looks wrong at one resolution and right at another, something else is wrong and a pixel count will hide it rather than fix it.
 
-- [ ] **Step 3: Confirm the two non-issues, in a comment**
+- [ ] **Step 3: Confirm the three non-issues, in a comment**
 
 `radius = 0f` on every `drawLight` skips the falloff branch entirely (`radiance_cascades.frag:120-127`), so its `camScale` dependence does not reach us — but leave a note, because `radius·camScale/dist²` has dimension 1/length and is genuinely **not** scale-invariant, so the first person to set a non-zero radius is tuning a number whose meaning depends on the display's height. The `scene.vert:86-88` minimum-size clamp *is* scale-invariant (`screenSpacePos.w` is exactly 1.0 for an affine ortho, so `1500/(resolution.y·camScale)` world units is a constant number of screen pixels) and needs nothing.
+
+**Third, and put this next to `aoRadius` specifically:** `normalMapScale` (`GlobalIlluminationSystem.kt:54`, default `4f`, uploaded as its reciprocal at `GiRadianceCascades.kt:88` and `GiInterior.kt:52`) is the **out-of-plane component of the ray direction — a unitless ratio, not a length**. It does not change meaning when a world unit goes from 1 px to 1 m and **must not be compensated the way `aoRadius` is**. It is inert today because nothing is drawn to `gi_normal_map`, and it becomes live when the art lands (§1.9). Writing that one sentence here is what stops the next person from "fixing" the neighbouring knob by symmetry.
 
 - [ ] **Step 4: Commit**
 
@@ -1107,6 +1144,8 @@ Expected: PASS. Then temporarily add a `drawQuad(` call somewhere and confirm it
 - [ ] **Step 3: Add a centred `fillRect` overload and use it**
 
 `Surface.fillRectCentred(x, y, w, h, angle = 0f)` = `drawTexture(Texture.BLANK, x, y, w, h, angle, xOrigin = 0.5f, yOrigin = 0.5f)`. Replace every `- size * 0.5f` in `DiveRenderer` and `Hud`. This is what the reference does (`REF/src/main/kotlin/entities/level/Spark.kt:84`) and it is the shape every sprite call will take, with rotation available for free.
+
+**Keep the `(x, y, w, h, angle, 0.5f, 0.5f)` tuple intact and passable, not spread across seven call-site expressions.** It is the *same* tuple `NormalMapRenderer.drawNormalMap` takes (`NormalMapRenderer.kt:91-123`), and the art will be normal-mapped (§1.9): every sprite will be drawn twice from one rect — albedo on `main`, normal on `gi_normal_map`. This step is the cheapest moment to make that a one-line addition later rather than a re-derivation. No normal-map draw is added now (§8).
 
 - [ ] **Step 4: Run the suite and capture**
 
@@ -1257,7 +1296,7 @@ git commit -m "feat: let the scene editor reach STOPPED and stop the game fighti
 - Removing the GI reflectance floor by setting `minReflectance = 0` (§1.7 — documented, not done)
 - A world-space HUD surface (§2.4 — revisit with the §12 cash-out spectacle)
 - Camera zoom, shake or rotation, which the migration makes possible and which the cash-out will want
-- `GiOccluder` and normal-mapped lighting on the diver, which the migration also makes possible and which belongs with real art
+- **`GiOccluder` and normal-mapped sprites** — deliberately not added here, though the art *will* be normal-mapped (§1.9). It needs no entities and no architectural change: one extra `drawNormalMap` on `gi_normal_map` with the same world rect as the albedo draw. Adding a second per-sprite draw call in the same pass as a coordinate change would make any regression unattributable, and there is no sprite yet. §1.9 records the naming, alpha and `getRenderer`-timing constraints so the first one is not authored wrongly
 - Any art at all — Stage D builds the slot the art drops into and puts nothing in it
 
 ---
@@ -1275,6 +1314,18 @@ git commit -m "feat: let the scene editor reach STOPPED and stop the game fighti
 > need tuning. Roughly four weeks remain. Spending 1.5–2 days building the slot, plus the rework, buys a
 > workflow for values that are currently four well-commented Kotlin constants. §5 already named Stage D as
 > the first thing to drop if the booth date got close; this drops it now rather than at the deadline.
+>
+> **The art being normal-mapped does not change this, and it was worth checking.** The obvious worry is
+> that normal-mapped sprites need the entity path — `NormalMapped` is an entity interface, and its three
+> `@Prop`s look like exactly the tuning workflow this stage was for. **They do not.** `NormalMapRenderer`
+> is attached to the `gi_normal_map` surface at `GlobalIlluminationSystem.kt:128-138`, *before* the
+> `EntityRenderer` early return at `:184`, and `drawNormalMap` is a public `BatchRenderer` method callable
+> from `onRender` like `drawLight` (§1.9). The `NormalMapped` default body is literally that same call, and
+> it is **worse** for our case: `NormalMapped.kt:32` hands the whole asset to `drawNormalMap`, so a
+> `SpriteSheet` stretches across the quad with no frame index — an animated entity must override the method
+> and call the renderer itself anyway. So reviving this stage buys Inspector props for a texture name, an
+> intensity and an orientation, and costs everything §9.1 lists. **The new requirement lowers the value of
+> this section rather than raising it.**
 >
 > **Why kept.** The investigation below cost real work against the engine sources, and every claim in it
 > was independently verified by the review. When there is a sprite to tune, this is the head start.
