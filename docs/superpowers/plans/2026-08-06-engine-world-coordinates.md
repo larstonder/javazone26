@@ -1667,13 +1667,29 @@ Note this is only a `MainCameraOwnershipTest`-style single-writer violation in a
 
 ### 4.14 Per-frame cost and the intransitive z comparator
 
-At §2.6's scale — one drawn entity plus ~5 hidden prototypes — the cost is a rounding error and none of §1.8.3's three problems bite. **They bite the moment someone converts pearls**, which is exactly the change this stage will look like it invites:
+At §2.6's scale — one drawn entity plus ~5 prototypes — the cost is a rounding error and none of §1.8.3's problems bite. **The framing "Stage D breaks `CLAUDE.md`'s no-allocation rule" is wrong and was an argument for rejecting the stage on its own terms.** With one visible entity the entity path allocates **zero** per frame: the render queue is pooled (`EntityRenderer.kt:76, 114-121, 138, 140`), `forEachFast` is `inline`, and `sortWith` is skipped below n = 2 entirely. The three problems below bite **only if someone converts pearls**, which is the change this stage will look like it invites:
 
-* `EntityRenderer.kt:132`'s TimSort allocates every frame (the engine's own `// TODO: This creates alot of garbage internally`), against `CLAUDE.md`'s "No per-frame allocation in the render path".
-* There is no culling in `EntityRendererImpl` at all, so 70 pearls means ~2.7× the geometry we submit today and Task 7 becomes unreachable for them.
-* `BackToFrontEntityComparator` (`:155-158`) is `((b.z - a.z) * 10_000f).toInt()`, which is **intransitive for `z` deltas below 1e-4** and will throw `IllegalArgumentException: Comparison method violates its general contract!` from TimSort at n ≥ 32. Seventy pearls with jittered `z` is a crash in front of the queue.
+* **The sort starts allocating at n ≥ 32.** `EntityRenderer.kt:132` (the engine's own `// TODO: This creates alot of garbage internally`) against `CLAUDE.md`'s "No per-frame allocation in the render path". 75 entities clears that floor; 6 does not.
+* **There is no culling in `EntityRendererImpl` at all**, so 70 pearls means ~2.7× the geometry we submit today and Task 7 becomes unreachable for them. **This is the strongest of the three.**
+* **`BackToFrontEntityComparator` (`:155-158`) violates the `Comparator` contract.** It is `((b.z - a.z) * 10_000f).toInt()`, so any two entities whose `z` differs by less than 1e-4 compare equal — provably intransitive. TimSort can then throw `IllegalArgumentException: Comparison method violates its general contract!`, but see §1.8.3 for the measured strength of that, which is lower than an earlier draft claimed.
 
-*Guard:* leave this paragraph, verbatim, as a comment on `PearlLook`'s class doc — the object whose existence is the argument against converting pearls. Also keep all Stage D entities on the same `z` so the comparator sees only equal elements.
+*Guard:* keep all Stage D entities on the same `z`, so the comparator only ever sees equal elements.
+
+*What goes in `PearlLook`'s class doc:* **not this paragraph.** An earlier draft said to paste it in **verbatim**, which would freeze a demonstrably over-stated engine claim into a source comment — the exact failure mode this project has already shipped bugs from twice (`Draw.kt`'s `#version`, `DiveLighting.setup`'s GI camera). Write the accurate short version instead, four lines, and cite this section for the rest:
+
+```kotlin
+// One PearlLook, not seventy PearlEntities. The reason is that pearls are regenerated from
+// dailySeed every run, so a value tuned on one is discarded at the next start -- and
+// EntityRendererImpl has no culling at all (EntityRenderer.kt:83-144), so 70 of them would
+// submit ~2.7x today's geometry with Task 7's isInView unreachable for exactly those objects.
+//
+// Keep every entity in this file on the same z. BackToFrontEntityComparator
+// (EntityRenderer.kt:155-158) treats |dz| < 1e-4 as equal, which is intransitive, and TimSort
+// can throw on that at n >= 32 (it cannot below). Measured: ~33% of arrangements at n = 70,
+// and only for a total z spread of ~2e-4..1e-3 -- both idiomatic layering schemes measured 0%.
+// Inside that band the runs that DON'T throw come out mis-ordered instead. Equal z avoids all
+// of it. Do not restate this as "jittering z crashes the cabinet"; that is not what it does.
+```
 
 *Verify:* `EPT_DEV=1`, F3 `MetricViewer`, compare frame time before and after Task 12. A measurable regression from six entities means something else is wrong.
 
@@ -1802,9 +1818,11 @@ The part that pays for the stage: asset pickers and live numbers for the ~74 obj
 
 - [ ] **Step 1: Implement the prototypes**
 
-Each is a `CommonSceneEntity` that draws nothing: `set(HIDDEN)` in `init{}`, empty `onRender`, `@Icon(..., showInViewport = true)` so it can still be found. Properties are the constants they replace — `@TexRef var texture`, `var colour: Color`, `@Prop(min…max) var sizeMetres`, and for `DiverLightLook` the beam's intensity/cone parameters currently living in `DiveLighting`.
+Each is a `CommonSceneEntity` that draws nothing: ~~`set(HIDDEN)` in `init{}`~~, empty `onRender`, `@Icon(..., showInViewport = true)` so it can still be found. Properties are the constants they replace — `@TexRef var texture`, `var colour: Color`, `@Prop(min…max) var sizeMetres`, and for `DiverLightLook` the beam's intensity/cone parameters currently living in `DiveLighting`.
 
-Class doc on `PearlLook` carries risk 4.14 **verbatim**: it exists precisely so that seventy pearls do not become seventy entities, and it must say why (Outliner blindness at `SceneEditor.kt:336-343`, no culling in `EntityRendererImpl`, the per-frame TimSort at `:132` against `CLAUDE.md`'s no-allocation rule, and the intransitive comparator at `:155-158` crashing TimSort at n ≥ 32). Also document that `x`/`y`/`width`/`height` are inherited and meaningless here — the engine offers no way to hide inherited props from the Inspector.
+> **`set(HIDDEN)` is struck out and must stay struck out — see §9's banner.** Every `SceneEditor` path to the Inspector filters `isNot(HIDDEN)` (`:267`, `:597`, `:668`) and so does the `@Icon(showInViewport)` billboard (`:436`, `:454`), so a HIDDEN prototype can never be selected or tuned and the entire payoff of this task evaporates. An empty `onRender` already draws nothing.
+
+Class doc on `PearlLook` explains why seventy pearls do not become seventy entities. **Do not paste risk 4.14 in verbatim** — an earlier draft said to, and the review measured that paragraph as over-stated; §9.4's 4.14 now carries the accurate four-line version to copy instead. The reasons to state are: pearls regenerate from `dailySeed` every run so nothing tuned on one survives; `EntityRendererImpl` has no culling; the sort allocates at n ≥ 32; and the comparator at `:155-158` is intransitive below `|Δz|` 1e-4, which is why every entity here shares a `z`. Also document that `x`/`y`/`width`/`height` are inherited and meaningless here — the engine offers no way to hide inherited props from the Inspector.
 
 - [ ] **Step 2: Read them from the immediate-mode draws**
 
