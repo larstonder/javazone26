@@ -7,20 +7,51 @@ import no.njoh.pulseengine.core.shared.primitives.Color
 /**
  * Draw a solid rectangle in the surface's current draw colour.
  *
- * DO NOT replace this with [Surface.drawQuad].
+ * DO NOT replace this with [Surface.drawQuad], even though `drawQuad` now works in dev.
  *
- * On macOS / Apple Silicon, `drawQuad` renders nothing at all — silently, with no GL
- * error and no log output. The cause is the shader version the engine's renderers declare:
+ * On macOS / Apple Silicon, stock `drawQuad` and `drawLine` render nothing at all —
+ * silently, with no GL error and no log output. The cause is **not** the shader `#version`,
+ * which an earlier version of this comment claimed and which is disproven: `texture.frag`,
+ * `glyph.frag`, `surface.vert` and `surface.frag` are all `150 core` and work fine, and the
+ * engine was rebuilt with `quad.vert` bumped to `330 core` and nothing else — quads stayed
+ * invisible.
  *
- *   drawText     -> glyph.vert    #version 330 core   works
- *   drawTexture  -> texture.vert  #version 330 core   works
- *   drawQuad     -> quad.vert     #version 150 core   renders nothing
- *   drawLine     -> line.vert     #version 150 core   renders nothing
+ * The real cause is a vertex-attribute *binding type* mismatch. All four renderers pack the
+ * RGBA colour into one 32-bit slot (`SurfaceConfig.kt:62` bit-casts it with `intBitsToFloat`)
+ * and all four shaders declare that attribute `in uint`, but only two of them bind it as an
+ * integer:
  *
- * Verified empirically by rendering both in the same frame and reading the framebuffer
- * back: the textured rectangles appear, the quads do not. Drawing a blank texture tinted
- * by the current draw colour is the supported cross-platform alternative, and is what the
- * engine's own examples use for sprites.
+ *   drawText     TextRenderer.kt:49     GL_UNSIGNED_INT -> glVertexAttribIPointer   works
+ *   drawTexture  TextureRenderer.kt:41  GL_UNSIGNED_INT -> glVertexAttribIPointer   works
+ *   drawQuad     QuadRenderer.kt:37     GL_FLOAT        -> glVertexAttribPointer    renders nothing
+ *   drawLine     LineRenderer.kt:34     GL_FLOAT        -> glVertexAttribPointer    renders nothing
+ *
+ * (the dispatch is `ShaderProgram.setVertexAttributeLayout`, `ShaderProgram.kt:105-116`).
+ * Feeding an integer-typed vertex input through `glVertexAttribPointer` is undefined
+ * behaviour per the OpenGL spec — integer inputs require `glVertexAttribIPointer` — so no GL
+ * error is raised and nothing is logged. Apple's GL-over-Metal layer delivers 0; the shader
+ * derives alpha as `rgba & 255u`, so every quad and line rasterises at alpha 0. Windows
+ * drivers are believed to pass the raw 32 bits through, which is why upstream never noticed.
+ *
+ * Verified empirically by rendering both in the same frame and reading the framebuffer back:
+ * the textured rectangles appear, the quads and lines do not. Full write-up in
+ * `docs/superpowers/reports/2026-08-06-drawquad-macos-investigation.md`.
+ *
+ * ## Why `fillRect` stays, now that the shaders are shadowed
+ *
+ * `src/main/resources/pulseengine/shaders/renderers/{quad,line}.vert` shadow the engine's
+ * copies and repair both primitives — but **only on the development classpath**. The Windows
+ * release jar deliberately keeps the engine's copies (see the shader-override block in
+ * `build.gradle.kts`): the fix is unverified on Windows, and the booth `.exe` must stay the
+ * rendering behaviour that was playtested. So on the booth cabinet `drawQuad` is still the
+ * broken stock version. It happens not to matter there — but only because nothing in this
+ * game calls it.
+ *
+ * That is the trap: "simplify `fillRect` into `drawQuad`" would look completely fine in dev
+ * on this Mac and would then draw *nothing* in the shipped `.exe` if the bug is not in fact
+ * macOS-only — a failure discovered in front of a queue, with no error message to go on.
+ * `fillRect` also batches through the same texture renderer as every sprite, so it is not
+ * even a performance argument. Keep it.
  */
 fun Surface.fillRect(x: Float, y: Float, width: Float, height: Float) =
     drawTexture(Texture.BLANK, x, y, width, height)
