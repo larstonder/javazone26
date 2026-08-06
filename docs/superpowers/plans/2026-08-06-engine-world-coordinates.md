@@ -333,10 +333,10 @@ Two calls give an exactly-correct pixels-per-metre even on the single frame a re
 ### 2.5 What is explicitly NOT in scope
 
 * **`src/main/kotlin/dive/` does not change. At all.** This is a rendering migration. Not one file in `dive/` is edited, and no `no.njoh.pulseengine` import may appear there.
-* **Pearl, air-vent and anglerfish placement stays procedural**, generated from `dailySeed`. No `.scn` file gains level content. Everyone at the booth faces the identical column and day two is a one-line config change (`application.cfg`, `dailySeed`) — see design spec §10 and its amendment log. The scene stays what it is today: an empty scene that exists so `GlobalIlluminationSystem` has somewhere to live.
-* ~~**No scene entities for the diver, pearls, vents or fish.**~~ **AMENDED by Stage D (§2.6).** Still true for **pearls, vents and the fish**, for the reasons in §1.8.3/§1.8.5 — reinforced, not weakened, by the evidence. **Superseded for the diver**, which becomes a single authored appearance-only entity. `EntityRendererImpl` stops being a no-op kept for GI's sake and starts doing real work.
-* **No `GiLightSource` migration.** §1.6. **Unchanged by Stage D** — and §4.11 records the new reason it must stay unchanged.
-* **No art.** The placeholder squares stay squares; they just become 3 metres instead of 90 pixels. **Stage D does not add art either** — it builds the slot the art drops into.
+* **Pearl, air-vent and anglerfish placement stays procedural**, generated from `dailySeed`. No `.scn` file gains level content. Everyone at the booth faces the identical column and day two is a one-line config change (`application.cfg`, `dailySeed`) — see design spec §10 and its amendment log. The scene stays what it is today: an empty in-memory scene, created by `createEmptyAndSetActive`, that exists so `GlobalIlluminationSystem` has somewhere to live.
+* **No scene entities for the diver, pearls, vents or fish.** ~~*AMENDED by Stage D.*~~ **Un-amended: the amendment is deferred to §9** after the review. No `DiverEntity`, no look prototypes, **and no `src/main/resources/dive.scn` file at all.** `EntityRendererImpl` stays exactly what it is today — a no-op kept because GI's `onCreate` looks for an `EntityRenderer` before registering its render passes.
+* **No `GiLightSource` migration.** §1.6, and §9.4's 4.11 records the further reason it must stay unchanged.
+* **No art.** The placeholder squares stay squares; they just become 3 metres instead of 90 pixels.
 
 ---
 
@@ -518,39 +518,39 @@ Listed so nobody spends time on them: the alpha-squared HUD convention and `auth
 
 ## 5. Size, and how to sequence it
 
-**Size.** Roughly **400–500 changed lines across 8 source files and 6 test files**, plus two new source files (~140 lines with docs) and two new test files (~180 lines). `Viewport.kt` (58) is replaced by `Framing.kt` (~35); `ViewportTest.kt` (104) is deleted. `DiveRenderer`'s seven draw methods and `DiveLighting`'s three are rewritten; their colour, intensity and cone code — which is most of both files' 343 and 424 lines — is untouched. Call it **1.5–2 focused days for one person**, of which about a third is the capture verification at three aspect ratios.
+**Size.** Roughly **400–500 changed lines across 8 source files and 6 test files**, plus two new source files (~140 lines with docs) and two new test files (~180 lines). `Viewport.kt` (58) is replaced by `Framing.kt` (~35); `ViewportTest.kt` (104) is dissolved into `FramingTest.kt` (~35, three cases) and `CameraRigTest`. `DiveRenderer`'s seven draw methods and `DiveLighting`'s three are rewritten; their colour, intensity and cone code — which is most of both files' 343 and 424 lines — is untouched. Call it **1.5–2 focused days for one person**, of which about a third is the capture verification at three aspect ratios.
+
+**Plus the reduced Task 10: ~20 lines, no new files, no new tests, roughly an hour** — two comment fixes, a conditional `start()`, two editor gates. (The deferred entity layer in §9 was estimated at 450–550 lines and 1.5–2 further days. That estimate is not part of this plan's budget.)
 
 **Do it in three stages, and understand that the middle one is atomic.**
 
 * **Stage A — Tasks 1–4. Independently valuable, ships alone.** Task 1 deletes the `Camera` scene entity and closes the reported bug outright, today, with no coordinate change at all. If a booth build is imminent, ship Stage A on its own and stop. Tasks 2–4 add the diagnostics and the pure, tested pieces the flip needs, without changing a pixel.
 * **Stage B — Task 5. One commit. It cannot be split.** The moment `mainCamera` stops being identity, *everything* on `main` and `gi_local_scene` must already be in metres and the HUD anchor must already come from `worldPosToScreenPos`, or the frame is garbage. Attempting to land the world and the HUD separately is the single most likely way this migration goes wrong. The de-risking is that `CameraRig` is already proven against the old formulas in Task 3, so the flip's only unknown is whether every call site was converted — which is a compile-and-look problem, not a maths problem.
-* **Stage C — Tasks 6–9. Separable cleanups**, each independently revertable: the GI `camScale` compensation, culling via `isInView`, the origin-based draw cleanup that prepares for sprites, and the documentation.
+* **Stage C — Tasks 6–9. Separable cleanups**, each independently revertable: the `aoRadius` metre value, culling via `isInView`, the origin-based draw cleanup that prepares for sprites, and the documentation.
+* **Stage D (reduced) — Task 10 alone, ~20 lines and no new files.** Depends on Task 5 for the `CameraRig` gate. Ships separately, after Stage B is verified, and can be abandoned without cost. **Tasks 11–14 are deferred to §9.**
 
 **Recommendation: do the migration, but ship Task 1 first and separately.** The bug is not the reason to migrate — Task 1 fixes the bug in five deleted lines. The reason to migrate is that the placeholder squares are about to become sprites, and every sprite authored in screen pixels is a sprite that has to be re-expressed in metres later, plus a `Viewport` call at every draw site that a designer tweaking a size will have to reason about. Doing this before the art lands is much cheaper than doing it after, and it is the only version of "make real art work easier" that survives contact with a 4K booth panel.
 
-* **Stage D — Tasks 10–14. The entity layer. Ships separately, after Stage B, and can be abandoned without cost.**
-
-**Stage D size.** Roughly **450–550 changed lines**, of which most is new: `render/entities/DiverEntity.kt` (~90 lines with docs), four small look prototypes (~60 each), `render/EntityBridge.kt` (~60), a hand-authored `src/main/resources/dive.scn` (small, reviewable), edits to `DiveLighting.setup` (scene load path, conditional `start()`, two corrected comments), `EnPustTil.kt` (two editor gates), `DiveRenderer` (read look values instead of file-private constants), and ~180 lines of tests across three files. **1.5–2 days for one person**, of which a real fraction is the first hour of actually driving the editor and finding out which of §1.8's claims survive contact.
-
-**Sequencing — Stage D depends on Stage B, and the dependency is hard.** `CommonSceneEntity.x/y/width/height` are world units fed straight to `drawTexture` on `mainSurface` through `mainCamera`. **With today's identity camera, an entity at `(12, 94)` renders 12 pixels right and 94 pixels down from the screen's top-left corner** — the diver would sit in the corner at one-thirtieth of its size, and the gizmo would move it in pixels while the Inspector claimed metres. There is no partial version of this: entities are only meaningful once `mainCamera` is a metre-scaled camera.
-
 | Task | Depends on | Why |
 |---|---|---|
-| 10 (author `dive.scn`, let the editor reach STOPPED) | **nothing** — could ship before Stage A | It only changes how the scene is created and started. Worth doing early: it is what makes the editor usable at all, and it is the cheapest way to find out whether §1.8's reading of the editor is right. |
-| 11 (boundary guards) | Task 10 | Deliberately **before** any entity exists, so every guard is red-tested against a real violation rather than written to match code that already passes. |
-| 12 (`DiverEntity`) | **Task 5 (Stage B)** + Tasks 10, 11 | World coordinates, per above. |
-| 13 (look prototypes) | Task 12 | Reuses its scene-loading, gating and doc patterns. |
-| 14 (documentation) | Task 13 | Last. |
+| 2, 3 | Task 1 | Pure, tested, not wired in. Both touch `MainCameraOwnershipTest`'s sequencing — see Task 2 Step 5a. |
+| 4 | nothing | Pure refactor of the strip walk; makes Task 5's diff in that method two lines. |
+| 5 | 2, 3, 4 | The flip. One commit, atomic. |
+| 6 | 5 | The world unit changes meaning; `aoRadius` is the one GI setting that notices. |
+| 7, 8, 9 | 5 | Independent cleanups, any order. |
+| 10 (reduced) | 5, for the `CameraRig` gate only | The comment fixes and the conditional `start()` are independent and could ship at any point. |
+| ~~11–14~~ | — | **Deferred, §9.** |
 
-**Recommendation on Stage D: do it, at the size in §2.6, and ship it as its own set of commits after Stage B is verified.** Two reasons and one caveat.
+**Why the entity layer is not here.** Summarised at §9's banner and argued in full below it. The short version: its two blockers are one-line fixes, but its payoff is "tune a pearl's size without rebuilding" and **there is no art yet**, so nobody knows which numbers need tuning. The reduced Task 10 keeps the part of the workflow that already works — the Scene Systems panel — for a twentieth of the cost.
 
-The reasons: the editor workflow **is** real where it matters — §1.8.7's evidence from the reference is unambiguous that on this engine the `.scn` is where tuning lives, and §1.8.5 confirms that Inspector edits on an authored entity hit the live instance on every keystroke. And the alternative is the loop this project has actually been stuck in, which is edit → gradle → relaunch → screenshot for every number.
+**What is still refused outright, art or no art.** Converting pearls, vents or the anglerfish into entities. It is the change the phrase "the player should be its own entity" naturally generalises to, and on this engine it is strictly negative. The load-bearing reason is **not** the Outliner (that claim is refutable — §9.1's 1.8.5) and **not** per-frame allocation (the render queue is pooled; the sort allocates only at n ≥ 32 — §9.1's 1.8.3). It is these two, in this order:
 
-The caveat, stated plainly because it is the thing most likely to disappoint: **the promised workflow is narrower than "the editor gives you live tuning".** It is *"an authored, selectable entity's numeric and asset-reference properties can be edited from the Outliner while the game runs in F10 mode, and persist if you remember Ctrl+S."* Viewport gizmos only work with the scene STOPPED (`SceneEditor.kt:345`); runtime-spawned entities never appear in the Outliner at all (`SceneEditor.kt:336-343`); the Inspector goes stale the moment game code writes a property (`:1030-1033`); and stop discards everything unsaved (`:540-541`). Anyone expecting Unity will be unhappy. Anyone who wanted to stop rebuilding to change a pearl's size will not be.
+1. **Any value tuned on a pearl is discarded next run.** The column is regenerated from `dailySeed` every time (design spec §10), so there is nothing durable to tune — and anything that *did* persist would be the scene-pollution failure, not the feature.
+2. **It loses culling we already have**, submitting roughly 2.7× the geometry, and makes Task 7 unreachable for exactly the objects it was written for.
 
-**What I would refuse.** Converting pearls, vents or the anglerfish into entities. It is the change the phrase "the player should be its own entity" naturally generalises to, and on this engine it is strictly negative: invisible in the Outliner (§1.8.5), loses culling, adds a per-frame allocation against an explicit project rule, and carries a real n≥32 crash (§1.8.3, §4.14). If the only version of Stage D on offer were one-entity-per-object, the right answer would be to skip the stage entirely and keep the constants in Kotlin.
+The intransitive `z` comparator is a third, real but narrower, reason — see §9.1's 1.8.3 for its measured strength, which is lower than this plan originally claimed.
 
-**If time runs short:** Stage A alone leaves the game correct, with a live invariant check that will shout if it ever stops being correct. That is a defensible place to stop. Stage D is the *first* thing to drop if the booth date gets close — placeholder squares tuned by rebuilding still ship a working cabinet; a half-migrated coordinate system does not.
+**If time runs short:** Stage A alone leaves the game correct, with a live invariant check that will shout if it ever stops being correct. That is a defensible place to stop. Task 10 is the *first* thing to drop after that if the booth date gets close — it buys a tuning convenience, not a working cabinet; a half-migrated coordinate system, by contrast, does not ship at all.
 
 ---
 
@@ -1223,10 +1223,12 @@ git commit -m "feat: let the scene editor reach STOPPED and stop the game fighti
 
 ## 7. Definition of done
 
-- [ ] `./gradlew test` passes, and every deleted `ViewportTest` case is either covered by `CameraRigTest` or consciously abandoned as untestable (§3)
+- [ ] `./gradlew test` passes, and each of the nine `ViewportTest` cases has been dispositioned per §3.2 — three moved to `FramingTest` and **re-seen red under their named mutation in their new home**, two absorbed by `CameraRigTest`, two deleted as measured tautologies, two abandoned with `depthAt` and their loss recorded
+- [ ] Every assertion in `CameraRigTest` has a named mutation that reddens it, written next to it; the two tautologies §3(a) cuts are absent
 - [ ] `render/Viewport.kt` no longer exists, and nothing outside `CameraRig` computes a world-to-screen position
-- [ ] `engine.gfx.mainCamera` is written from exactly one place, on the fixed tick
-- [ ] No scene `Camera` entity, and no engine-authored level content
+- [ ] `engine.gfx.mainCamera` is written from exactly one production file — `render/CameraRig.kt` — on the fixed tick, asserted by the narrowed `MainCameraOwnershipTest`; and the one runtime second writer (the editor's `Camera2DController` under `EPT_EDITOR=1`) is excluded by Task 10's gate, verified by hand, not by a test (Task 5 Step 2a)
+- [ ] `aoRadius` is a constant expressed in **metres**, set once, with no pixel count and no dependence on the surface height anywhere in its derivation (Task 6)
+- [ ] No scene `Camera` entity, no `src/main/resources/dive.scn`, and no engine-authored level content
 - [ ] `src/main/kotlin/dive/` is byte-identical to its state at the start of this plan
 - [ ] At 4:3, 16:9 and 21:9 on a real framebuffer: the diver square and the air-ring centre are concentric; exactly 60 m of water is visible; the walls frame the column with no letterbox bars
 - [ ] Mid-descent with the camera easing hard: pearl halos sit on pearl squares, and the HUD sits on the diver
@@ -1235,13 +1237,21 @@ git commit -m "feat: let the scene editor reach STOPPED and stop the game fighti
 - [ ] `EPT_DEV=1` reports no `CameraInvariants` violations at any of the three shapes, including across a `LEFT_ALT+ENTER` fullscreen toggle
 - [ ] Frame rate is unchanged with lighting on
 
+### Task 10's own done-ness (reduced Stage D)
+
+- [ ] With `EPT_EDITOR` unset, a capture is **identical** to a pre-Task-10 capture — the task must be invisible at the booth
+- [ ] With `EPT_EDITOR=1`: the scene reaches `STOPPED`, the editor camera pans and zooms without snapping back, and the sim is frozen rather than swimming off
+- [ ] The Scene Systems panel lists both systems and dragging `aoRadius` changes the frame immediately — **written down**, because this is the entire payoff and §1.8 is a reading of source, not a measurement
+- [ ] No `dive.scn` was created and no `addSystem` call moved out of `DiveLighting.setup`
+
 ## 8. Deliberately out of scope
 
-- ~~Scene entities for the diver, pearls, vents or the anglerfish (§1.3, §1.6)~~ **Amended by Stage D.** Still out of scope for **pearls, vents and the anglerfish** — and the evidence in §1.8.3/§1.8.5 makes that a firmer no than it was, not a softer one. The **diver** becomes a single authored appearance-only entity (§2.6, Task 12), alongside four non-drawing look prototypes.
-- `GiLightSource` entities (§1.6) and the `GI_GLOBAL_SCENE` far-field light pass — **reaffirmed**, with the new reason at §4.11: adopting it on `DiverEntity` would change the lighting, not just the workflow
-- ~~`.scn`-authored level content of any kind~~ **Amended:** `dive.scn` now carries **appearance** (textures, sizes, colours, light parameters). It carries **no level content**: pearl, vent and anglerfish placement stays seeded and procedural from `dailySeed`, per design spec §10 as amended, and `SceneFilePurityTest` fails the build if that changes.
-- Runtime entity spawning of any kind (§4.9) — the reason `addEntity` is banned outright rather than used carefully
-- Exposing the zone-band colour tables or `BAND_STRIP_METRES` in the Inspector (§2.6) — they are on the `GI_REFLECTANCE_FLOOR` path and stay Kotlin constants guarded by `DiveRendererTest`'s sweep
+- **Scene entities for the diver, pearls, vents or the anglerfish** (§1.3, §1.6, and §9's banner). ~~*Amended by Stage D.*~~ **Un-amended after the review: deferred to §9.** No `DiverEntity`, no look prototypes.
+- **`.scn`-authored content of any kind, appearance included** — and, under this scope, **no `.scn` file at all**. `createEmptyAndSetActive` stays. Pearl, vent and anglerfish placement stays seeded and procedural from `dailySeed`, per design spec §10.
+- `GiLightSource` entities (§1.6) and the `GI_GLOBAL_SCENE` far-field light pass — **reaffirmed**, with the further reason at §9.4's 4.11
+- Runtime entity spawning of any kind — nothing may call `engine.scene.addEntity`
+- Exposing the zone-band colour tables or `BAND_STRIP_METRES` in the Inspector — they are on the `GI_REFLECTANCE_FLOOR` path and stay Kotlin constants guarded by `DiveRendererTest`'s sweep
+- Persisting an editor-tuned value. With no `.scn` there is no Ctrl+S target; read the number off the panel and type it into `DiveLighting.setup` (Task 10)
 - Removing the GI reflectance floor by setting `minReflectance = 0` (§1.7 — documented, not done)
 - A world-space HUD surface (§2.4 — revisit with the §12 cash-out spectacle)
 - Camera zoom, shake or rotation, which the migration makes possible and which the cash-out will want
