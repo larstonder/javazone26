@@ -4,6 +4,8 @@
 
 **Goal:** Make `engine.gfx.mainCamera` the single authority on where a world point lands on screen, in world units (metres), so that the world, the GI light map and the diver-tracking parts of the HUD cannot disagree — at any framebuffer size or aspect ratio — and so that real art can be authored in metres.
 
+**Scope extension (2026-08-06, Stage D).** The original plan stopped at "the camera is real and the world is in metres" and explicitly ruled out scene entities (§2.5, §8). Opening the project in the engine's scene editor showed why that is not the end of the story: the Outliner reads **0/0**, so there is nothing to select, no Inspector, no `@TexRef` asset picker and no gizmo — the editor is a settings panel for Global Illumination and nothing else. Stage D adds a **small, authored entity layer whose only job is appearance**, so the art phase can tune with a slider instead of the edit → gradle → relaunch → screenshot loop. It does **not** adopt one-entity-per-game-object; §1.8 shows why that would buy nothing. §2.5 and §8 are amended in place where Stage D supersedes them.
+
 **Spec:** [`docs/superpowers/specs/2026-08-04-en-pust-til-design.md`](../specs/2026-08-04-en-pust-til-design.md) — 🔒 LOCKED
 **Predecessor plan:** [`2026-08-04-en-pust-til-gameloop.md`](2026-08-04-en-pust-til-gameloop.md)
 **Branch:** `feat/en-pust-til-gameloop`
@@ -162,6 +164,158 @@ One quantity gets **better**: `jitterFix` (`GiSceneRenderer.kt:150-162`) derives
 
 ---
 
+### 1.8 The entity layer — what the editor actually gives you
+
+Every claim in this section was read out of `ENG/modules/editor/` and `ENG/core/scene/`. It is deliberately blunt, because the workflow being promised — live tuning, asset pickers, values that persist — is only *partly* real, and which part is real decides the whole design.
+
+#### 1.8.1 The Outliner reads 0/0 for **two** independent reasons, and only one of them is "no entities"
+
+**(a) There are no entities.** `DiveLighting.setup` calls `engine.scene.createEmptyAndSetActive("dive.scn")` (`OURS/src/main/kotlin/render/DiveLighting.kt:204`). That *creates* an empty scene which happens to be named `dive.scn`; it never reads a file, and there is no `dive.scn` anywhere in `src/main/resources/` (contents: `pulseengine/`, `application.cfg`, `application-dev.cfg`, `init.pes`, `init-dev.pes`).
+
+**(b) The scene is RUNNING, and the editor's whole viewport is gated on STOPPED.** `engine.scene.start()` (`DiveLighting.kt:255`) leaves the scene in `SceneState.RUNNING` for the entire process. `SceneEditor.onUpdate` wraps *all* viewport interaction — entity selection, the move/resize gizmo, rubber-band select and the editor's own camera controller — in
+
+```kotlin
+if (enableViewportInteractions && engine.scene.state == SceneState.STOPPED)   // SceneEditor.kt:345
+```
+
+and only requests viewport input focus when STOPPED (`SceneEditor.kt:330-334`). **So simply adding entities would still give no gizmo, no viewport selection and no rubber-band — the three things `6b05f07` just made drawable on this Mac.** Anyone who adds entities and stops there will conclude the editor is broken.
+
+**And `start()` turns out not to be required.** `SceneManagerImpl.update()` calls `activeScene.update(engine)` unconditionally (`ENG/core/scene/SceneManagerImpl.kt:206`). `Scene.update` initialises and updates every *enabled* system with **no `SceneState` check at all** (`ENG/core/scene/Scene.kt:80-97`), and `Scene.render` is the same (`:113-117`); `SceneSystem.init` is what calls `onCreate` (`ENG/core/scene/SceneSystem.kt:21-25`). `GlobalIlluminationSystem` overrides exactly `onCreate` (`:74`), `onUpdate` (`:192`), `onFixedUpdate` (`:220`) and `onDestroy` (`:234`) — **there is no `onStart`**. The `MultiplyEffect` that darkens the Abyss is installed from `onUpdate` (`GlobalIlluminationSystem.kt:213`), which runs regardless of state.
+
+> **Correction to an existing comment.** `DiveLighting.kt:141-143` says GI "needs an active scene to live in and a RUNNING one for its `onUpdate` to install the multiply effect … hence `createEmptyAndSetActive` here and `engine.scene.start()` at the end". The first half is right; **the second half is false** — nothing in `Scene.update`/`Scene.render` consults `SceneState`. Only `EntityUpdater` and individual entities self-gate on RUNNING (`ENG/modules/scene/systems/EntityUpdater.kt:33-34, 39-40`), and we have neither. Task 10 fixes the comment and makes the `start()` call conditional.
+
+#### 1.8.2 What `CommonSceneEntity` is, exactly
+
+`ENG/modules/scene/entities/CommonSceneEntity.kt:16` — `abstract class CommonSceneEntity : SceneEntity(), Initiable, Updatable, Renderable, Spatial, Named`.
+
+| From | Property | Type | Default | Line |
+|---|---|---|---|---|
+| `SceneEntity` | `id`, `parentId`, `childIds`, `flags` | `Long`, `Long`, `LongArray?`, `Int` | — | `ENG/core/scene/SceneEntity.kt:14-24` |
+| `Named` | `name` | `String` | `""` | `CommonSceneEntity.kt:18` |
+| `Spatial` | `x`, `y`, `z`, `width`, `height`, `rotation` | all `Float` | `0, 0, -0.1, 100, 100, 0` | `CommonSceneEntity.kt:19-24` |
+
+Flags: `DEAD=1`, `POSITION_UPDATED=2`, `ROTATION_UPDATED=4`, `SIZE_UPDATED=8`, `DISCOVERABLE=16`, `SELECTED=32`, `EDITABLE=64`, `HIDDEN=128` (`SceneEntity.kt:50-57`).
+
+**Positions are world units.** `x`/`y`/`width`/`height` are fed straight to `surface.drawTexture` inside the entity's own `onRender`, on `mainSurface`, through `mainCamera`. This is the sequencing argument in one line: **with today's identity camera an entity at `(12, 94)` lands 12 px right and 94 px down from the top-left corner.** Entities are meaningless before Stage B.
+
+Lifecycle, and who dispatches what:
+
+| Hook | Interface | Dispatched by | Runs when |
+|---|---|---|---|
+| `onCreate()` | `Initiable` | `Scene.insertEntity` itself (`Scene.kt:57-58`) and on deserialization (`Scene.kt:151-157`) | always |
+| `onStart(engine)` | `Initiable` | `EntityUpdater` (`EntityUpdater.kt:28`), only from `Scene.start()` | only if `EntityUpdater` is in the scene |
+| `onUpdate` / `onFixedUpdate` | `Updatable` | `EntityUpdater` (`:31-41`) | only if `EntityUpdater` is present **and** `state == RUNNING` |
+| `onRender(engine, surface)` | `Renderable` | `EntityRendererImpl` (`EntityRenderer.kt:135`) | any state, `enabled && initialized` |
+| `onDestroy` | — | **does not exist on entities** | — |
+
+**This is load-bearing for the boundary.** `EntityUpdater` was removed in `6ea1f53`. Without it **no entity in this game can ever receive `onUpdate` or `onFixedUpdate`** — an entity therefore *cannot* evolve state of its own, structurally, not by convention. §2.6 turns that into a review rule and Task 11 into a failable test.
+
+Deletion is `entity.set(DEAD)` (`SceneEditor.kt:547-551` is the canonical form, and it cascades to children by hand); compaction happens at the end of `Scene.update` (`Scene.kt:99-105`), which runs in every state. Note `EntityRendererImpl` checks `HIDDEN` but **not** `DEAD` (`EntityRenderer.kt:100`), so an entity killed in `onFixedUpdate` still renders for one frame.
+
+#### 1.8.3 Per-entity cost, and whether ~100 pearls is reasonable
+
+`EntityRendererImpl.onRender` = `buildRenderQueue` + `drawRenderQueue` (`EntityRenderer.kt:83-87`). Per frame, per render pass:
+
+* `engine.scene.forEachEntityTypeList` walks every type list; **the type test is done on element 0 only** (`:95-96`) and the rest of the list is assumed homogeneous. Safe, because `entityTypeMap` is keyed on the exact `entity::class.java` (`Scene.kt:46-53`).
+* Per entity: one `isNot(HIDDEN)` bitmask test, one checked cast, one `ArrayList.add` (`:98-104`).
+* **`entities.sortWith(BackToFrontEntityComparator)` (`:132`) — the engine's own source carries the comment `// TODO: This creates alot of garbage internally`.** It is `Arrays.sort(Object[], Comparator)` → TimSort, which allocates a temp array every frame, every task.
+* Per entity: one virtual `onRender(engine, surface)` (`:133-137`).
+* **There is no culling anywhere in this file** — no frustum test, no `SpatialGrid` query, no bounds check. Every non-`HIDDEN` `Renderable` in the scene is sorted and drawn every frame, on screen or not.
+
+Our cast if we converted everything: `PearlColumn.PEARLS_PER_ZONE = 14` × 5 zones = **70 pearls** (`OURS/src/main/kotlin/dive/Pearl.kt:26`, `dive/Zone.kt:13-17`), 3 vents (`dive/AirPocket.kt:34`), 1 anglerfish, 1 diver — **75 entities**, i.e. the ~100 in the question.
+
+Is 75 quads a frame expensive? In isolation, no. But three specific things are worse than they look:
+
+1. **It breaks a stated project rule.** `CLAUDE.md`: *"No per-frame allocation in the render path."* TimSort at `EntityRenderer.kt:132` allocates every frame, forever, in engine code we do not control. Today `DiveRenderer` allocates nothing.
+2. **It loses culling we already have.** `drawPearls` currently rejects off-screen pearls by screen y (`DiveRenderer.kt:237`). With ~60 m visible out of a 160 m column, the entity path submits roughly **2.7× more geometry** than today, and Task 7 (`cam.isInView`) would become unreachable for exactly the objects it was written for.
+3. **`BackToFrontEntityComparator` is intransitive and 70 > 32.** It is `((b.z - a.z) * 10_000f).toInt()` (`EntityRenderer.kt:155-158`). Any two entities whose `z` differs by less than 1e-4 compare equal, so `z = 0.0, 0.00005, 0.0001` gives `a≈b`, `b≈c`, `a≠c`. TimSort throws `IllegalArgumentException: Comparison method violates its general contract!` for n ≥ 32. Uniform `z` is fine; the moment someone jitters pearl `z` for layering, the booth cabinet crashes mid-queue. This is a latent trap, not a hypothetical.
+
+One more ordering fact: `game.onRender()` runs **before** `scene.render()` (`ENG/core/PulseEngineImpl.kt:298-299`), so **entity draws always composite on top of every immediate-mode draw on the same surface.** Fine for actors-over-background; it means you can never put an immediate-mode object in front of an entity one.
+
+#### 1.8.4 Annotations and the Inspector — what is genuinely editable
+
+Declared in `ENG/core/shared/annotations/`:
+
+| Annotation | Where | What it does |
+|---|---|---|
+| `@Prop(group, i, hidden, editable, min, max, desc)` | `Prop.kt:12-32` | grouping, ordering, hiding, numeric clamp |
+| `@AssetRef(type)` | `AssetRef.kt:19-20` | asset picker filtered to `type` |
+| `@TexRef` | `AssetRef.kt:28-29` | meta-annotated `@AssetRef(Texture::class)` |
+| `@SpriteSheetRef` | `AssetRef.kt:36-37` | meta-annotated `@AssetRef(SpriteSheet::class)` |
+| `@SoundRef`, `@FontRef` | `AssetRef.kt:44, 52` | same, other asset types |
+| `@Icon(iconName, size, hexColor, textureAssetName, showInViewport)` | `Icon.kt:9-14` | **class-level, not property-level** |
+
+`@TexRef`/`@SpriteSheetRef` resolve because `ReflectionUtil.findPropertyAnnotation` flattens meta-annotations (`ENG/core/shared/utils/ReflectionUtil.kt:97`) and searches **getters**, so on an interface property you must write `@get:TexRef`.
+
+The Inspector is built by `SceneEditor.selectSingleEntity` (`SceneEditor.kt:954-1017`): `entity::class.memberProperties` → drop `@Prop(hidden)` → group → `filterIsInstance<KMutableProperty<*>>()` → `isEditable()` (not private/protected, no `@JsonIgnore` — `EditorUtil.kt:27-30`). Widget dispatch is `UiElementFactory.propertyUiFactories` (`:39-50`) with a fallback at `:705-708`:
+
+| Kotlin type | Widget |
+|---|---|
+| `String` **with** `@TexRef`/`@AssetRef` | **asset picker** — searchable popup, live texture thumbnails (`UiElementFactory.kt:590-635`, `AssetPicker.kt:194-206`) |
+| `String` plain | text field |
+| `Float`, `Double` | number field **with a mouse-drag stepper** (`InputField.kt:455-467`) — this is the closest thing to a slider; there is no slider widget |
+| `Int`, `Long`, `Char` | integer field + stepper |
+| `Boolean` | dropdown (`true`/`false`) |
+| any `enum` | dropdown of the constants |
+| `Color` | full colour picker, bound to the entity's own `Color` instance and mutated in place (`UiElementFactory.kt:43`, `ColorPicker.kt:178-201`) |
+| `FloatArray`/`IntArray`/… | comma-separated text field |
+| **anything else** (`Vector2f`, `List`, nested objects) | a text field showing `toString()` that **silently cannot write back** — `EditorUtil.setPrimitiveProperty` has `else -> null` (`EditorUtil.kt:74`) and no log line |
+
+`@Icon` is a class annotation and drives the Outliner row icon and colour (`Outliner.kt:458-464`) and, with `showInViewport = true`, an in-viewport billboard at the entity's world position (`SceneEditor.kt:440-466`) — which is how you find an entity that draws nothing.
+
+**Edits are immediate.** Every valid keystroke calls `property.setter.call(...)` on the live instance (`UiElementFactory.kt:684-692` → `EditorUtil.kt:63-80`); dropdowns at `:76`/`:93`, asset picker at `:632`, colour by aliasing. There is no apply step and no undo.
+
+Three gotchas worth designing around:
+
+* **`@Prop(editable = false)` only works on numeric/text `InputField`s** (`UiElementFactory.kt:673`). Enums, booleans, `Color` and asset refs ignore it — you cannot lock those.
+* **`@Prop(min/max)` are only honoured for `FLOAT`/`INTEGER` fields** (`:675-682`).
+* **`@Prop(desc = …)` is dead metadata** — declared at `Prop.kt:32`, zero readers in `modules/editor`. No tooltips.
+
+#### 1.8.5 Play mode — the decisive finding
+
+**`PulseEngineGame.onUpdate`/`onFixedUpdate`/`onRender` are never gated by scene state.** `PulseEngineImpl.kt:256, 280, 298` call them every frame unconditionally. "Play" does not switch the game on; the game was already running while you were editing. What `start()`/`stop()` change is `EntityUpdater`'s ticking of entities, and nothing else that matters to us.
+
+Two ways to start from the editor:
+
+* **`Run → Start` / F2** — `stopEditorAndStartGame` (`SceneEditor.kt:514-530`): `stop()`s the editor **Service**, so the entire editor UI stops updating and rendering (`ServiceManagerImpl.kt:35, 43, 51`). Outliner and Inspector are simply gone.
+* **F10** — `SceneEditor.kt:358-370`: starts the scene but **leaves the editor UI up**. This is the only mode where "tune while it runs" exists at all.
+
+In F10 mode:
+
+* **Outliner selection and Inspector editing work while RUNNING.** `rootUI.update(engine)` (`SceneEditor.kt:381`) is not state-gated; clicking a row reaches `selectSingleEntity` (`:261-272`) and every subsequent edit hits `setter.call` on the live entity. **This is the real prize, and it is real.**
+* **Viewport selection and the gizmo do not** — `:345`.
+* **Entities added at runtime never appear in the Outliner.** The only refresh is `outliner?.reloadEntitiesFromActiveScene()` behind `if (engine.scene.activeScene.hashCode() != lastSceneHashCode)` (`SceneEditor.kt:336-343`). `Scene` has no `hashCode` override (`Scene.kt:17-21`), so that is an *identity* hash which changes only when a different `Scene` instance becomes active. `Scene.insertEntity` (`Scene.kt:42-61`) notifies nobody. `Outliner.addEntities` (`Outliner.kt:244-269`) is called only from `SceneEditor.createNewEntity` (`:932`) and reparenting (`:979`).
+
+  > **This single fact kills pearls-as-entities.** Seventy pearls spawned from the daily seed at runtime would be invisible in the Outliner, unselectable, uninspectable and un-tunable. They would buy **none** of the workflow and pay all of the cost in §1.8.3.
+
+* **The Inspector never re-reads values from the entity.** `updateEntityPropertiesPanel` (`SceneEditor.kt:1030-1033`) pushes back only `x`/`y`/`rotation`/`width`/`height`, and only when the *gizmo* moved them. Anything game code writes goes stale in the panel immediately. A diver entity whose position is pushed every fixed tick will show a frozen `x` while the diver visibly moves. Not fatal — but say so in the entity's class doc, or the first person to look will file it as a bug.
+
+**STOP discards everything.** `stopGameAndStartEditor` (`:533-543`) and the F10 stop (`:366-369`) both do `engine.scene.stop(); engine.scene.reload()`, and `reload` is `loadAndSetActive(activeScene.fileName)` (`SceneManagerImpl.kt:175-178`) → a full deserialize from disk, `clearAll()`, `System.gc()` (`:113-135`). **A value tuned while RUNNING is lost unless you press Ctrl+S first.**
+
+#### 1.8.6 Persistence — how a tuned value reaches the `.exe`, and the pollution hazard
+
+`engine.scene.save()` → `SceneManagerImpl.save` (`:148-160`) → `activeScene.optimizeCollections()` → Jackson (`ENG/core/data/DataImpl.kt:162-166`, with `enableDefaultTyping()`) → `saveDirectory/fileName` unless `fileName` is absolute (`DataImpl.kt:151-152`). `Scene` is `@JsonAutoDetect(fieldVisibility = ANY)` (`Scene.kt:16`), so **every entity currently in `Scene.entities` is written, including any added at runtime.** The only exclusion mechanism is `@JsonIgnore`; there is no persist/transient flag on entities. `@Prop(hidden = true)` hides from the Inspector but **still serializes**.
+
+Save triggers (`SceneEditor.kt`): `File → Save` (`:192`), `File → Save as…` (`:193`), **Ctrl+S, which works whenever the editor service is up — including while RUNNING (`:163-164`)**, and start-of-play, which saves only `if (state == STOPPED)` (`:526-529`, `:360-363`) — i.e. the authored pre-run state. **Stop never saves.**
+
+So the route to the shipped `.exe` is exactly the reference's: point the save at the source tree, tune, save, rebuild.
+
+> **Hazard, stated plainly.** `engine.config.saveDirectory` is already where `ScoreRepository` writes `scoreboard.json` (`OURS/src/main/kotlin/score/ScoreRepository.kt:184`). Repointing it at `src/main/resources/` to catch `dive.scn` would also drop the scoreboard and its timestamped backups into the source tree. Use an **absolute** scene `fileName` in dev instead — `DataImpl.kt:151-152` takes the absolute path in preference to `saveDirectory` — and leave `saveDirectory` alone.
+
+> **Second hazard.** `enableDefaultTyping()` (`DataImpl.kt:164`) writes fully-qualified class names into the `.scn`, and `FAIL_ON_INVALID_SUBTYPE = false` (`:166`) makes an unresolvable one deserialize to `null` silently. **Renaming or moving an entity class breaks every existing scene with no error.** Pick the package once.
+
+**What stops a runtime-spawned entity from being written into `dive.scn`, and what happens if one is?** At the engine level: *nothing*. `addEntity` pushes into the same list the serializer walks, and Ctrl+S works while running. If it happened, the next load would materialise day one's seeded pearls as **authored** entities *in addition to* day two's procedurally generated ones — silently, inside a single-line 100 KB JSON diff nobody reads — which is precisely the "every attendee faces an identical column" guarantee failing. Our answer (§2.6) is structural rather than procedural: **nothing in production calls `addEntity`, so nothing spawnable exists to be saved**, and Task 11 makes that a failable test plus a purity check on the committed `dive.scn`.
+
+For the record, the reference's answer is weaker and would not survive our constraint: caesars-salads spawns four runtime types (`Enemy.kt:92` `EnemyHitBox`, `Torch.kt:65` `Spark`, `SaladBowl.kt:190` `SaladBowlPart`, `SaladBowl.kt:245` `SaladParticle`), none of which appears in any `.scn`. It relies on (a) `GameMain.kt:71-76` saving only when the editor service is running, (b) every runtime type self-killing on a TTL (`Spark.kt:67-68`, `SaladParticle.kt:59-60`, `SaladBowlPart.kt:64-65`), (c) `setNot(DISCOVERABLE)` in `init{}` (`Spark.kt:47`, `SaladParticle.kt:33`), and (d) the editor's stop→reload. That is four conventions and no test.
+
+#### 1.8.7 The reference confirms the `.scn` is the tuning source of truth
+
+Authored values in `REF/src/main/resources/scenes/level_1.scn` routinely override — and have drifted far from — the Kotlin defaults: `Torch.intensity` `4f` → `7.0`, `Torch.radius` `0f` → `50000.0`, `Player.bodySwaySpeed` `1f` → `0.003`, `Enemy.viewDistance` `1000f` → `1500.0`, `SaladBowl.eatSpeed` `0.025f` → `0.04`. The sharpest proof: `Torch.lightTexture` defaults to `"torch_flame"` (`Torch.kt:35`) but the actual asset is `torche_flame` (from `torche_flame_8x8.png`), so the code default resolves to nothing and `frameCount` would be `0` → a divide by zero in `onFixedUpdate` (`:53`). **The game only works because the editor-authored string in the `.scn` overrides it.** Post-processing is tuned the same way (`ColorGradingSystem {"exposure":2.0,…}`, `BloomSystem {"intensity":0.95,…}`) and `REF/README.md:39-44` explicitly tells you to tune `lightTexScale` *from inside the scene editor*.
+
+Two things follow. First, **the workflow does deliver** — this is what real tuning on this engine looks like. Second, **it delivers via the property panel, not via one entity per object**: 289 authored entities in `level_1.scn` are level *geometry* placed by hand, while everything spawned procedurally (sparks, shards, particles) carries hardcoded Kotlin values and is never authored at all. Our pearls are the second category, not the first.
+
+---
+
 ## 2. Target architecture
 
 ### 2.1 Coordinate spaces
@@ -285,9 +439,98 @@ Two calls give an exactly-correct pixels-per-metre even on the single frame a re
 
 * **`src/main/kotlin/dive/` does not change. At all.** This is a rendering migration. Not one file in `dive/` is edited, and no `no.njoh.pulseengine` import may appear there.
 * **Pearl, air-vent and anglerfish placement stays procedural**, generated from `dailySeed`. No `.scn` file gains level content. Everyone at the booth faces the identical column and day two is a one-line config change (`application.cfg`, `dailySeed`) — see design spec §10 and its amendment log. The scene stays what it is today: an empty scene that exists so `GlobalIlluminationSystem` has somewhere to live.
-* **No scene entities for the diver, pearls, vents or fish.** §1.3, §1.6, and the earlier `caesars-comparison.md` findings 20/21/23.
-* **No `GiLightSource` migration.** §1.6.
-* **No art.** The placeholder squares stay squares; they just become 3 metres instead of 90 pixels.
+* ~~**No scene entities for the diver, pearls, vents or fish.**~~ **AMENDED by Stage D (§2.6).** Still true for **pearls, vents and the fish**, for the reasons in §1.8.3/§1.8.5 — reinforced, not weakened, by the evidence. **Superseded for the diver**, which becomes a single authored appearance-only entity. `EntityRendererImpl` stops being a no-op kept for GI's sake and starts doing real work.
+* **No `GiLightSource` migration.** §1.6. **Unchanged by Stage D** — and §4.11 records the new reason it must stay unchanged.
+* **No art.** The placeholder squares stay squares; they just become 3 metres instead of 90 pixels. **Stage D does not add art either** — it builds the slot the art drops into.
+
+---
+
+### 2.6 Stage D: the entity layer — appearance only, authored only
+
+**The one-sentence design: a small, fixed, `.scn`-authored cast of entities that own how things *look*, and nothing else. Not one entity per game object.**
+
+#### What becomes an entity, and what does not
+
+| Thing | Today | Stage D | Why |
+|---|---|---|---|
+| **Diver** | immediate | **`DiverEntity` — a real, positioned, authored `CommonSceneEntity`** | Singleton, so it is *in* the Outliner, selectable, live-editable and persisted. It is the thing that gets iterated on most (texture, size, beam), and `@Icon(showInViewport = true)` plus the gizmo let you place and scale it against the real world in metres. Position pushed from `DiveSim`; see below. **This is the direct answer to "should the player be its own entity?" — yes.** |
+| **Pearls (×70)** | immediate, culled | **stay immediate**, but read their appearance from an authored `PearlLook` prototype | Runtime-spawned entities are invisible in the Outliner (§1.8.5) — 70 of them buy *zero* workflow and cost the culling, the per-frame TimSort allocation and the intransitive-comparator crash risk (§1.8.3). A single `PearlLook` gives the identical asset picker, the identical live number field and the identical persistence, for one entity. |
+| **Air vents (×3)**, **anglerfish (×1)** | immediate, culled | same: **immediate, driven by an authored `VentLook` / `AnglerfishLook`** | Same argument, and the fish is deliberately drawn *identically* to a pearl (`DiveRenderer.kt:243-247`) — that identity is a design rule, easier to hold with one shared look object than two entities someone can drift apart in the editor. |
+| **Zone bands** | 120 immediate strips | **stay immediate, and stay Kotlin constants** | Full-screen background geometry, not objects. 120 entities would be absurd and their z-sort would dominate the frame; they have no position to gizmo; and they must draw *first*, which the entity path cannot guarantee because `game.onRender()` precedes `scene.render()` (§1.8.3). More importantly the zone colour tables are **safety-critical** — every strip colour must clear `GI_REFLECTANCE_FLOOR` or the ~94 m seam returns (risk 4.2), and `DiveRendererTest`'s 0–200 m quantization sweep is what proves it. Making them live-editable would put a foot-gun in a text field. **Deliberately not exposed.** |
+| **Column walls, waterline** | immediate | **stay immediate** | Same: framing geometry derived from `Tuning.COLUMN_HALF_WIDTH`, not authorable objects. Their two colours *may* live on the `WaterColumnLook` prototype if wall tuning is ever wanted; they are not on the reflectance-floor path. Low priority. |
+| **Lights** | immediate `drawLight` | **stay immediate** | §1.6 stands unchanged and §4.11 strengthens it. |
+| **HUD** | `"hud"` surface, screen pixels | **unchanged** | Risk 4.3 is unaffected. |
+
+A "**Look**" here is a `CommonSceneEntity` that carries appearance parameters and draws nothing (`set(HIDDEN)` in `init{}`, empty `onRender`), findable in the viewport via `@Icon(showInViewport = true)`. Its `x`/`y`/`width`/`height` are meaningless and should be documented as such in its class doc — the engine gives no way to hide inherited props from the Inspector without overriding them.
+
+Total: **1 real entity + 4–5 look prototypes ≈ 6 entities**, versus 75. Every workflow benefit, none of the §1.8.3 costs, and the scene file stays small enough to read.
+
+#### State flows in exactly one direction, and here is how a reviewer checks
+
+```
+                 DiveSim  (pure, zero engine imports, the source of truth)
+                    |
+                    |   render/EntityBridge.push(engine, sim)   -- called from
+                    |   EnPustTil.onFixedUpdate, AFTER sim.tick, ONCE per fixed step
+                    v
+              DiverEntity.x / .y / .width / .height        (appearance only)
+                    |
+                    |   EntityRendererImpl -> DiverEntity.onRender(engine, surface)
+                    v
+                mainSurface, in metres, through mainCamera
+
+              PearlLook.texture / .sizeMetres / .colour     (authored, read-only at runtime)
+                    |
+                    |   DiveRenderer.drawPearls reads them once per frame
+                    v
+                mainSurface, in metres, through mainCamera
+
+  There is NO arrow pointing back up. Nothing in dive/ knows an entity exists.
+```
+
+**Six review signals that the boundary has been violated.** Three are source-scannable and become tests in Task 11; three are reading rules.
+
+| # | Violation | How you see it | Enforced |
+|---|---|---|---|
+| 1 | `src/main/kotlin/dive/` changed at all | `git diff --stat src/main/kotlin/dive/` is non-empty | DoD + existing convention |
+| 2 | `EntityUpdater` added back to the scene | `addSystem(EntityUpdater())` in production source | **test** — and it is the *mechanism*: without it, no entity can receive `onUpdate`/`onFixedUpdate` (§1.8.2), so an entity provably cannot evolve state |
+| 3 | Anything calls `engine.scene.addEntity(` | source scan | **test** — also the whole defence against scene pollution (§1.8.6) |
+| 4 | A write flows entity → sim | `sim.<field> =` or `pearl.<field> =` anywhere under `render/` | **test** (regex scan), plus review |
+| 5 | An entity declares a non-appearance field | a `var` named `velocity`/`depth`/`mass`/`air`/`score`, or any `dive.*` type on an entity | review |
+| 6 | Game logic reads an entity property | `diverEntity.width` used in a scoring, collision or air decision | review |
+
+If any of 1–6 is true, the pure-sim boundary that let `Buoyancy` be rewritten from scratch on playtest feedback is gone, and the entity layer must be reverted rather than patched.
+
+#### Scene loading, and the editor gate
+
+`createEmptyAndSetActive("dive.scn")` (`DiveLighting.kt:204`) becomes a load with a fallback:
+
+```kotlin
+// Authored appearance lives in dive.scn; the WATER COLUMN does not and never will
+// (design spec §10 — every attendee faces the identical seeded column). If the file is
+// missing or unreadable we fall back to the empty scene and log at WARN, because the game
+// must still boot at the booth with placeholder squares rather than not boot at all.
+engine.scene.loadAndSetActive("dive.scn", fromClassPath = !devMode)
+```
+
+and `engine.scene.start()` becomes conditional: **skipped when the editor is enabled**, so the scene stays `STOPPED` and `SceneEditor.kt:345` lets the viewport, gizmo and rubber-band actually work. GI does not care (§1.8.1). At the booth `EPT_EDITOR` is unset, `start()` runs, and behaviour is bit-identical to today.
+
+Two things must additionally be gated on the editor being open, both of which fight it:
+
+* **`CameraRig.apply`** — after Stage B it writes `mainCamera` 60×/s, and the editor drives the same object through its own `Camera2DController`. Left ungated, you cannot pan or zoom in the editor at all. Skip `CameraRig.apply` while the editor service is running.
+* **`sim.tick`** — game callbacks are never state-gated (§1.8.5), so the diver keeps swimming while you try to position it. Freeze the sim while the scene is `STOPPED` and the editor is up.
+
+And the push itself is gated the other way: **push only when `engine.scene.state == RUNNING`.** When STOPPED the gizmo owns `DiverEntity.x/y`; when RUNNING `DiveSim` does. One writer at a time, always, and the rule is one line.
+
+#### How a tuned value reaches the shipped `.exe`
+
+1. `EPT_EDITOR=1 ./gradlew run`, scene loads STOPPED, select `PearlLook` in the Outliner.
+2. Tune. Edits hit the live instance on every keystroke (§1.8.4); F10 to watch it in motion.
+3. **Ctrl+S.** In dev the scene's `fileName` is an absolute path into `src/main/resources/dive.scn` (§1.8.6 — *not* via `saveDirectory`, which belongs to `ScoreRepository`).
+4. `git diff src/main/resources/dive.scn`, review, commit.
+5. `./gradlew buildWin64Release` bundles it; the release loads `fromClassPath = true`.
+
+Step 4 is not optional and is why the scene file must stay ~6 entities: a 100 KB single-line JSON blob cannot be reviewed, and §1.8.6's pollution failure would hide inside one.
 
 ---
 
@@ -346,6 +589,33 @@ python3 tools/check-hud-alignment.py /tmp/ar-16x9-0.png /tmp/ar-16x9-hud-0.png
 ```
 
 The diver square is the brightest thing in the world capture and the air ring is the brightest thing in the HUD capture, and they are concentric by design. **Acceptance: the two centroids agree within a few pixels at all three shapes.** That number, at three aspect ratios, on a real framebuffer, is the actual replacement for `ViewportTest` — everything above it is scaffolding that makes it likely to pass first time.
+
+**(e) Stage D: what can honestly be tested, and what cannot.**
+
+`ViewportTest` was 9 tests that could not fail. The temptation in Stage D is worse, because "does the Inspector work?" is exactly the kind of question you can write a green test about without testing anything. Splitting it honestly:
+
+**Genuinely testable, and each one fails for a real reason:**
+
+1. **The push function.** Extract it as pure: `EntityBridge.pushDiver(entity, sim)` (or `(x, depth, heldMass) -> (x, y, w, h)`), taking and returning primitives/an entity with plain fields, so it needs no GL context. Assert the entity's `x`/`y` equal `sim.x`/`sim.depth`, that `width`/`height` follow `DIVER_SIZE_METRES + heldMass * 0.03f` (the existing rule at `DiveRenderer.kt:262`), and — the mutation-test — that changing `sim.x` changes `entity.x`. This is the one behavioural test in the stage and it is real.
+2. **Boundary guards, as source scans.** The project already has this pattern and it is the right one (`MainCameraOwnershipTest`, added in `6ea1f53`, both cases mutation-tested). Four scans over `src/main/kotlin/**.kt`:
+   * no `engine.scene.addEntity(` anywhere (§2.6 rules 3, and the pollution defence);
+   * no `EntityUpdater` in any `addSystem` call (§2.6 rule 2);
+   * no assignment into a `dive` object from `render/` — regex `\b(sim|pearl|pocket|fish)\.\w+\s*=` (§2.6 rule 4);
+   * no `no.njoh.pulseengine` import under `src/main/kotlin/dive/` (constraint 1, currently true by convention only).
+   Each must be shown to go **red** when you temporarily insert the offending line, exactly as Task 8 Step 2 requires for the `drawQuad` guard. A guard that has never been seen red is a guard nobody has tested.
+3. **`dive.scn` purity — the strongest new test.** Parse the committed `src/main/resources/dive.scn` as text and assert: (a) it names **no** `Pearl`-, `AirPocket`- or `Anglerfish`-shaped entity type; (b) the total number of `["<fqcn>",{` entity entries is `<= 8`; (c) it contains only class names from an explicit allow-list. This is the check that catches an accidental Ctrl+S-while-running before it reaches the booth, and it catches it in CI rather than in a 100 KB one-line diff. It fails the moment §1.8.6's hazard actually happens.
+4. **Asset references resolve.** For every `@TexRef`-shaped string value in `dive.scn`, assert a matching asset file exists under `src/main/resources/`. This is exactly the `torch_flame` vs `torche_flame` bug the reference shipped with (§1.8.7) and it is free to prevent.
+5. **Class-name stability.** `enableDefaultTyping()` writes FQCNs into the scene (§1.8.6). Assert that every FQCN in `dive.scn` resolves via `Class.forName`. A package move then fails the build instead of silently emptying the scene.
+
+**Not testable — you have to look, and the plan says so rather than faking it:**
+
+* That the Outliner lists anything, that the gizmo grabs, that the rubber-band selects.
+* That an Inspector edit visibly changes the running frame.
+* That the asset picker lists our textures once there are any.
+* That `Ctrl+S` writes where we think it writes — verify by `git diff`, by hand, once, and record the result in the task report.
+* Anything about how it *looks*: AO, the beam, the seam, the Abyss.
+
+**Explicitly do not write:** a test that constructs a `DiverEntity` and asserts `onRender` "was called" (there is no seam without a GL context, so any such test asserts only that a mock was invoked); a test that asserts `dive.scn` "loads" by calling into `SceneManagerImpl` (needs a live `PulseEngine.INSTANCE`, which is `lateinit … internal set` — `ENG/core/PulseEngine.kt:89`); or a test that asserts the entity count equals the number you just wrote in the same file.
 
 ---
 
@@ -420,6 +690,68 @@ Listed so nobody spends time on them: the alpha-squared HUD convention and `auth
 
 ---
 
+## 4b. Risks specific to Stage D (the entity layer)
+
+### 4.9 Scene-file pollution — the constraint-3 failure mode
+
+**Status: structurally prevented by §2.6, and tested.**
+
+Nothing in the engine stops a runtime-spawned entity being serialized: `addEntity` pushes into the same `Scene.entities` list Jackson walks (`Scene.kt:16-20, 42-61`), and Ctrl+S works while the scene is RUNNING (`SceneEditor.kt:163-164`). If seeded pearls were ever written into `dive.scn`, the next load would materialise day one's column as authored entities *alongside* day two's freshly seeded one — silently, inside a single-line JSON diff — and "every attendee faces an identical column" would be quietly false.
+
+Our defence is that **there is nothing to spawn**: §2.6 puts no per-object entity in the scene, so no production code calls `addEntity`. That is enforced by a source-scanning test, and backed by a purity test on the committed `dive.scn` (§3(e) items 2 and 3).
+
+*Verify:* deliberately Ctrl+S while the scene is RUNNING once, during Task 11, and confirm `git diff src/main/resources/dive.scn` is empty. Record the result. If it is not empty, the guard is wrong and the stage stops there.
+
+*Also:* keep the scene file small enough that step 4 of §2.6's tuning loop — reading the diff — is a real review and not a rubber stamp. Eight entities is the ceiling the test enforces.
+
+### 4.10 GI's `onCreate` early return, and `EntityRendererImpl` becoming load-bearing
+
+`GlobalIlluminationSystem.onCreate` ends with `getSystemOfType<EntityRenderer>() ?: return` at `GlobalIlluminationSystem.kt:184`, skipping the five `addRenderPass` calls at `:185-189`. That is why `EntityRendererImpl` was kept when `EntityUpdater` was removed in `6ea1f53`, and the comment at `DiveLighting.kt:214-220` records it.
+
+**After Stage D that system is load-bearing twice**: remove it and (a) GI's five passes never register *and* (b) `DiverEntity` is never drawn — the diver simply vanishes, with no error. The failure mode is silent in both halves. `DiveLighting.kt:214-220`'s comment must be updated from "stays for GI's sake even though it draws nothing" to "draws the diver; also GI's precondition".
+
+Ordering note, verified: systems are initialised in list order inside `Scene.update`'s `forEachFiltered` loop (`Scene.kt:84-97`), and `DiveLighting.setup` adds `EntityRendererImpl` (`:221`) before `GlobalIlluminationSystem` (`:245`), so the lookup at `:184` succeeds. **Do not reorder those two `addSystem` calls.** Worth a comment, because nothing about the code says so.
+
+### 4.11 `GiLightSource` on an entity would change lighting, not just workflow
+
+§1.6 established that `GiLightSource.onRenderLightSource` and immediate-mode `GiSceneRenderer.drawLight` are the same data path, with one asymmetry: **entity lights are collected by two passes**, `GI_LOCAL_SCENE` *and* `GI_GLOBAL_SCENE` (`GlobalIlluminationSystem.kt:70, 72`), while immediate mode reaches only the surface whose renderer you fetched — and we fetch `GI_LOCAL_SCENE` only.
+
+Stage D makes it tempting to give `DiverEntity` a `GiLightSource` implementation "for free", since it is already an entity and the annotations would surface the beam parameters in the Inspector. **That is not free.** It would put the diver's beam into the global SDF and enable far-field bleed through `traceWorldRays` (`GLSL/lighting/global/radiance_cascades.frag:82-91`) that has never existed in this game. It might even look better — but it is a lighting change, and lighting changes made as a side effect of a workflow change are unattributable.
+
+*Decision:* `DiverEntity` implements `Renderable` only. The beam stays an immediate-mode `drawLight` in `DiveLighting`. Beam parameters can still be `@Prop`s on a `DiverLightLook` prototype that `DiveLighting` reads — same Inspector, same persistence, no pass change. If the far-field bleed is wanted later, do it as its own change with its own captures.
+
+### 4.12 The editor and `CameraRig` both write `mainCamera`
+
+After Stage B, `CameraRig.apply` writes `engine.gfx.mainCamera` from `onFixedUpdate` at 60 Hz. The editor drives the *same object* through `Camera2DController` (`SceneEditor.kt:347`). Ungated, the editor's camera is overwritten 60 times a second and panning and zooming are impossible — the viewport will look frozen and misaligned, and it will be read as "the editor is broken" rather than "two writers".
+
+The existing note at `EnPustTil.kt:373-377` already half-predicts this ("expect the world to render wrong while the editor is open"). Stage D must actually fix it, not restate it: **skip `CameraRig.apply` while the editor service `isRunning`.**
+
+Note this is only a `MainCameraOwnershipTest`-style single-writer violation in appearance — the rule is still "exactly one writer at a time", it is just that in editor mode the writer is the editor. Say so where the gate lives, or the next person will delete the gate to satisfy the invariant.
+
+*Verify:* with `EPT_EDITOR=1`, pan and zoom the editor viewport and confirm the world stays where you put it. Without the gate, it snaps back every fixed tick.
+
+### 4.13 The sim keeps running while you edit
+
+`PulseEngineGame.onUpdate`/`onFixedUpdate`/`onRender` are not gated by scene state (`PulseEngineImpl.kt:256, 280, 298`); "play" gates only `EntityUpdater` and entity self-checks. So with the scene STOPPED for editing, `sim.tick` still runs, the diver still swims, air still burns and the run still ends and restarts underneath you.
+
+*Fix:* freeze `sim.tick` while the editor is up **and** the scene is `STOPPED`. RUNNING (F10) still ticks, which is the point of F10.
+
+*Consequence to write down:* the Inspector never re-reads values from the entity (`SceneEditor.kt:1030-1033` pushes back only gizmo-driven `x/y/rotation/width/height`), so during F10 play the diver's `x` field shows a frozen number while the diver visibly moves. That is engine behaviour, not our bug. Put it in `DiverEntity`'s class doc.
+
+### 4.14 Per-frame cost and the intransitive z comparator
+
+At §2.6's scale — one drawn entity plus ~5 hidden prototypes — the cost is a rounding error and none of §1.8.3's three problems bite. **They bite the moment someone converts pearls**, which is exactly the change this stage will look like it invites:
+
+* `EntityRenderer.kt:132`'s TimSort allocates every frame (the engine's own `// TODO: This creates alot of garbage internally`), against `CLAUDE.md`'s "No per-frame allocation in the render path".
+* There is no culling in `EntityRendererImpl` at all, so 70 pearls means ~2.7× the geometry we submit today and Task 7 becomes unreachable for them.
+* `BackToFrontEntityComparator` (`:155-158`) is `((b.z - a.z) * 10_000f).toInt()`, which is **intransitive for `z` deltas below 1e-4** and will throw `IllegalArgumentException: Comparison method violates its general contract!` from TimSort at n ≥ 32. Seventy pearls with jittered `z` is a crash in front of the queue.
+
+*Guard:* leave this paragraph, verbatim, as a comment on `PearlLook`'s class doc — the object whose existence is the argument against converting pearls. Also keep all Stage D entities on the same `z` so the comparator sees only equal elements.
+
+*Verify:* `EPT_DEV=1`, F3 `MetricViewer`, compare frame time before and after Task 12. A measurable regression from six entities means something else is wrong.
+
+---
+
 ## 5. Size, and how to sequence it
 
 **Size.** Roughly **400–500 changed lines across 8 source files and 6 test files**, plus two new source files (~140 lines with docs) and two new test files (~180 lines). `Viewport.kt` (58) is replaced by `Framing.kt` (~35); `ViewportTest.kt` (104) is deleted. `DiveRenderer`'s seven draw methods and `DiveLighting`'s three are rewritten; their colour, intensity and cone code — which is most of both files' 343 and 424 lines — is untouched. Call it **1.5–2 focused days for one person**, of which about a third is the capture verification at three aspect ratios.
@@ -432,7 +764,29 @@ Listed so nobody spends time on them: the alpha-squared HUD convention and `auth
 
 **Recommendation: do the migration, but ship Task 1 first and separately.** The bug is not the reason to migrate — Task 1 fixes the bug in five deleted lines. The reason to migrate is that the placeholder squares are about to become sprites, and every sprite authored in screen pixels is a sprite that has to be re-expressed in metres later, plus a `Viewport` call at every draw site that a designer tweaking a size will have to reason about. Doing this before the art lands is much cheaper than doing it after, and it is the only version of "make real art work easier" that survives contact with a 4K booth panel.
 
-**If time runs short:** Stage A alone leaves the game correct, with a live invariant check that will shout if it ever stops being correct. That is a defensible place to stop.
+* **Stage D — Tasks 10–14. The entity layer. Ships separately, after Stage B, and can be abandoned without cost.**
+
+**Stage D size.** Roughly **450–550 changed lines**, of which most is new: `render/entities/DiverEntity.kt` (~90 lines with docs), four small look prototypes (~60 each), `render/EntityBridge.kt` (~60), a hand-authored `src/main/resources/dive.scn` (small, reviewable), edits to `DiveLighting.setup` (scene load path, conditional `start()`, two corrected comments), `EnPustTil.kt` (two editor gates), `DiveRenderer` (read look values instead of file-private constants), and ~180 lines of tests across three files. **1.5–2 days for one person**, of which a real fraction is the first hour of actually driving the editor and finding out which of §1.8's claims survive contact.
+
+**Sequencing — Stage D depends on Stage B, and the dependency is hard.** `CommonSceneEntity.x/y/width/height` are world units fed straight to `drawTexture` on `mainSurface` through `mainCamera`. **With today's identity camera, an entity at `(12, 94)` renders 12 pixels right and 94 pixels down from the screen's top-left corner** — the diver would sit in the corner at one-thirtieth of its size, and the gizmo would move it in pixels while the Inspector claimed metres. There is no partial version of this: entities are only meaningful once `mainCamera` is a metre-scaled camera.
+
+| Task | Depends on | Why |
+|---|---|---|
+| 10 (author `dive.scn`, let the editor reach STOPPED) | **nothing** — could ship before Stage A | It only changes how the scene is created and started. Worth doing early: it is what makes the editor usable at all, and it is the cheapest way to find out whether §1.8's reading of the editor is right. |
+| 11 (boundary guards) | Task 10 | Deliberately **before** any entity exists, so every guard is red-tested against a real violation rather than written to match code that already passes. |
+| 12 (`DiverEntity`) | **Task 5 (Stage B)** + Tasks 10, 11 | World coordinates, per above. |
+| 13 (look prototypes) | Task 12 | Reuses its scene-loading, gating and doc patterns. |
+| 14 (documentation) | Task 13 | Last. |
+
+**Recommendation on Stage D: do it, at the size in §2.6, and ship it as its own set of commits after Stage B is verified.** Two reasons and one caveat.
+
+The reasons: the editor workflow **is** real where it matters — §1.8.7's evidence from the reference is unambiguous that on this engine the `.scn` is where tuning lives, and §1.8.5 confirms that Inspector edits on an authored entity hit the live instance on every keystroke. And the alternative is the loop this project has actually been stuck in, which is edit → gradle → relaunch → screenshot for every number.
+
+The caveat, stated plainly because it is the thing most likely to disappoint: **the promised workflow is narrower than "the editor gives you live tuning".** It is *"an authored, selectable entity's numeric and asset-reference properties can be edited from the Outliner while the game runs in F10 mode, and persist if you remember Ctrl+S."* Viewport gizmos only work with the scene STOPPED (`SceneEditor.kt:345`); runtime-spawned entities never appear in the Outliner at all (`SceneEditor.kt:336-343`); the Inspector goes stale the moment game code writes a property (`:1030-1033`); and stop discards everything unsaved (`:540-541`). Anyone expecting Unity will be unhappy. Anyone who wanted to stop rebuilding to change a pearl's size will not be.
+
+**What I would refuse.** Converting pearls, vents or the anglerfish into entities. It is the change the phrase "the player should be its own entity" naturally generalises to, and on this engine it is strictly negative: invisible in the Outliner (§1.8.5), loses culling, adds a per-frame allocation against an explicit project rule, and carries a real n≥32 crash (§1.8.3, §4.14). If the only version of Stage D on offer were one-entity-per-object, the right answer would be to skip the stage entirely and keep the constants in Kotlin.
+
+**If time runs short:** Stage A alone leaves the game correct, with a live invariant check that will shout if it ever stops being correct. That is a defensible place to stop. Stage D is the *first* thing to drop if the booth date gets close — placeholder squares tuned by rebuilding still ship a working cabinet; a half-migrated coordinate system does not.
 
 ---
 
@@ -943,6 +1297,240 @@ git commit -m "docs: record the world-coordinate migration and its invariants"
 
 ---
 
+# Stage D — the entity layer
+
+> Read §1.8, §2.6 and §4.9–4.14 before starting. The three hard constraints are: **`src/main/kotlin/dive/` does not change**; **entities are views, never the source of truth**; **pearl, vent and anglerfish placement stays seeded and procedural and is never authored into `dive.scn`**. Resolution and aspect independence remain non-negotiable — the booth display size is unknown.
+
+### Task 10: Author `dive.scn`, and let the editor actually reach STOPPED
+
+Unblocks the editor. No entities yet, and no dependency on Stage B — this task is worth doing early precisely because it is the cheapest way to test §1.8's reading of the editor against the real thing.
+
+**Files:**
+- Create: `src/main/resources/dive.scn` (an empty scene with the two systems, saved from the editor or hand-written)
+- Modify: `src/main/kotlin/render/DiveLighting.kt:141-143, 204, 214-220, 255`
+- Modify: `src/main/kotlin/EnPustTil.kt` (editor gates)
+
+**Interfaces:**
+- Consumes: `devMode`, `System.getenv("EPT_EDITOR")`
+- Produces: a scene loaded from a file, `STOPPED` when the editor is up and `RUNNING` otherwise
+
+- [ ] **Step 1: Correct the two false comments before changing behaviour**
+
+`DiveLighting.kt:141-143` claims GI "needs … a RUNNING [scene] for its `onUpdate` to install the multiply effect". Read `ENG/core/scene/SceneManagerImpl.kt:206`, `ENG/core/scene/Scene.kt:80-97` and `:113-117` and confirm for yourself that neither consults `SceneState`, and that `GlobalIlluminationSystem` has no `onStart` (`grep -n "override fun on" GlobalIlluminationSystem.kt` → `74, 192, 220, 234, 257`). Rewrite the comment to say what is actually true and cite it.
+
+Then `DiveLighting.kt:214-220`: `EntityRendererImpl` is about to draw the diver. Update it from "stays even though it draws nothing" to "draws the diver, **and** is GI's precondition at `GlobalIlluminationSystem.kt:184`", and add the ordering note from risk 4.10 — it must be added *before* `GlobalIlluminationSystem`, because systems initialise in list order (`Scene.kt:84-97`).
+
+- [ ] **Step 2: Switch from `createEmptyAndSetActive` to a load with a fallback**
+
+`engine.scene.loadAndSetActive("dive.scn", fromClassPath = !devMode)`, falling back to `createEmptyAndSetActive("dive.scn")` with a `Logger.warn` if the load fails. The booth must boot with placeholder squares rather than not boot. Give the scene an **absolute** `fileName` in dev mode pointing at `src/main/resources/dive.scn`, so a save lands in the source tree without moving `engine.config.saveDirectory`, which `ScoreRepository` owns (`score/ScoreRepository.kt:184`, §1.8.6).
+
+- [ ] **Step 3: Make `engine.scene.start()` conditional, and gate the two things that fight the editor**
+
+- Skip `engine.scene.start()` when the editor is enabled, so the scene stays `STOPPED` and `SceneEditor.kt:345` lets viewport interaction run. Comment the citation.
+- Skip `CameraRig.apply` while the editor service `isRunning` (risk 4.12). Note in the comment that the single-writer invariant is preserved — the writer is the editor.
+- Freeze `sim.tick` while the editor is up **and** the scene is `STOPPED` (risk 4.13).
+- Replace `EnPustTil.kt:373-377`'s "expect the world to render wrong while the editor is open" note: it is now fixed, not tolerated. Also drop the stale "`dive.scn` holds exactly one entity, GI's Camera" — that entity was deleted in `6ea1f53`.
+
+- [ ] **Step 4: Look at it — this is the step the whole stage rests on**
+
+```bash
+caffeinate -d -u -t 900 &
+EPT_EDITOR=1 EPT_DEV=1 ./gradlew run
+```
+
+Confirm, and write down which of these are true, because §1.8 is a reading of source and this is the measurement:
+- the editor opens and the Outliner appears (still 0/0 — there are no entities yet);
+- the Scene Systems panel lists `EntityRendererImpl` and `GlobalIlluminationSystem`, and editing `aoRadius` or `dithering` changes the frame immediately;
+- the viewport grid draws (it uses `drawLine`, fixed for local dev in `6b05f07`);
+- panning and zooming the editor camera works and does not snap back;
+- the diver is frozen rather than swimming off;
+- Ctrl+S writes `src/main/resources/dive.scn` and `git diff` shows a small, readable file.
+
+If any of these is false, stop and re-read the editor source rather than proceeding — Tasks 11–14 all assume this step passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/main/resources/dive.scn src/main/kotlin/render/DiveLighting.kt src/main/kotlin/EnPustTil.kt
+git commit -m "feat: load dive.scn from a file and let the scene editor reach STOPPED"
+```
+
+---
+
+### Task 11: The boundary guards, written before there is anything to guard
+
+Deliberately ahead of the first entity, so every guard is red-tested against a real violation instead of written to fit passing code. `MainCameraOwnershipTest` (added in `6ea1f53`) is the pattern; read its class doc first — it is honest about being a precondition guard rather than a behaviour test, and these are the same.
+
+**Files:**
+- Test: `src/test/kotlin/render/EntityBoundaryTest.kt`
+- Test: `src/test/kotlin/render/SceneFilePurityTest.kt`
+
+**Interfaces:**
+- Consumes: `src/main/kotlin/**.kt` as text, `src/main/resources/dive.scn` as text
+- Produces: nothing in production
+
+- [ ] **Step 1: Write `EntityBoundaryTest`**
+
+Four source scans over `src/main/kotlin/**.kt`, each failing with the offending file, line and a one-line reason plus a pointer to §2.6:
+
+1. no `engine.scene.addEntity(` — nothing may spawn an entity at runtime (constraint 3, risk 4.9);
+2. no `EntityUpdater` in any `addSystem(` call — it is the only thing that can deliver `onUpdate`/`onFixedUpdate` to an entity (`EntityUpdater.kt:31-41`), so its absence is what makes "entities cannot hold evolving state" structural rather than aspirational;
+3. no assignment into a sim object from `render/` — regex `\b(sim|pearl|pocket|fish)\.\w+\s*=` — state flows one way only (§2.6 rule 4);
+4. no `no.njoh.pulseengine` import under `src/main/kotlin/dive/` — currently true by convention only, and it is the constraint that let `Buoyancy` be rewritten from scratch on playtest feedback.
+
+- [ ] **Step 2: Write `SceneFilePurityTest`**
+
+Over `src/main/resources/dive.scn` as text:
+
+- no entity type name containing `Pearl`, `AirPocket` or `Anglerfish` (constraint 3 — the water column is never authored);
+- total entity entries `<= 8` (so the tuning loop's `git diff` review stays real, §2.6);
+- every entity FQCN is on an explicit allow-list **and** resolves via `Class.forName` (a package move otherwise silently empties the scene — `FAIL_ON_INVALID_SUBTYPE = false`, `DataImpl.kt:166`);
+- every asset-reference-shaped string value names a file that exists under `src/main/resources/` (the reference shipped `"torch_flame"` against an asset called `torche_flame`, §1.8.7).
+
+The last two are no-ops until Task 12 puts something in the file. Say so in the test's class doc rather than leaving a reader to think they are proving something today.
+
+- [ ] **Step 3: Red-test every single guard**
+
+Run: `./gradlew test --tests 'render.EntityBoundaryTest' --tests 'render.SceneFilePurityTest'` → PASS.
+
+Then, one at a time, insert the violation and confirm the specific test goes red with a useful message: an `engine.scene.addEntity(Foo())` line; an `addSystem(EntityUpdater())`; a `sim.x = 0f` in `DiveRenderer`; an `import no.njoh.pulseengine.core.PulseEngine` in `dive/Tuning.kt`; a fake `"dive.Pearl"` string in `dive.scn`. Remove each. **A guard that has never been seen red is not a guard** — this is the same requirement Task 8 Step 2 puts on the `drawQuad` scan, and commit `4493eeb` deleted tests for failing it.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/test/kotlin/render/EntityBoundaryTest.kt src/test/kotlin/render/SceneFilePurityTest.kt
+git commit -m "test: guard the sim/entity boundary and dive.scn's purity"
+```
+
+---
+
+### Task 12: `DiverEntity` — the diver becomes a view
+
+**Depends on Task 5 (Stage B).** `CommonSceneEntity` positions are world units; before the flip an entity at `(12, 94)` lands 12 px from the screen corner (§2.6 sequencing).
+
+**Files:**
+- Create: `src/main/kotlin/render/entities/DiverEntity.kt`
+- Create: `src/main/kotlin/render/EntityBridge.kt`
+- Test: `src/test/kotlin/render/EntityBridgeTest.kt`
+- Modify: `src/main/kotlin/render/DiveRenderer.kt` (delete `drawDiver`), `src/main/kotlin/EnPustTil.kt`, `src/main/resources/dive.scn`
+
+**Interfaces:**
+- Consumes: `DiveSim.x`, `DiveSim.depth`, `DiveSim.heldMass` (read only), `Framing.DIVER_SIZE_METRES`
+- Produces: `EntityBridge.pushDiver(entity, x, depth, heldMass)`, `DiverEntity`
+
+- [ ] **Step 1: Write the failing test**
+
+`EntityBridgeTest`, on a pure function that needs no GL context:
+- `x`/`y` on the entity equal the sim's `x`/`depth` exactly;
+- `width == height == DIVER_SIZE_METRES + heldMass * 0.03f` — the rule currently at `DiveRenderer.kt:262`, moved not changed;
+- **the mutation test**: changing `sim.x` changes `entity.x`. Without this the other two are the tautology §3 warns about.
+
+Run: `./gradlew test --tests 'render.EntityBridgeTest'` → FAIL, unresolved reference.
+
+- [ ] **Step 2: Implement `DiverEntity`**
+
+`class DiverEntity : CommonSceneEntity()`, `@Icon("USER", size = 24f, showInViewport = true)`, `@Name("Diver")`. Properties: `@TexRef var texture = ""`, `var colour: Color`, `@Prop(min = 0.5f, max = 10f) var baseSizeMetres`, `@Prop(min = 0f) var massSizeGain`. `onRender` draws `drawTexture(asset ?: Texture.BLANK, x, y, width, height, rotation, xOrigin = 0.5f, yOrigin = 0.5f)` — the shape Task 8 Step 3 established, and the shape every sprite call will take.
+
+Class doc must state, with citations: that it owns **appearance only** and its position is pushed from `DiveSim` (§2.6); that it implements `Renderable` and **deliberately not `GiLightSource`** (risk 4.11); that the Inspector will show a frozen `x` while the game runs, because `SceneEditor.kt:1030-1033` only pushes gizmo-driven values back; that its `z` must stay equal to every other Stage D entity's (risk 4.14).
+
+- [ ] **Step 3: Implement `EntityBridge` and wire it**
+
+`EntityBridge.push(engine, sim)` called from `EnPustTil.onFixedUpdate`, **after `sim.tick`**, and **only when `engine.scene.state == SceneState.RUNNING`** — when STOPPED the gizmo owns `x`/`y`, so there is exactly one writer at all times. Comment that rule where the gate is; it is the whole reason the editor is usable and the boundary is intact simultaneously.
+
+Look up the entity once and cache it (`engine.scene.getAllEntitiesOfType<DiverEntity>()`), tolerating absence with a single WARN — a missing entity must degrade to "no diver drawn", not a crash at the booth.
+
+- [ ] **Step 4: Delete `DiveRenderer.drawDiver` and author the entity**
+
+Remove `drawDiver` and its call from `render`. Add one `DiverEntity` to `dive.scn` (author it in the editor and Ctrl+S, then hand-check the diff). Confirm `SceneFilePurityTest` still passes and its FQCN/asset rules are now doing real work.
+
+- [ ] **Step 5: Run the suite**
+
+Run: `./gradlew test` → PASS.
+
+- [ ] **Step 6: Look at it, in both modes**
+
+Booth mode (`./gradlew run`, no `EPT_EDITOR`): the diver is where it was, the same size, the load-scaling still visible, the air ring still concentric with it, the beam still on it. Capture and compare against a pre-task capture — **this is a refactor and any visible difference is a bug.**
+
+Editor mode (`EPT_EDITOR=1`): the diver appears in the Outliner; selecting it fills the Inspector; the gizmo moves it with the scene STOPPED; F10 starts the sim and the diver takes over its own position; editing `baseSizeMetres` while running changes the frame immediately. Record which of those are true.
+
+- [ ] **Step 7: Deliberately try to pollute the scene**
+
+With the scene RUNNING under F10, press **Ctrl+S**. Then `git diff src/main/resources/dive.scn`. It must be empty (risk 4.9). Record the result. If it is not empty, something is spawning entities and Task 11's guard is wrong.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main/kotlin/render src/test/kotlin/render src/main/resources/dive.scn src/main/kotlin/EnPustTil.kt
+git commit -m "feat: draw the diver from an authored appearance-only scene entity"
+```
+
+---
+
+### Task 13: Look prototypes for pearls, vents, the anglerfish and the diver's light
+
+The part that pays for the stage: asset pickers and live numbers for the ~74 objects that are **not** entities.
+
+**Files:**
+- Create: `src/main/kotlin/render/entities/Looks.kt` (`PearlLook`, `VentLook`, `AnglerfishLook`, `DiverLightLook`)
+- Modify: `src/main/kotlin/render/DiveRenderer.kt`, `src/main/kotlin/render/DiveLighting.kt`, `src/main/resources/dive.scn`
+
+- [ ] **Step 1: Implement the prototypes**
+
+Each is a `CommonSceneEntity` that draws nothing: `set(HIDDEN)` in `init{}`, empty `onRender`, `@Icon(..., showInViewport = true)` so it can still be found. Properties are the constants they replace — `@TexRef var texture`, `var colour: Color`, `@Prop(min…max) var sizeMetres`, and for `DiverLightLook` the beam's intensity/cone parameters currently living in `DiveLighting`.
+
+Class doc on `PearlLook` carries risk 4.14 **verbatim**: it exists precisely so that seventy pearls do not become seventy entities, and it must say why (Outliner blindness at `SceneEditor.kt:336-343`, no culling in `EntityRendererImpl`, the per-frame TimSort at `:132` against `CLAUDE.md`'s no-allocation rule, and the intransitive comparator at `:155-158` crashing TimSort at n ≥ 32). Also document that `x`/`y`/`width`/`height` are inherited and meaningless here — the engine offers no way to hide inherited props from the Inspector.
+
+- [ ] **Step 2: Read them from the immediate-mode draws**
+
+`DiveRenderer.drawPearls` / `drawAirPockets` / `drawAnglerfish` and `DiveLighting`'s three `drawLight` calls take their size/colour/texture from the prototype instead of a file-private constant. Look the prototypes up **once**, not per draw call — no per-frame allocation and no per-frame scene query in the render path.
+
+Keep the anglerfish reading `PearlLook`, not its own size: `DiveRenderer.kt:243-247` records that "in the Abyss you cannot tell treasure from predator by looking" is a design rule, and one shared object is how that rule survives someone tuning in the editor. `AnglerfishLook` therefore carries only what legitimately differs.
+
+**Do NOT expose the zone-band colour tables, `BAND_STRIP_METRES`, or anything else on the reflectance-floor path** (§2.6). They stay Kotlin constants guarded by `DiveRendererTest`'s 0–200 m sweep; the ~94 m seam is not worth a text field.
+
+- [ ] **Step 3: Author them and run**
+
+Add one of each to `dive.scn` (six entities total, under `SceneFilePurityTest`'s ceiling of eight). Run `./gradlew test` → PASS, then capture in booth mode and confirm the frame is unchanged from Task 12's capture — the values authored into the scene must be exactly the constants they replaced, so this is again a refactor with no visible difference.
+
+- [ ] **Step 4: Do one real tuning round, and time it**
+
+Open the editor, change a pearl's `sizeMetres` and colour, F10, watch it, Ctrl+S, `git diff`, rebuild. **Write down how long that took versus edit → gradle → relaunch → screenshot.** That number is the entire justification for the stage; if it is not obviously better, say so in the task report and consider reverting Task 13.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/main/kotlin/render src/main/resources/dive.scn
+git commit -m "feat: authored look prototypes for pearls, vents, the fish and the beam"
+```
+
+---
+
+### Task 14: Document what the entity layer is — and honestly, what it is not
+
+**Files:**
+- Modify: `CLAUDE.md`
+- Modify: `docs/superpowers/specs/2026-08-04-en-pust-til-design.md` (§17 amendment log)
+
+- [ ] **Step 1: `CLAUDE.md`**
+
+- Architecture: a fifth boundary — `render/entities/` holds **appearance-only** scene entities authored in `src/main/resources/dive.scn`. State flows `DiveSim → EntityBridge → entity`, one direction, never back. `EntityUpdater` is deliberately absent, and that absence is what makes it structural.
+- The editor: `EPT_EDITOR=1` opens it; the scene stays `STOPPED` so the viewport works; F10 runs it with the panels up; **Ctrl+S is the only thing that persists a tuned value, and stop discards everything else.**
+- Platform constraints: add the four editor facts that will otherwise be rediscovered painfully — runtime-spawned entities never appear in the Outliner (`SceneEditor.kt:336-343`); viewport gizmos require `STOPPED` (`:345`); the Inspector never re-reads values game code writes (`:1030-1033`); `@Prop(editable=false)` and `min/max` are honoured only on numeric/text fields (`UiElementFactory.kt:673-682`).
+- The rule: **`dive.scn` contains appearance only. Pearl, vent and anglerfish placement is seeded and procedural, and `SceneFilePurityTest` fails the build if that ever stops being true.**
+
+- [ ] **Step 2: Amendment log**
+
+Design spec §17: §10's "authoring uses the Pulse Engine scene editor" now applies concretely — to the diver's appearance, the look prototypes and the lighting parameters, and explicitly **not** to pearl, vent or anglerfish placement, which stays generated from `dailySeed` so every attendee faces an identical column and day two is still a one-line config change.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add CLAUDE.md docs/superpowers/specs/2026-08-04-en-pust-til-design.md
+git commit -m "docs: record the appearance-only entity layer and the editor's real limits"
+```
+
+---
+
 ## 7. Definition of done
 
 - [ ] `./gradlew test` passes, and every deleted `ViewportTest` case is either covered by `CameraRigTest` or consciously abandoned as untestable (§3)
@@ -957,13 +1545,26 @@ git commit -m "docs: record the world-coordinate migration and its invariants"
 - [ ] `EPT_DEV=1` reports no `CameraInvariants` violations at any of the three shapes, including across a `LEFT_ALT+ENTER` fullscreen toggle
 - [ ] Frame rate is unchanged with lighting on
 
+### Stage D additions
+
+- [ ] `src/main/kotlin/dive/` is still byte-identical, and no `no.njoh.pulseengine` import exists under it — asserted by a test, not by memory
+- [ ] Nothing in production calls `engine.scene.addEntity`, and `EntityUpdater` is not in the scene — both asserted by tests that have each been seen red
+- [ ] `dive.scn` contains **appearance only**: ≤ 8 entities, no `Pearl`/`AirPocket`/`Anglerfish` type, every FQCN resolves, every asset reference exists
+- [ ] Ctrl+S while the scene is RUNNING leaves `git diff src/main/resources/dive.scn` empty — measured once, recorded
+- [ ] Booth mode (`EPT_EDITOR` unset) captures are indistinguishable from the pre-Stage-D captures — Stage D is a refactor with a workflow payoff, not a visual change
+- [ ] With `EPT_EDITOR=1`: the Outliner lists the diver and the look prototypes; the gizmo works with the scene STOPPED; the editor camera pans and zooms without snapping back; the sim is frozen while STOPPED
+- [ ] With F10: an Inspector edit visibly changes the running frame, and survives Ctrl+S → rebuild → run
+- [ ] One real tuning round has been timed against edit → gradle → relaunch → screenshot, and the number is written down
+
 ## 8. Deliberately out of scope
 
-- Scene entities for the diver, pearls, vents or the anglerfish (§1.3, §1.6)
-- `GiLightSource` entities (§1.6) and the `GI_GLOBAL_SCENE` far-field light pass
-- `.scn`-authored level content of any kind (design spec §10 as amended; pearl placement stays seeded and procedural)
+- ~~Scene entities for the diver, pearls, vents or the anglerfish (§1.3, §1.6)~~ **Amended by Stage D.** Still out of scope for **pearls, vents and the anglerfish** — and the evidence in §1.8.3/§1.8.5 makes that a firmer no than it was, not a softer one. The **diver** becomes a single authored appearance-only entity (§2.6, Task 12), alongside four non-drawing look prototypes.
+- `GiLightSource` entities (§1.6) and the `GI_GLOBAL_SCENE` far-field light pass — **reaffirmed**, with the new reason at §4.11: adopting it on `DiverEntity` would change the lighting, not just the workflow
+- ~~`.scn`-authored level content of any kind~~ **Amended:** `dive.scn` now carries **appearance** (textures, sizes, colours, light parameters). It carries **no level content**: pearl, vent and anglerfish placement stays seeded and procedural from `dailySeed`, per design spec §10 as amended, and `SceneFilePurityTest` fails the build if that changes.
+- Runtime entity spawning of any kind (§4.9) — the reason `addEntity` is banned outright rather than used carefully
+- Exposing the zone-band colour tables or `BAND_STRIP_METRES` in the Inspector (§2.6) — they are on the `GI_REFLECTANCE_FLOOR` path and stay Kotlin constants guarded by `DiveRendererTest`'s sweep
 - Removing the GI reflectance floor by setting `minReflectance = 0` (§1.7 — documented, not done)
 - A world-space HUD surface (§2.4 — revisit with the §12 cash-out spectacle)
 - Camera zoom, shake or rotation, which the migration makes possible and which the cash-out will want
 - `GiOccluder` and normal-mapped lighting on the diver, which the migration also makes possible and which belongs with real art
-- Any art at all
+- Any art at all — Stage D builds the slot the art drops into and puts nothing in it
