@@ -353,6 +353,39 @@ class EnPustTil : PulseEngineGame()
             engine.config.logLevel = LogLevel.DEBUG   // belt-and-braces: works even against a built release .exe
             engine.service.add(MetricViewer())        // F3
         }
+
+        // The engine's scene editor (EPT_EDITOR=1). Registered from here because nothing in
+        // the engine ever constructs SceneEditor — verified by scanning every class in
+        // pulse-engine-0.13.0.jar outside the editor package for a reference, and finding
+        // none. So there is no config key and no flag that can reach it; only this call can.
+        // The `showSceneEditor` console command is registered BY SceneEditor.onCreate, which
+        // is why F1 cannot get you there either until this line has run.
+        //
+        // Do NOT try to replace `start()` with `openEditorOnStart = true` in
+        // application-dev.cfg. SceneEditor.onCreate loads its own bundled
+        // /pulseengine/config/editor_default.cfg (which sets that key false) AFTER our config
+        // is already loaded, and ConfigurationImpl.loadConfigFile does an unconditional
+        // Map.put — so the engine's default silently overwrites ours. Verified empirically:
+        // with the key set true in application-dev.cfg, the game logged
+        // `openEditorOnStart=false editor.isRunning=false`.
+        //
+        // Inert at the booth: EPT_EDITOR is unset there, so this is one getenv at startup and
+        // SceneEditor is never constructed. Note the editor drives engine.gfx.mainCamera via
+        // its own Camera2DController, so panning or zooming in the editor moves the world out
+        // from under the HUD — Viewport's screen-space maths assumes mainCamera is at identity
+        // (see 6ea1f53, where a second writer of that same camera was the shipped
+        // misalignment bug).
+        //
+        // dive.scn currently holds NO entities at all: it exists only so
+        // GlobalIlluminationSystem, which is a scene SYSTEM, has a scene to be added to. That
+        // is why the editor's Outliner reads 0/0 and its Inspector is empty — there is nothing
+        // authored to select. Stage D of docs/superpowers/plans/2026-08-06-engine-world-coordinates.md
+        // plans the appearance-only entities that would populate it, and records two engine
+        // blockers found while planning it: runtime-spawned entities never appear in the
+        // Outliner at all, and viewport interaction is gated on the scene being STOPPED.
+        if (System.getenv("EPT_EDITOR") != null)
+            engine.service.add(no.njoh.pulseengine.modules.editor.SceneEditor().also { it.start() })
+
         engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
