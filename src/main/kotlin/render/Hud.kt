@@ -54,23 +54,44 @@ object Hud
      */
     private const val AIR_LOW_SIZE_GAIN = 0.6f
 
+    private val TAU = (PI * 2.0).toFloat()
+
     /**
-     * The golden angle, 137.5 degrees — the phyllotaxis spacing sunflowers use to pack seeds.
+     * Where slot 0 sits: straight up from the diver, 12 o'clock.
      *
-     * WHY NOT `index / AIR_BUBBLE_COUNT * TAU`: that gives every bubble a slot on an evenly
-     * divided circle, but the bubbles that SURVIVE are always the first indices, so a draining
-     * ring collapses into an arc that starts at 3 o'clock and sweeps down. Three bubbles left
-     * occupied a 51-degree wedge and left 86% of the circle empty (abyss-view.png: three dots
-     * off to the diver's lower right, unrecognisable as a ring).
-     *
-     * The golden angle's defining property is that EVERY prefix of the sequence is spread
-     * near-evenly around the circle: 3 bubbles leave at most 38% of it empty, 5 leave 24%,
-     * 14 leave 9%. So the ring thins in place — each bubble keeps one fixed angle for its
-     * whole life and pops out of a standing ring — instead of re-shuffling the survivors,
-     * which is what dividing by the surviving count would do.
+     * Screen space here runs Y-DOWNWARD ([Viewport.screenY] increases with depth) and
+     * [drawAirRing] places a bubble at `(cos a, sin a)`, so `a = 0` is 3 o'clock and
+     * `a = +90` degrees is 6 o'clock, NOT 12. Twelve o'clock is therefore minus a quarter
+     * turn, and — the part that is easy to get backwards — INCREASING the angle walks
+     * 3 -> 6 -> 9 o'clock, which is CLOCKWISE on screen even though it is the
+     * counter-clockwise direction in the usual Y-up convention.
      */
-    private val GOLDEN_RATIO = (1.0 + sqrt(5.0)) / 2.0
-    private val GOLDEN_ANGLE = (PI * 2.0 * (1.0 - 1.0 / GOLDEN_RATIO)).toFloat()
+    private val RING_TOP_ANGLE = -TAU * 0.25f
+
+    /**
+     * TWO EARLIER VERSIONS OF THIS WERE WRONG, IN OPPOSITE DIRECTIONS. Both are worth
+     * knowing about before changing anything here.
+     *
+     * The shipped version drew bubble `i` at `i / AIR_BUBBLE_COUNT * TAU` for
+     * `i in 0 until remaining`. Evenly spaced, but the survivors were always the LOWEST
+     * indices, so a draining ring collapsed into a wedge anchored at 3 o'clock — three
+     * bubbles left occupied 51 degrees and left 86% of the circle empty.
+     *
+     * The fix for that used golden-angle (137.5 degree) spacing so that every prefix of the
+     * sequence stays spread around the circle. It did stop the collapse, and it was worse:
+     * at 137.5 degrees apart the bubbles land at irregular angles, so a full ring read as
+     * scattered confetti rather than a ring, and they vanished in an order with no visual
+     * logic. The player's words were "the bubble UI is misaligned, and they don't pop in a
+     * natural clockwise order".
+     *
+     * So: fourteen FIXED, evenly spaced slots — a clock face — and the ring empties like
+     * every countdown dial anyone has ever seen. The gap opens at 12 o'clock and grows
+     * CLOCKWISE, which is what [firstOccupiedSlot] encodes by dropping low slots first.
+     * An arc is not the enemy; an arc is exactly what a depleting timer looks like. The
+     * enemy was irregularity, and a slot's angle depends only on the slot, so no bubble
+     * ever moves while another pops.
+     */
+    private fun slotStep() = TAU / AIR_BUBBLE_COUNT
 
     // --- HELD: enormous, amber, attached to the diver --------------------------------
     private const val HELD_OFFSET_METRES = 8f        // below the diver, clear of the air ring
@@ -150,13 +171,26 @@ object Hud
     }
 
     /**
-     * The fixed orbital angle, in radians, of bubble [index] — golden-angle spaced so that
-     * whatever is left of the ring is the survivors of a ring rather than the front of a
-     * queue. See [GOLDEN_ANGLE] for why this is not `index / AIR_BUBBLE_COUNT * TAU`.
-     * It depends only on the bubble's own index, never on how many are left, so no bubble
-     * ever moves: the ring thins in place instead of re-shuffling every time one pops.
+     * The fixed orbital angle, in radians, of ring slot [slot]. Slot 0 is 12 o'clock and
+     * rising slot numbers walk CLOCKWISE around the diver (see [RING_TOP_ANGLE] — screen
+     * Y runs downward, so that is a rising angle, not a falling one).
+     *
+     * Depends only on the slot, never on how many bubbles are left, so a bubble never moves
+     * while another pops: the ring empties in place instead of re-shuffling.
      */
-    fun airBubbleAngle(index: Int): Float = index * GOLDEN_ANGLE
+    fun airBubbleSlotAngle(slot: Int): Float = RING_TOP_ANGLE + slot * slotStep()
+
+    /**
+     * The lowest ring slot still holding a bubble when [remaining] are left. Slots
+     * `firstOccupiedSlot(remaining) until AIR_BUBBLE_COUNT` are the occupied ones.
+     *
+     * Dropping the LOW slots is what makes the ring deplete clockwise from 12 o'clock: at
+     * 14 bubbles every slot is filled; the first breath takes slot 0 (12 o'clock), the next
+     * slot 1 (one o'clock), and so on, so the gap opens at the top and sweeps clockwise
+     * exactly like a countdown dial. Keeping the low slots instead would drain it backwards.
+     */
+    fun firstOccupiedSlot(remaining: Int): Int =
+        (AIR_BUBBLE_COUNT - remaining).coerceIn(0, AIR_BUBBLE_COUNT)
 
     /**
      * Bubble size multiplier for a ring that is down to [remaining] bubbles: 1x until the
@@ -208,11 +242,11 @@ object Hud
      * breath runs out. At [AIR_LOW_THRESHOLD] bubbles or fewer, the ring turns red and
      * pulses like a heartbeat — the only warning the player gets, no text involved.
      *
-     * The bubbles are golden-angle spaced ([airBubbleAngle]) so the ring THINS rather than
-     * collapsing into an arc, and the last few are drawn oversized ([airBubbleSizeScale]) so
-     * that "almost out of air" is still a shout when there is only one bubble left to shout
-     * with. Both were defects in the shipped version; both are explained where the constants
-     * are declared.
+     * The bubbles occupy fourteen fixed, evenly spaced slots ([airBubbleSlotAngle]) and the
+     * ring empties clockwise from 12 o'clock ([firstOccupiedSlot]), and the last few are
+     * drawn oversized ([airBubbleSizeScale]) so that "almost out of air" is still a shout
+     * when there is only one bubble left to shout with. All three were defects in earlier
+     * versions; each is explained where its constants are declared.
      */
     private fun drawAirRing(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, h: Float)
     {
@@ -230,9 +264,9 @@ object Hud
         val bubbleSize = AIR_BUBBLE_SIZE_METRES * ppm * airBubbleSizeScale(remaining) * pulse
 
         surface.setDrawColor(if (low) danger else cold)
-        for (i in 0 until remaining)
+        for (slot in firstOccupiedSlot(remaining) until AIR_BUBBLE_COUNT)
         {
-            val angle = airBubbleAngle(i)
+            val angle = airBubbleSlotAngle(slot)
             val bx = diverX + cos(angle) * radius
             val by = diverY + sin(angle) * radius
             surface.fillRect(bx - bubbleSize * 0.5f, by - bubbleSize * 0.5f, bubbleSize, bubbleSize)

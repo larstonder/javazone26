@@ -70,60 +70,76 @@ class HudTest
 
     // --- Bubble ring distribution -----------------------------------------------------
 
-    /** Largest empty arc, as a fraction of the circle, for the first [count] bubbles. */
-    private fun largestGapFraction(count: Int): Float {
-        val angles = (0 until count).map { AimAngle.wrap(Math.toDegrees(Hud.airBubbleAngle(it).toDouble()).toFloat()) }
-            .sorted()
-        var largest = 0f
-        for (i in angles.indices) {
-            val next = if (i == angles.lastIndex) angles[0] + 360f else angles[i + 1]
-            largest = maxOf(largest, next - angles[i])
-        }
-        return largest / 360f
+    /** Where slot [slot] puts a bubble relative to the diver, in SCREEN space (y grows down). */
+    private fun slotOffset(slot: Int): Pair<Float, Float> {
+        val a = Hud.airBubbleSlotAngle(slot)
+        return kotlin.math.cos(a) to kotlin.math.sin(a)
     }
 
     @Test
-    fun `bubbles stay spread around the whole circle as the ring thins`() {
-        // The defect: with angle = index / AIR_BUBBLE_COUNT, three surviving bubbles occupy a
-        // 51-degree wedge and leave 86% of the circle empty — an arc, not a ring.
-        for (count in 3..Hud.AIR_BUBBLE_COUNT) {
-            val gap = largestGapFraction(count)
-            assertTrue(
-                gap <= 0.4f,
-                "$count bubbles leave ${(gap * 100).toInt()}% of the circle empty — that reads as an arc"
+    fun `the ring is a clock face - fourteen evenly spaced slots`() {
+        // The scatter defect: golden-angle spacing put bubbles at irregular angles, so a full
+        // ring read as confetti rather than a ring. Consecutive slots must be exactly one
+        // fourteenth of a turn apart, every time.
+        val step = TAU / Hud.AIR_BUBBLE_COUNT
+        for (slot in 0 until Hud.AIR_BUBBLE_COUNT - 1) {
+            val delta = Hud.airBubbleSlotAngle(slot + 1) - Hud.airBubbleSlotAngle(slot)
+            assertEquals(step, delta, 0.0001f, "slots $slot and ${slot + 1} are not evenly spaced")
+        }
+    }
+
+    @Test
+    fun `slot zero sits straight above the diver, at twelve o'clock`() {
+        // Screen y grows DOWNWARD, so "above" is a negative y offset. Getting this backwards
+        // puts the dial's origin at six o'clock and nothing else in the file would notice.
+        val (x, y) = slotOffset(0)
+        assertEquals(0f, x, 0.0001f, "slot 0 is off to one side, not straight up")
+        assertTrue(y < -0.99f, "slot 0 is at y=$y — it must be ABOVE the diver, i.e. negative y")
+    }
+
+    @Test
+    fun `rising slot numbers walk clockwise on screen`() {
+        // The direction test, and the one most at risk of being vacuous: it has to fail if the
+        // rotation is reversed. In screen space with y DOWN, turning clockwise means each step
+        // turns right, which is a POSITIVE 2D cross product. (In the usual y-up convention the
+        // sign is the other way round, which is exactly the trap.)
+        for (slot in 0 until Hud.AIR_BUBBLE_COUNT - 1) {
+            val (x0, y0) = slotOffset(slot)
+            val (x1, y1) = slotOffset(slot + 1)
+            val cross = x0 * y1 - y0 * x1
+            assertTrue(cross > 0.1f, "slot $slot -> ${slot + 1} turns the wrong way (cross=$cross)")
+        }
+    }
+
+    @Test
+    fun `the ring empties clockwise from twelve o'clock`() {
+        // A countdown dial: the gap opens at the top and sweeps clockwise. So the slot lost
+        // when the count drops from r to r-1 is always the next one clockwise from the last.
+        for (remaining in Hud.AIR_BUBBLE_COUNT downTo 1) {
+            val occupied = (Hud.firstOccupiedSlot(remaining) until Hud.AIR_BUBBLE_COUNT).toSet()
+            assertEquals(remaining, occupied.size, "$remaining bubbles should occupy $remaining slots")
+
+            // The empty slots must be exactly 0, 1, ... — a contiguous run anchored at twelve
+            // o'clock and growing one step clockwise per breath. Dropping the HIGH slots
+            // instead would drain the dial backwards and this list would come out reversed.
+            val empty = (0 until Hud.AIR_BUBBLE_COUNT).filterNot { it in occupied }
+            assertEquals(
+                (0 until Hud.AIR_BUBBLE_COUNT - remaining).toList(), empty,
+                "with $remaining left, the gap must run from slot 0 clockwise"
             )
         }
     }
 
     @Test
-    fun `two bubbles sit on opposite sides rather than next to each other`() {
-        // Two is the last count where "ring" still means anything; they should straddle the
-        // diver, not huddle. Neither gap may be smaller than a quarter of the circle.
-        val gap = largestGapFraction(2)
-        assertTrue(gap <= 0.75f, "two bubbles left a ${(gap * 100).toInt()}% gap — they are huddled together")
-    }
-
-    @Test
-    fun `a full ring spreads its bubbles without stacking two in the same place`() {
-        // Cheap sanity check on the angle sequence itself: 14 bubbles, 14 distinct positions.
-        val positions = (0 until Hud.AIR_BUBBLE_COUNT)
-            .map { AimAngle.wrap(Math.toDegrees(Hud.airBubbleAngle(it).toDouble()).toFloat()) }
-        positions.forEach { a ->
-            assertTrue(positions.count { kotlin.math.abs(it - a) < 5f } == 1, "two bubbles overlap near $a degrees")
-        }
-    }
-
-    @Test
-    fun `a bubble keeps the same angle for its whole life`() {
-        // Bubbles must pop out of a standing ring, not re-shuffle every time one goes. The
-        // angle depends only on the bubble's index, never on how many are left — this test
-        // is here so nobody "fixes" the spread by dividing by the surviving count instead.
-        val angleOfThirdBubble = Hud.airBubbleAngle(2)
-        assertEquals(angleOfThirdBubble, Hud.airBubbleAngle(2), 0f)
-        assertTrue(Hud.airBubbleAngle(2) != Hud.airBubbleAngle(3), "distinct bubbles need distinct angles")
-        // And the sequence is a prefix-stable one: index 0 is where it always was, 3 o'clock.
-        assertEquals(0f, Hud.airBubbleAngle(0), 0.0001f)
-        assertTrue(Hud.airBubbleAngle(1) in 0f..TAU, "angles stay inside one turn")
+    fun `a bubble keeps its slot for its whole life`() {
+        // Bubbles pop out of a standing ring; none may move because another popped. A slot's
+        // angle depends only on the slot, never on how many are left — this test is here so
+        // nobody "fixes" anything by dividing by the surviving count instead.
+        assertEquals(Hud.airBubbleSlotAngle(2), Hud.airBubbleSlotAngle(2), 0f)
+        assertTrue(
+            Hud.airBubbleSlotAngle(2) != Hud.airBubbleSlotAngle(3),
+            "distinct slots need distinct angles"
+        )
     }
 
     // --- Low air: the last breath has to be impossible to miss --------------------------
