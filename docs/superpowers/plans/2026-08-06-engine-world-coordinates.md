@@ -65,8 +65,8 @@ That is precisely the reported symptom. `Hud` and `DiveRenderer` both compute `V
 
 The framebuffer can differ from the `onCreate` value for at least three reasons, all silent:
 
-* `WindowImpl.createWindow` reads the framebuffer size (`ENG/core/window/WindowImpl.kt:94-96`) **before** `glfwShowWindow`, and then installs a framebuffer-size callback (`:107-113`) that fires on the first `glfwPollEvents` — which happens in `beginFrame`, *after* `initGame`/`onCreate` (`ENG/core/PulseEngineImpl.kt:69-73, 159-163, 216-224`). On a HiDPI/Retina backing this is a factor of 2.
-* The `LEFT_ALT+ENTER` fullscreen toggle shipped in `init.pes` calls `WindowImpl.updateScreenMode` → `createWindow()` → a new framebuffer size (`ENG/core/window/WindowImpl.kt:131-145`).
+* ~~`WindowImpl.createWindow` reads the framebuffer size (`ENG/core/window/WindowImpl.kt:94-96`) **before** `glfwShowWindow`, and then installs a framebuffer-size callback (`:107-113`) that fires on the first `glfwPollEvents` — which happens in `beginFrame`, *after* `initGame`/`onCreate` (`ENG/core/PulseEngineImpl.kt:69-73, 159-163, 216-224`). On a HiDPI/Retina backing this is a factor of 2.~~ **MEASURED AND DISPROVEN (2026-08-06, Task 1).** `getFramebufferSize` at `:94-96` runs *after* `glfwCreateWindow` and already returns PHYSICAL pixels, so the callback fires with the same numbers it was seeded with and nothing changes. Instrumented runs logged `window == mainSurface.config` and `scale = 1` from frame 1 in every start-up configuration tried, including a window that landed on a Retina panel (`windowWidth = 2100` → `window = 3456x1800`, i.e. a 2x backing, still `scale = 1`). Start-up is not a trigger.
+* The `LEFT_ALT+ENTER` fullscreen toggle shipped in `init.pes` calls `WindowImpl.updateScreenMode` → `createWindow()` → a new framebuffer size (`ENG/core/window/WindowImpl.kt:131-145`). **CONFIRMED, and it is the trigger that reproduces the shipped report.** Booting windowed at 1200x900 and firing that toggle onto a 3440x1440 panel logged `scale=(1.6,1.6) origin=(0,0) position=(0,0)` — `min(3440/1200, 1440/900)` — and put the diver's world square at 0.632 of screen width against its own HUD air ring at 0.395, versus the reported ~0.64 / ~0.44.
 * Moving the window between monitors with different content scales.
 
 **Consequence for the plan:** the aspect ratio is a red herring for *this* bug — the trigger is a size change of any kind. But the diagnosis is worth stating precisely, because it decides the sequencing in §5: there is a two-line fix that closes this bug today, and it is not the migration.
@@ -438,9 +438,20 @@ Listed so nobody spends time on them: the alpha-squared HUD convention and `auth
 
 ## 6. Task breakdown
 
-### Task 1: Remove the `Camera` scene entity
+### Task 1: Remove the `Camera` scene entity — ✅ DONE, commit `6ea1f53`
 
 Closes the shipped bug. No coordinate change.
+
+**What actually shipped, and how it differs from the plan below:**
+
+* The `Camera` entity and its 19-line comment are gone, replaced by a comment recording the true mechanism with the citations plus the measured 1200x900 → 3440x1440 reproduction.
+* **`EntityUpdater` was removed as well** — the plan said to keep it. It is provably dead once the entity is gone: it does nothing but dispatch `onStart`/`onUpdate`/`onFixedUpdate` to `Initiable`/`Updatable` scene entities, and the scene now has none. Its only other effect, syncing `engine.config.fixedTickRate` to its own `tickRate` on start, was already a no-op — `EnPustTil.onCreate` sets `fixedTickRate = 60` *before* calling `DiveLighting.setup`, so it copied 60 out and wrote the same 60 back.
+* **`EntityRendererImpl` stays**, per the plan. It draws nothing with an empty scene, but GI's own `onCreate` does `getSystemOfType<EntityRenderer>() ?: return` at `GlobalIlluminationSystem.kt:184` before registering its five render passes, so removing it would change GI's initialisation path for no gain.
+* Task 4's `stripCount`/`stripCentreDepth` extraction is untouched and still open.
+* `EnPustTil.kt`'s `camera: left null` comment was rewritten in the same commit (risk 4.3): its stated reason ("the GI Camera entity drives `mainCamera`") evaporated with the entity, while the decision stays correct for a stronger reason.
+* Added `src/test/kotlin/render/MainCameraOwnershipTest.kt` (2 tests, both mutation-tested): a source-scanning guard asserting no production source constructs a scene `Camera` entity or touches `engine.gfx.mainCamera`. It is a precondition guard, not a behaviour test — stated plainly in its class doc — because the invariant is about a mutable engine-owned object and only becomes visible once two surfaces have been rasterised. Task 5 legitimately deletes it.
+
+**Evidence.** In a configuration where the bug does not manifest (plain fullscreen, framebuffer never changes), the world capture before and after the change is **bit-for-bit identical** — 0 differing pixels over 3440x1440 — so nothing about GI, ambient, zone bands, pearl lights or the diver beam moved. The diver-square-vs-air-ring concentric delta is ≤ 1.7 px at 3440x1440 fullscreen, 3456x1800, 1600x900, 1200x900 and 700x1000, and 0.0 px after an ALT+ENTER toggle from either 1200x900 or 700x1000 — against 886 px for the same toggle before the fix.
 
 **Files:**
 - Modify: `src/main/kotlin/render/DiveLighting.kt:13, 145-167`
@@ -449,11 +460,11 @@ Closes the shipped bug. No coordinate change.
 - Consumes: nothing new
 - Produces: `engine.gfx.mainCamera` left at its constructed identity for the whole run
 
-- [ ] **Step 1: Record the evidence in the code before deleting anything**
+- [x] **Step 1: Record the evidence in the code before deleting anything**
 
 Read `ENG/modules/lighting/global/GlobalIlluminationSystem.kt` end to end and confirm for yourself that no scene `Camera` entity is looked up. `grep -rn "Camera" ENG/modules/lighting/global/` must return only `surface.camera` and `engine.gfx.mainCamera`.
 
-- [ ] **Step 2: Delete the entity**
+- [x] **Step 2: Delete the entity**
 
 In `DiveLighting.setup`, remove the `import no.njoh.pulseengine.modules.scene.entities.Camera` and the whole block from `val camera = Camera()` through `engine.scene.addEntity(camera)`. Keep `createEmptyAndSetActive`, `EntityUpdater`, `EntityRendererImpl`, the `GlobalIlluminationSystem` setup and `engine.scene.start()` — GI needs an `EntityRenderer` in the scene to register its render passes (`GlobalIlluminationSystem.kt:184-189`) and needs the scene RUNNING for `onUpdate` to install the multiply effect (`:210-215`).
 
@@ -485,12 +496,12 @@ Replace the deleted comment with what is actually true:
 // screen-pixel camera at every framebuffer size, permanently, with no maintenance.
 ```
 
-- [ ] **Step 3: Verify the suite still passes**
+- [x] **Step 3: Verify the suite still passes**
 
 Run: `./gradlew test`
 Expected: PASS, 233 tests. Nothing here is covered by a test — that is the point of Step 4.
 
-- [ ] **Step 4: Verify on a real framebuffer, at a shape you did not start in**
+- [x] **Step 4: Verify on a real framebuffer, at a shape you did not start in**
 
 ```bash
 caffeinate -d -u -t 900 &
@@ -501,7 +512,7 @@ pkill -9 -f EnPustTilKt
 
 Open `/tmp/task1-0.png` and `/tmp/task1-hud-0.png`. The diver square and the centre of the air-bubble ring must be at the same place. Before this change, after a fullscreen toggle, they are not.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/kotlin/render/DiveLighting.kt
