@@ -1,5 +1,36 @@
 // Initialization Script
+//
+// This file is OURS (it came from the engine's project template), not a shadow of an engine
+// file: pulse-engine-0.13.0.jar contains no *.pes entry at all — its only bundled resource
+// config is pulseengine/config/editor_default.cfg. It ships in the booth .exe, because the
+// release jar only drops "*-dev*" (see build.gradle.kts) and this name has no "-dev" in it,
+// unlike init-dev.pes. Verified by unzipping the built exe, not assumed.
+//
+// WHY THE ALT+ENTER FULLSCREEN TOGGLE IS GONE, AND MUST STAY GONE
+// The template's second line bound the alt-enter chord to the fullscreen console command
+// CommandRegistry registers over WindowImpl.updateScreenMode. At an unattended booth in front
+// of a queue that is a keystroke an attendee will eventually find, and the cabinet spends the
+// rest of the day windowed, with a title bar and a close button. It is also the input that
+// triggered the shipped world/HUD misalignment bug fixed in 6ea1f53 — the framebuffer resize
+// was the trigger. That bug is fixed, but a public screen-mode toggle has no business existing
+// on a cabinet whose screen mode is decided once, in application.cfg, and never again
+// (screenMode has no runtime setter — see application.cfg's own header). The deliberate way
+// out is Esc, handled in RunLifecycle/EnPustTil, not a chord nobody documented.
+//
+// Deliberately not written out here in its `bind ...` form, not even inside a comment: the
+// check that this is really gone is a grep of the BUILT ARTEFACT, and a commented-out copy
+// would make that grep answer "present" forever. Do not re-add it "for convenience in dev"
+// either — init-dev.pes is the file that never ships, and that is where it would belong.
+//
+// FOOTNOTE, so nobody is misled by how quiet this file is: as of pulse-engine 0.13.0 nothing
+// in the engine ever RUNS this script. `console.runScript` is called from no class in the jar
+// except the `run {scriptPath}` console command itself, and no class in the jar holds the
+// string "init" or "init.pes" (checked across every constant pool in the jar). So these
+// bindings are inert today and F1 does nothing on its own — the CommandLine widget that
+// registers `showConsole` is never constructed by the engine either, exactly like SceneEditor
+// (see EnPustTil.onCreate). That made the removed chord latent rather than live: one engine
+// upgrade, or one `run init` typed into a console, away from being real. Removing it is the
+// point regardless — the shipped artefact must not contain the binding at all.
 
 // Key bindings
 bind F1 showConsole
-bind LEFT_ALT+ENTER toggleFullscreen
