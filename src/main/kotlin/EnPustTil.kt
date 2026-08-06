@@ -396,9 +396,16 @@ class EnPustTil : PulseEngineGame()
         //     own surfaces' zOrder relative to mainSurface's rather than through this
         //     counter, so it can never collide with this value.
         //   - camera: left null (default) deliberately — the engine default IS "create a
-        //     fresh orthographic camera", which is exactly what a screen-space HUD needs
-        //     (it must not ride engine.gfx.mainCamera, which the GI Camera entity above
-        //     drives). Naming this explicitly would just restate the default.
+        //     fresh orthographic camera" (GraphicsImpl.createSurface builds its own
+        //     DefaultCamera.createOrthographic when none is passed), which is exactly what a
+        //     screen-space HUD needs. It must NOT be handed the shared main camera. That used
+        //     to be justified by "the GI Camera entity drives it"; that entity is gone (see
+        //     DiveLighting.setup — it WAS the world-offset-from-HUD bug), so the shared camera
+        //     now sits at the identity and passing it would look harmless today. It is not:
+        //     the HUD's independence from the world camera is the whole reason Hud and
+        //     AttractLayout can be pure screen space, and the world-coordinate migration in
+        //     docs/superpowers/plans/2026-08-06-engine-world-coordinates.md would make that
+        //     camera scale by ~30 and smear the entire HUD off screen. Leave it null.
         val hudSurface = engine.gfx.createSurface(
             name = "hud",
             backgroundColor = Color.BLANK,

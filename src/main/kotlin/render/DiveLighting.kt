@@ -10,9 +10,7 @@ import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.lighting.global.GiSceneRenderer
 import no.njoh.pulseengine.modules.lighting.global.GlobalIlluminationSystem
-import no.njoh.pulseengine.modules.scene.entities.Camera
 import no.njoh.pulseengine.modules.scene.systems.EntityRendererImpl
-import no.njoh.pulseengine.modules.scene.systems.EntityUpdater
 import kotlin.math.cos
 import kotlin.math.hypot
 
@@ -138,33 +136,89 @@ object DiveLighting
 
     fun setup(engine: PulseEngine)
     {
-        engine.scene.createEmptyAndSetActive("dive.scn")
-        engine.scene.addSystem(EntityUpdater())
-        engine.scene.addSystem(EntityRendererImpl())
-
-        val camera = Camera()
-        camera.viewPortWidth = engine.window.width.toFloat()
-        camera.viewPortHeight = engine.window.height.toFloat()
-
-        // CRITICAL: the scene Camera entity drives engine.gfx.mainCamera every fixed tick
-        // (see Camera.onFixedUpdate in the engine source), and its default xOrigin/yOrigin
-        // of 0.5 recentres that shared camera on the middle of the screen. DiveRenderer and
-        // Hud both draw to the SAME mainSurface using Viewport's top-left-origin pixel maths
-        // (screenX/screenY assume (0,0) = top-left). Left at the default, the GI scene camera
-        // silently fights that convention and shifts every fillRect/drawText call — verified
-        // empirically: without this, the waterline and HUD render far from their expected
-        // position. Pinning the origin to top-left keeps the shared camera at the identity
-        // transform Viewport already assumes, so this entity exists purely to satisfy GI's
-        // requirement for an active scene camera, and touches nothing else.
+        // An EMPTY scene, deliberately and permanently. GlobalIlluminationSystem is a scene
+        // SYSTEM, so it needs an active scene to live in and a RUNNING one for its onUpdate
+        // to install the multiply effect on mainSurface (GlobalIlluminationSystem.kt:210-215)
+        // — hence createEmptyAndSetActive here and engine.scene.start() at the end. It does
+        // not need, and we do not have, a single scene ENTITY: pearls, vents, the anglerfish
+        // and the diver are all generated from the daily seed and drawn immediately (see
+        // DiveRenderer), and the lights are immediate-mode drawLight calls (see [render]).
         //
-        // It is also why the immediate-mode drawLight calls below can use the exact same
+        // NO SCENE `Camera` ENTITY HERE, DELIBERATELY. THIS IS A FIXED BUG, NOT AN OVERSIGHT.
+        //
+        // A previous version of this method added a no.njoh.pulseengine.modules.scene
+        // .entities.Camera with a comment asserting that GI "requires an active scene
+        // camera". That assertion was simply false. GlobalIlluminationSystem reads
+        // engine.gfx.mainCamera directly and hands it to its own surfaces
+        // (GlobalIlluminationSystem.kt:78, 130, 142, 153, 163, 175, and again at :227-229 for
+        // the world-ray pass); it never looks up a scene Camera entity. Grepping the whole
+        // engine for `entities.Camera` returns nothing outside that entity's own file, and
+        // the only early-out in the entire system is a missing EntityRenderer at :184, which
+        // merely skips render-pass registration — every GI surface is already built by then,
+        // so immediate-mode drawLight works regardless.
+        //
+        // What the entity DID do was rewrite the shared mainCamera every fixed tick
+        // (Camera.onFixedUpdate, Camera.kt:85-103):
+        //
+        //     scale = min(mainSurface.config.width  / viewPortWidth,
+        //                 mainSurface.config.height / viewPortHeight) * zoom     // :93
+        //     origin.x   = surfaceWidth * xOrigin                                // :98
+        //     position.x = surfaceWidth * xOrigin - x                            // :100
+        //
+        // with xOrigin/yOrigin pinned to 0, so origin and position were both zero and the
+        // whole view matrix collapsed to a PURE UNIFORM SCALE ABOUT THE SCREEN'S TOP-LEFT
+        // CORNER. viewPortWidth/Height were frozen at the window size seen during onCreate,
+        // while mainSurface.config tracks the CURRENT framebuffer (SurfaceImpl.init:46-47,
+        // called from GraphicsImpl.onWindowChanged). So that scale was 1 if and only if the
+        // framebuffer was still exactly the size it was at onCreate, and anything else
+        // multiplied the world surface — and NOT the HUD surface, which has its own camera —
+        // by the ratio.
+        //
+        // MEASURED, not reasoned about: booting windowed at 1200x900 and then firing the
+        // fullscreen toggle that init.pes binds to LEFT_ALT+ENTER (WindowImpl.updateScreenMode
+        // -> createWindow -> a new framebuffer of 3440x1440) logged
+        //     scale=(1.6,1.6) origin=(0,0) position=(0,0)
+        // i.e. min(3440/1200, 1440/900) = 1.6, and put the diver's world square at 0.632 of
+        // screen width while its own HUD-anchored air ring — computed from the SAME sim.x
+        // through the SAME Viewport.screenX — stayed at 0.395. That 0.40-vs-0.63 split is
+        // exactly the shipped "world offset from the HUD" report. The diver square also came
+        // out 115 px instead of 72, the same 1.6x.
+        //
+        // Left alone, mainCamera is DefaultCamera.createOrthographic(window.width,
+        // window.height) at position 0, origin 0, scale 1 (GraphicsImpl.init:47,
+        // Camera.kt:16-25) — the identity — and its projection is re-issued as
+        // ortho(0, w, h, 0) for EVERY surface camera on every window change
+        // (GraphicsImpl.onWindowChanged:95). It is therefore a correct screen-pixel camera at
+        // every framebuffer size, forever, with no maintenance. That identity is precisely
+        // what render/Viewport's top-left-origin pixel maths already assumes, and it is what
+        // lets the immediate-mode drawLight calls below use the exact same
         // Viewport.screenX/screenY pixel values DiveRenderer uses: GI's "local scene" surface
-        // is created with `camera = engine.gfx.mainCamera` (confirmed in the engine source,
-        // GlobalIlluminationSystem.onCreate), the SAME camera mainSurface uses. Pin it to
-        // identity once here and both surfaces agree on what a pixel coordinate means.
-        camera.xOrigin = 0f
-        camera.yOrigin = 0f
-        engine.scene.addEntity(camera)
+        // is created with `camera = engine.gfx.mainCamera` (GlobalIlluminationSystem.kt:78),
+        // the SAME camera mainSurface uses. Nothing in this process writes it now, so both
+        // surfaces agree on what a pixel coordinate means at any size.
+        //
+        // Nothing may reintroduce a scene Camera entity here without also moving every draw
+        // in DiveRenderer, DiveLighting and Hud into the same coordinate space — which is the
+        // (deliberately deferred) migration in
+        // docs/superpowers/plans/2026-08-06-engine-world-coordinates.md.
+        engine.scene.createEmptyAndSetActive("dive.scn")
+
+        // EntityUpdater is GONE with the Camera entity, because it existed only to tick it.
+        // All it ever does is dispatch onStart/onUpdate/onFixedUpdate to Initiable/Updatable
+        // scene entities (EntityUpdater.kt in full), and this scene has none — the one entity
+        // that ever existed was the Camera above. Its only other effect is syncing
+        // engine.config.fixedTickRate to its own tickRate on start, which was already a no-op
+        // here: EnPustTil.onCreate sets fixedTickRate = 60 BEFORE calling this method, so
+        // EntityUpdater.onCreate copied 60 out and onStart wrote the same 60 back.
+        //
+        // EntityRendererImpl STAYS, even though it too draws nothing while the scene is empty
+        // (buildRenderQueue finds no entity type lists, so every task goes straight back to
+        // the pool — EntityRenderer.kt:88-105). It stays because GI's own onCreate does
+        // `getSystemOfType<EntityRenderer>() ?: return` at GlobalIlluminationSystem.kt:184
+        // before registering its five render passes: removing this system would silently
+        // change GI's initialisation path for no gain beyond one no-op pass per frame, and it
+        // is the seam any future GiLightSource or occluder entity would have to plug into.
+        engine.scene.addSystem(EntityRendererImpl())
 
         val system = GlobalIlluminationSystem()
         system.lightTexScale = 0.25f
