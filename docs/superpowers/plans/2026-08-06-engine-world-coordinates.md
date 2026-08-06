@@ -1488,62 +1488,73 @@ git commit -m "docs: record the world-coordinate migration and its invariants"
 
 ---
 
-# Stage D — the entity layer
+# Stage D (reduced) — make the editor's one working capability usable
 
-> Read §1.8, §2.6 and §4.9–4.14 before starting. The three hard constraints are: **`src/main/kotlin/dive/` does not change**; **entities are views, never the source of truth**; **pearl, vent and anglerfish placement stays seeded and procedural and is never authored into `dive.scn`**. Resolution and aspect independence remain non-negotiable — the booth display size is unknown.
+> **This is the whole of Stage D that ships.** The entity layer — Tasks 11–14, `dive.scn`, `DiverEntity`, the look prototypes — is **deferred to §9**, not deleted. Read §9's banner for why.
+>
+> What survives is Task 10, cut down to roughly **twenty lines and no new files**. It buys exactly one thing, and that thing demonstrably works today: the editor's **Scene Systems panel**, where `aoRadius`, `dithering`, `lightTexScale` and `minReflectance` are live `@Prop`s on the running `GlobalIlluminationSystem`. Given Task 6, being able to drag `aoRadius` and watch the frame is worth more this month than a `PearlLook` would be.
 
-### Task 10: Author `dive.scn`, and let the editor actually reach STOPPED
+### Task 10: Let the editor reach STOPPED, and stop the game fighting it — REDUCED
 
-Unblocks the editor. No entities yet, and no dependency on Stage B — this task is worth doing early precisely because it is the cheapest way to test §1.8's reading of the editor against the real thing.
+**Depends on Task 5** (Stage B) for the `CameraRig` gate only; the comment fixes and the conditional `start()` are independent and could ship at any point.
+
+> **What this task deliberately does NOT do, and why the omissions are the point.**
+>
+> * **No `src/main/resources/dive.scn`.** `createEmptyAndSetActive("dive.scn")` stays exactly as it is (`DiveLighting.kt:204`). There is nothing to author, so there is nothing to load.
+> * **No `loadAndSetActive`.** The earlier draft's load path did not resolve where it claimed: `DataImpl.getFile` is `File(filePath).takeIf { it.isAbsolute } ?: File("${getSaveDir()}/$filePath")`, so a relative `"dive.scn"` in dev resolves under **`saveDirectory`** — next to `scoreboard.json` — not the source tree. Worse, `loadAndSetActive` is `loadObject<Scene>(...)?.let { setActive(it) }` (`SceneManagerImpl.kt:85-88`): it returns `Unit` and **has no failure signal at all**, so the specified "fall back with a `Logger.warn`" had no mechanism (`try/catch` would not work — nothing throws). Not shipping the load removes both problems rather than solving them.
+> * **Both scene systems stay owned by Kotlin, in `DiveLighting.setup`.** `SceneManager.addSystem` is a bare `list.add` with no dedup (`SceneManager.kt:251-252`), so a `.scn` that also carried `GlobalIlluminationSystem` would give **two** instances — two sets of nine surfaces, two `MultiplyEffect`s, and `DiveLighting.gi` pointing at the one it constructed rather than the one the editor's panel edits. Since systems serialize into the `.scn` (confirmed: `level_1.scn` contains `GlobalIlluminationSystem`, `BloomSystem`, `ColorGradingSystem`, `PhysicsSystem`, `EntityUpdater`), the first Ctrl+S would create that problem even from a hand-authored file that started clean. **With no file, the ownership question never arises**, and `lightTexScale = 0.25f` / `dithering = 0.6f` keep their ~20 lines of measured justification next to the values instead of in a single-line JSON blob.
+> * **Consequence, stated so nobody is surprised:** an `aoRadius` tuned in the editor is **not persisted**. There is no Ctrl+S target. The workflow is "drag until it looks right, read the number off the panel, type it into `DiveLighting.setup` as a metre value per Task 6, rebuild once." That is still enormously better than rebuilding per guess, and it is honest about what it is.
 
 **Files:**
-- Create: `src/main/resources/dive.scn` (an empty scene with the two systems, saved from the editor or hand-written)
-- Modify: `src/main/kotlin/render/DiveLighting.kt:141-143, 204, 214-220, 255`
-- Modify: `src/main/kotlin/EnPustTil.kt` (editor gates)
+- Modify: `src/main/kotlin/render/DiveLighting.kt` (two comments; the conditional `start()`)
+- Modify: `src/main/kotlin/EnPustTil.kt` (two gates; one stale comment)
 
 **Interfaces:**
-- Consumes: `devMode`, `System.getenv("EPT_EDITOR")`
-- Produces: a scene loaded from a file, `STOPPED` when the editor is up and `RUNNING` otherwise
+- Consumes: `System.getenv("EPT_EDITOR")` (already read at `EnPustTil.kt:386`), `engine.scene.state`
+- Produces: a scene that is `STOPPED` when the editor is up and `RUNNING` otherwise. **No new file, no new class, no new test.**
 
 - [ ] **Step 1: Correct the two false comments before changing behaviour**
 
-`DiveLighting.kt:141-143` claims GI "needs … a RUNNING [scene] for its `onUpdate` to install the multiply effect". Read `ENG/core/scene/SceneManagerImpl.kt:206`, `ENG/core/scene/Scene.kt:80-97` and `:113-117` and confirm for yourself that neither consults `SceneState`, and that `GlobalIlluminationSystem` has no `onStart` (`grep -n "override fun on" GlobalIlluminationSystem.kt` → `74, 192, 220, 234, 257`). Rewrite the comment to say what is actually true and cite it.
+`DiveLighting.kt:141-143` claims GI "needs … a RUNNING [scene] for its `onUpdate` to install the multiply effect". Read `ENG/core/scene/SceneManagerImpl.kt:206`, `ENG/core/scene/Scene.kt:80-97` and `:113-117` and confirm for yourself that neither consults `SceneState`, and that `GlobalIlluminationSystem` has no `onStart` (`grep -n "override fun on" GlobalIlluminationSystem.kt` → `74, 192, 220, 234, 257`). The first half of the comment is right — GI does need an *active* scene to live in. The second half is false. Rewrite it to say so and cite it.
 
-Then `DiveLighting.kt:214-220`: `EntityRendererImpl` is about to draw the diver. Update it from "stays even though it draws nothing" to "draws the diver, **and** is GI's precondition at `GlobalIlluminationSystem.kt:184`", and add the ordering note from risk 4.10 — it must be added *before* `GlobalIlluminationSystem`, because systems initialise in list order (`Scene.kt:84-97`).
+Then `DiveLighting.kt:214-220`, which explains why `EntityRendererImpl` stays. It is **correct as written** and stays correct under this reduced scope — the system draws nothing, and it is kept because GI's `onCreate` does `getSystemOfType<EntityRenderer>() ?: return` at `GlobalIlluminationSystem.kt:184`. Add only the ordering note from risk 4.10: it must be added *before* `GlobalIlluminationSystem`, because systems initialise in list order (`Scene.kt:84-97`) and the lookup happens during GI's `onCreate`. Nothing in the code says so today.
 
-- [ ] **Step 2: Switch from `createEmptyAndSetActive` to a load with a fallback**
+> For the record, and against a future attempt: the review established that GI works fine with **no** `EntityRenderer` at all — all nine GI surfaces are created at `:76-182`, *before* the early return, `GiSceneRenderer` is attached at `:86`, and the five skipped `addRenderPass` calls only route *scene entities*, of which we have none. Immediate-mode `drawLight` bypasses render passes entirely and `onUpdate`'s `MultiplyEffect` install has no dependency on them. Keeping `EntityRendererImpl` is defensible conservatism, not a requirement. Do not let the comment harden into a claim it is load-bearing.
 
-`engine.scene.loadAndSetActive("dive.scn", fromClassPath = !devMode)`, falling back to `createEmptyAndSetActive("dive.scn")` with a `Logger.warn` if the load fails. The booth must boot with placeholder squares rather than not boot. Give the scene an **absolute** `fileName` in dev mode pointing at `src/main/resources/dive.scn`, so a save lands in the source tree without moving `engine.config.saveDirectory`, which `ScoreRepository` owns (`score/ScoreRepository.kt:184`, §1.8.6).
+- [ ] **Step 2: Make `engine.scene.start()` conditional**
 
-- [ ] **Step 3: Make `engine.scene.start()` conditional, and gate the two things that fight the editor**
+Skip `engine.scene.start()` when `EPT_EDITOR` is set, so the scene stays `STOPPED` and `SceneEditor.kt:345`'s `if (enableViewportInteractions && engine.scene.state == SceneState.STOPPED)` lets viewport interaction, the gizmo and the rubber-band actually run. GI does not care (§1.8.1). Comment the citation.
 
-- Skip `engine.scene.start()` when the editor is enabled, so the scene stays `STOPPED` and `SceneEditor.kt:345` lets viewport interaction run. Comment the citation.
-- Skip `CameraRig.apply` while the editor service `isRunning` (risk 4.12). Note in the comment that the single-writer invariant is preserved — the writer is the editor.
-- Freeze `sim.tick` while the editor is up **and** the scene is `STOPPED` (risk 4.13).
-- Replace `EnPustTil.kt:373-377`'s "expect the world to render wrong while the editor is open" note: it is now fixed, not tolerated. Also drop the stale "`dive.scn` holds exactly one entity, GI's Camera" — that entity was deleted in `6ea1f53`.
+At the booth `EPT_EDITOR` is unset, `start()` runs, and behaviour is **bit-identical to today**. That is the property to preserve above all others in this task.
 
-- [ ] **Step 4: Look at it — this is the step the whole stage rests on**
+- [ ] **Step 3: Gate the two things that fight the editor**
+
+- **Skip `CameraRig.apply` while the editor service `isRunning`** (risk 4.12). After Task 5 it writes `mainCamera` 60×/s and the editor drives the same object through its own `Camera2DController` (`SceneEditor.kt:347`); ungated, you cannot pan or zoom at all and it reads as "the editor is broken". Note in the comment that the single-writer invariant is **preserved, not violated** — the rule is "exactly one writer at a time", and in editor mode the writer is the editor. Say it where the gate lives, or the next person will delete the gate to satisfy `MainCameraOwnershipTest` (Task 5 Step 2a).
+- **Freeze `sim.tick` while the editor is up and the scene is `STOPPED`** (risk 4.13). `PulseEngineGame.onUpdate`/`onFixedUpdate`/`onRender` are never state-gated (`PulseEngineImpl.kt:256, 280, 298`), so otherwise the diver keeps swimming, air keeps burning and the run ends and restarts underneath you while you are trying to read a number off a panel. F10 (RUNNING) still ticks — that is the point of F10.
+- **Replace `EnPustTil.kt:373-377`'s "expect the world to render wrong while the editor is open" note.** It is now fixed, not tolerated. *(The neighbouring "`dive.scn` holds exactly one entity, GI's Camera" text an earlier draft told you to delete does not exist — `EnPustTil.kt:379-385` already says "`dive.scn` currently holds NO entities at all", corrected in `6ea1f53`. Leave it; it is true and stays true under this scope.)*
+
+- [ ] **Step 4: Look at it — this is the step the task exists for**
 
 ```bash
 caffeinate -d -u -t 900 &
 EPT_EDITOR=1 EPT_DEV=1 ./gradlew run
 ```
 
-Confirm, and write down which of these are true, because §1.8 is a reading of source and this is the measurement:
-- the editor opens and the Outliner appears (still 0/0 — there are no entities yet);
-- the Scene Systems panel lists `EntityRendererImpl` and `GlobalIlluminationSystem`, and editing `aoRadius` or `dithering` changes the frame immediately;
-- the viewport grid draws (it uses `drawLine`, fixed for local dev in `6b05f07`);
+Confirm, and **write down which of these are true**, because §1.8 is a reading of source and this is the measurement:
+- the editor opens and the Outliner appears (0/0 — there are deliberately no entities);
+- **the Scene Systems panel lists `EntityRendererImpl` and `GlobalIlluminationSystem`, and dragging `aoRadius` or `dithering` changes the frame immediately** — this is the entire payoff of the task; if it is false, revert the task and say so;
+- the viewport grid draws (it uses `drawLine`, shadowed for local dev in `6b05f07` and excluded from the release jar);
 - panning and zooming the editor camera works and does not snap back;
 - the diver is frozen rather than swimming off;
-- Ctrl+S writes `src/main/resources/dive.scn` and `git diff` shows a small, readable file.
+- F10 starts the sim with the panels still up, and `aoRadius` is still editable while it runs.
 
-If any of these is false, stop and re-read the editor source rather than proceeding — Tasks 11–14 all assume this step passed.
+Then, with `EPT_EDITOR` unset, capture and confirm the frame is **identical** to a pre-task capture. This task must be invisible at the booth.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/main/resources/dive.scn src/main/kotlin/render/DiveLighting.kt src/main/kotlin/EnPustTil.kt
-git commit -m "feat: load dive.scn from a file and let the scene editor reach STOPPED"
+git add src/main/kotlin/render/DiveLighting.kt src/main/kotlin/EnPustTil.kt
+git commit -m "feat: let the scene editor reach STOPPED and stop the game fighting it"
 ```
 
 ---
