@@ -4,7 +4,7 @@ import score.InitialsEntry
 import score.Leaderboard
 
 /** The presentation states a booth run cycles through. */
-enum class RunLifecycleState { IDLE, PLAYING, RUN_OVER, ENTER_INITIALS }
+enum class RunLifecycleState { IDLE, PLAYING, PAUSED, RUN_OVER, ENTER_INITIALS }
 
 /**
  * Pure state machine for the run lifecycle — no pulseengine imports, so it is fully
@@ -19,8 +19,15 @@ enum class RunLifecycleState { IDLE, PLAYING, RUN_OVER, ENTER_INITIALS }
  *              responsibility — see [RunLifecycleState.IDLE] usage in EnPustTil). A fresh
  *              input press leaves IDLE into a brand new run.
  * - PLAYING  — a run is in progress. Moves to RUN_OVER the instant the sim reports
- *              `runOver`. Input is otherwise ignored here — kicking/bleeding never
- *              restarts anything.
+ *              `runOver`. Start/restart input is otherwise ignored here — kicking/bleeding
+ *              never restarts anything. The one thing that DOES act here is `pausePressed`
+ *              (Esc), checked only after `runOver`, so a run that has just ended goes to
+ *              its RUN_OVER screen rather than becoming pausable in its final frame.
+ * - PAUSED   — the deliberate way out, reachable from IDLE and from PLAYING only, and
+ *              returning to whichever of those it came from ([resumeState]). See
+ *              [simulationAdvances] for the part that makes a mid-run pause airtight
+ *              rather than merely visual, and the companion constants for the two
+ *              judgement calls (auto-dismiss, exit-by-hold) this state encodes.
  * - RUN_OVER — the "RUN OVER" screen. For the first [dwellSeconds] no input can restart —
  *              this is what guarantees the final score is actually readable even if a
  *              button is being held or mashed the instant the clock hits zero. After the
@@ -55,7 +62,9 @@ enum class RunLifecycleState { IDLE, PLAYING, RUN_OVER, ENTER_INITIALS }
 class RunLifecycle(
     private val dwellSeconds: Float = DWELL_SECONDS,
     private val idleTimeoutSeconds: Float = IDLE_TIMEOUT_SECONDS,
-    private val initialsIdleTimeoutSeconds: Float = INITIALS_IDLE_TIMEOUT_SECONDS
+    private val initialsIdleTimeoutSeconds: Float = INITIALS_IDLE_TIMEOUT_SECONDS,
+    private val pauseIdleTimeoutSeconds: Float = PAUSE_IDLE_TIMEOUT_SECONDS,
+    private val exitHoldSeconds: Float = EXIT_HOLD_SECONDS
 )
 {
     var state: RunLifecycleState = RunLifecycleState.IDLE
@@ -84,6 +93,71 @@ class RunLifecycle(
     var completedInitials: String = ""
         private set
 
+    /**
+     * One-tick event: true for exactly the [update] call on which the exit hold completes.
+     * The caller shuts the application down on it (`engine.window.close()` in EnPustTil —
+     * the same call the engine's own `exit` console command makes, verified by
+     * disassembling `CommandRegistry.registerEngineCommands`; it ends the game loop, which
+     * then runs `onDestroy` on the game and on every registered Service, so
+     * [score.ScoreRepository]'s final synchronous save still happens).
+     *
+     * A one-tick event rather than a latched flag, for the same reason [justStarted] is:
+     * the state machine's job is to say "this happened now", not to hold a mode.
+     */
+    var exitRequested: Boolean = false
+        private set
+
+    /**
+     * Which state a resume returns to. PAUSED is entered from IDLE (a technician opening the
+     * cabinet menu from attract mode) and from PLAYING (a player pausing a run), and it has
+     * to go back to exactly the one it came from: back to PLAYING resumes the run in place,
+     * back to IDLE restores the attract screen. Anything else would either resurrect a run
+     * that was never started or throw away one that was.
+     */
+    private var resumeState = RunLifecycleState.IDLE
+
+    /**
+     * Whether the pause screen currently on show was opened from attract mode rather than
+     * from a run — the only thing the renderer needs to know to word it correctly ("cabinet
+     * menu" vs "paused"). Exposed as a boolean rather than as [resumeState] itself so the
+     * draw site cannot start branching on lifecycle states it has no business knowing about.
+     */
+    val pausedFromIdle: Boolean get() = resumeState == RunLifecycleState.IDLE
+
+    /**
+     * Whether the caller MUST advance [dive.DiveSim] this frame. EnPustTil's `onFixedUpdate`
+     * is gated on exactly this and nothing else, which is what makes a pause airtight
+     * instead of cosmetic: `DiveSim.tick` is the single place the clock counts down and air
+     * burns (both are `private set` on the sim and are written nowhere else), and it has
+     * exactly one call site in the whole game. Skipping that call is therefore the entire
+     * pause — there is no second path by which a paused run can lose a tenth of a second or
+     * a breath of air, and no way to "think for free" about a dive you are losing.
+     *
+     * It also cannot accrue a time debt that gets paid out in one lurch on resume: the
+     * skipped ticks are dropped, not banked. The engine hands `onFixedUpdate` a CONSTANT
+     * `fixedDeltaTime`, so the tick that runs immediately after a resume advances the sim by
+     * one frame exactly like every other tick, no matter how long the pause lasted.
+     *
+     * An exhaustive `when` on purpose, with no `else`: adding a sixth state must be a
+     * compile error here, not a silent default that either freezes the game or lets a run
+     * tick away behind a screen the player cannot see past. RUN_OVER and ENTER_INITIALS keep
+     * ticking exactly as they did before this state existed — `DiveSim.tick` already no-ops
+     * once `runOver` is set, so those two are true here to preserve the previous behaviour
+     * verbatim rather than because anything still moves.
+     */
+    val simulationAdvances: Boolean get() = when (state)
+    {
+        RunLifecycleState.IDLE, RunLifecycleState.PAUSED -> false
+        RunLifecycleState.PLAYING, RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
+    }
+
+    /**
+     * How far through the exit hold we are, 0..1 — the fill fraction of the progress bar on
+     * the pause screen. Feedback is not decoration here: without it a hold-to-confirm reads
+     * as a dead key, and the technician lets go and tries something else.
+     */
+    val exitHoldProgress: Float get() = (exitHeldSeconds / exitHoldSeconds).coerceIn(0f, 1f)
+
     private val initialsEntry = InitialsEntry()
 
     /** Current in-progress initials, e.g. "AAA" — for rendering the entry screen. */
@@ -94,6 +168,17 @@ class RunLifecycle(
 
     private var timeInState = 0f
     private var wasInputPressed = false
+    private var wasPausePressed = false
+
+    /**
+     * How long the exit input has been held CONTINUOUSLY while PAUSED. Reset to zero the
+     * moment it is released, and by [enter] on every state change, so a hold is only ever
+     * satisfied by one unbroken press — mashing the key can never accumulate its way there.
+     */
+    private var exitHeldSeconds = 0f
+
+    /** Latch so the one-tick [exitRequested] fires once per pause, not once per frame after. */
+    private var exitAlreadyRequested = false
 
     /**
      * Advance the lifecycle by one frame.
@@ -108,6 +193,14 @@ class RunLifecycle(
      *   tests — get the pre-ENTER_INITIALS behaviour unchanged.
      * @param cycleUp / @param cycleDown / @param confirmPressed initials-entry input,
      *   level readings — see [InitialsEntry.update]. Only consulted in ENTER_INITIALS.
+     * @param pausePressed whether the pause/back input (Esc) reads pressed THIS frame — a
+     *   level reading, edge-detected here exactly like [anyInputPressed], so a key held
+     *   down toggles once and not sixty times a second. Consulted in IDLE and PLAYING (to
+     *   open the pause screen) and in PAUSED (to leave it again).
+     * @param exitHeld whether the exit input reads pressed this frame. The ONLY lifecycle
+     *   input read as a level and not edge-detected, deliberately: what it measures is
+     *   duration, and duration is what makes the exit safe (see [EXIT_HOLD_SECONDS]).
+     *   Consulted only in PAUSED.
      * @return the state after this update.
      */
     fun update(
@@ -117,23 +210,60 @@ class RunLifecycle(
         bankedScore: Int = 0,
         cycleUp: Boolean = false,
         cycleDown: Boolean = false,
-        confirmPressed: Boolean = false
+        confirmPressed: Boolean = false,
+        pausePressed: Boolean = false,
+        exitHeld: Boolean = false
     ): RunLifecycleState
     {
         justStarted = false
         initialsJustCompleted = false
+        exitRequested = false
         timeInState += dt
 
         val pressedEdge = anyInputPressed && !wasInputPressed
         wasInputPressed = anyInputPressed
 
+        val pauseEdge = pausePressed && !wasPausePressed
+        wasPausePressed = pausePressed
+
         when (state)
         {
             RunLifecycleState.IDLE ->
+                // Esc from attract opens the same screen a paused run gets, so a technician
+                // has one way to close the cabinet down and does not have to remember a
+                // keyboard shortcut nobody wrote down. Checked AFTER the start press so a
+                // player and a technician acting in the same frame gives the player the run.
                 if (pressedEdge) enter(RunLifecycleState.PLAYING, started = true)
+                else if (pauseEdge) enterPause(RunLifecycleState.IDLE)
 
             RunLifecycleState.PLAYING ->
+                // runOver first: a run whose clock has just hit zero is finished, and must
+                // reach its RUN_OVER screen rather than be frozen one frame short of it.
                 if (runOver) enter(RunLifecycleState.RUN_OVER)
+                else if (pauseEdge) enterPause(RunLifecycleState.PLAYING)
+
+            RunLifecycleState.PAUSED ->
+            {
+                // Level, not edge: an unbroken hold is the whole safety mechanism, and it
+                // must reset the instant the key comes up.
+                exitHeldSeconds = if (exitHeld) exitHeldSeconds + dt else 0f
+
+                if (exitHeld && !exitAlreadyRequested && exitHeldSeconds >= exitHoldSeconds)
+                {
+                    // Stay in PAUSED. The application is closing; everything should remain
+                    // exactly as frozen as it already is until the window actually goes.
+                    exitRequested = true
+                    exitAlreadyRequested = true
+                }
+                else if (pauseEdge || timeInState >= pauseIdleTimeoutSeconds)
+                {
+                    // Both resumes are the same transition on purpose — see
+                    // PAUSE_IDLE_TIMEOUT_SECONDS for why the timeout resumes rather than
+                    // abandoning. `started` stays false, so the caller does NOT build a
+                    // fresh DiveSim: the run is picked up exactly where it was left.
+                    enter(resumeState)
+                }
+            }
 
             RunLifecycleState.RUN_OVER ->
                 if (timeInState >= dwellSeconds)
@@ -166,11 +296,22 @@ class RunLifecycle(
         enter(RunLifecycleState.IDLE)
     }
 
+    private fun enterPause(returnTo: RunLifecycleState)
+    {
+        resumeState = returnTo
+        enter(RunLifecycleState.PAUSED)
+    }
+
     private fun enter(newState: RunLifecycleState, started: Boolean = false)
     {
         state = newState
         timeInState = 0f
         justStarted = started
+        // Every state change starts the exit hold over. Otherwise a key held down across a
+        // pause/resume/pause cycle would carry its accumulated time with it and complete
+        // the hold on a press the technician never made in the state it fired in.
+        exitHeldSeconds = 0f
+        exitAlreadyRequested = false
         if (newState == RunLifecycleState.ENTER_INITIALS) initialsEntry.reset()
     }
 
@@ -191,5 +332,58 @@ class RunLifecycle(
          * why this auto-submits rather than discarding.
          */
         const val INITIALS_IDLE_TIMEOUT_SECONDS = 15f
+
+        /**
+         * Time on the pause screen, untouched, before it dismisses itself — and it RESUMES
+         * rather than exiting or abandoning.
+         *
+         * JUDGEMENT CALL, and the reasoning is the same one that produced the two timeouts
+         * above: every other state in this machine recovers to attract mode on its own so
+         * that a player who walks away cannot block the queue. A pause screen that sat there
+         * forever would be the single state that does not, and it would be the worst one to
+         * have that property — it holds the cabinet mid-run, with the leaderboard hidden and
+         * "PRESS START" nowhere on screen, so the queue cannot even tell the machine is
+         * still alive.
+         *
+         * Resuming is the least destructive of the three ways out. Jumping straight to IDLE
+         * would silently throw away a run that might have been worth a place on the board;
+         * resuming hands the run back to the (absent) player, whose air then drains, which
+         * feeds the already-tested RUN_OVER -> ENTER_INITIALS -> auto-submit -> IDLE
+         * recovery path — the same path, and the same "a score that exists beats a clean
+         * abandonment" reasoning, as ENTER_INITIALS above. Auto-EXITING would of course be
+         * absurd: a screen that shuts the cabinet down if nobody touches it for a while.
+         *
+         * 20s: longer than the 15s and 17.5s above, because a pause is a deliberate "hold
+         * on a second" (hand the stick over, take a photo, let a colleague through) and
+         * cutting it short makes the feature useless — but still short enough that the
+         * cabinet is never held for more than a fifth of a minute by someone who left.
+         */
+        const val PAUSE_IDLE_TIMEOUT_SECONDS = 20f
+
+        /**
+         * How long the exit input must be held CONTINUOUSLY, on the pause screen, to shut
+         * the application down.
+         *
+         * JUDGEMENT CALL: exit needs a confirmation step, but not a confirmation SCREEN.
+         * A yes/no prompt is the obvious answer and the wrong one here — it makes the
+         * technician navigate a menu on a cabinet with no keyboard-friendly menu convention
+         * and no cursor, and it adds a fourth state that itself needs a timeout, an escape
+         * and an auto-dismiss rule.
+         *
+         * A hold gets the same protection out of the input itself. An accidental contact —
+         * a knee against the shelf, a hand steadying the cabinet, an attendee mashing keys
+         * — produces taps, and taps produce nothing at all here; you have to mean it for a
+         * second and a half without letting go. Meanwhile a technician does not "fight the
+         * UI": they hold one key and watch a bar fill, with no decision to make and nothing
+         * to read. It is also the reason Esc-then-Esc is safe, which is the specific
+         * accident worth designing against: an attendee who hits Esc mid-run and hits it
+         * again gets their run back, not a dead cabinet, because the second Esc is bound to
+         * resume and exit is not on that key at all.
+         *
+         * 1.5s is the shortest hold that cannot be produced by a bounce or a bump but still
+         * feels immediate; it is also long enough for the progress bar to read as a bar
+         * rather than a flash.
+         */
+        const val EXIT_HOLD_SECONDS = 1.5f
     }
 }

@@ -11,11 +11,26 @@ class RunLifecycleTest
     private val IDLE_TIMEOUT = 5f // measured from RUN_OVER entry, i.e. 3s of true idle after the dwell
     private val INITIALS_IDLE_TIMEOUT = 4f // measured from ENTER_INITIALS entry
 
+    private val PAUSE_IDLE_TIMEOUT = 6f // measured from PAUSED entry
+    private val EXIT_HOLD = 1f          // unbroken seconds of the exit input to actually quit
+
     private fun newLifecycle() = RunLifecycle(
         dwellSeconds = DWELL,
         idleTimeoutSeconds = IDLE_TIMEOUT,
-        initialsIdleTimeoutSeconds = INITIALS_IDLE_TIMEOUT
+        initialsIdleTimeoutSeconds = INITIALS_IDLE_TIMEOUT,
+        pauseIdleTimeoutSeconds = PAUSE_IDLE_TIMEOUT,
+        exitHoldSeconds = EXIT_HOLD
     )
+
+    /** Drive a fresh lifecycle from IDLE into a paused run, with every input released. */
+    private fun enterPausedRun(lc: RunLifecycle)
+    {
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // IDLE -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)  // release
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = false)
+    }
 
     /** Drive a fresh lifecycle from IDLE, through one full run, into RUN_OVER. */
     private fun enterRunOver(lc: RunLifecycle)
@@ -245,5 +260,140 @@ class RunLifecycleTest
         repeat(30) { lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = true, cycleUp = true) }
 
         assertEquals("BAA", lc.currentInitials, "a held stick must cycle exactly once, not once per frame")
+    }
+
+    // --- Pause and exit (Esc) ----------------------------------------------------------
+
+    @Test
+    fun `a paused run does not advance the simulation`() {
+        // The whole point. DiveSim.tick is the only place the clock counts down and air
+        // burns, EnPustTil gates that call on simulationAdvances and nothing else, so this
+        // property IS the pause. If it were true here, a player could stop and think for
+        // free about a dive they are losing.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        assertFalse(lc.simulationAdvances, "a paused run must be frozen, not merely covered up")
+    }
+
+    @Test
+    fun `a run that is merely playing does advance the simulation`() {
+        // The other half of the above: without this, freezing everything forever would pass.
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertTrue(lc.simulationAdvances)
+    }
+
+    @Test
+    fun `resuming returns to the run rather than restarting it`() {
+        // A resume that set justStarted would have EnPustTil build a fresh DiveSim and throw
+        // away the dive — the single worst thing a pause screen could do to a player.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertFalse(lc.justStarted, "resume must NOT construct a new DiveSim")
+        assertTrue(lc.simulationAdvances)
+    }
+
+    @Test
+    fun `Esc from attract opens the same screen and returns to attract`() {
+        // A technician must be able to shut the cabinet down without a run in progress, and
+        // must not find themselves in a phantom run afterwards.
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state)
+        assertTrue(lc.pausedFromIdle, "the screen must word itself as a cabinet menu, not a paused run")
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertFalse(lc.justStarted, "closing the technician's menu must not start a run")
+    }
+
+    @Test
+    fun `a paused run reports itself as paused from a run, not from attract`() {
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        assertFalse(lc.pausedFromIdle)
+    }
+
+    @Test
+    fun `a held pause key pauses once instead of flickering every frame`() {
+        // Same edge-triggering contract as every other lifecycle input: the engine's Gamepad
+        // has no wasClicked, so this class does its own edge detection. A held key that
+        // toggled per frame would make the pause screen strobe.
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        repeat(60) { lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, pausePressed = true) }
+        assertEquals(RunLifecycleState.PAUSED, lc.state, "a held key must not toggle back out")
+    }
+
+    @Test
+    fun `exit needs an unbroken hold, so mashing can never accumulate to it`() {
+        // The safety property. An attendee who finds Esc mid-run and then leans on a key
+        // must not be able to kill the cabinet; a technician holding deliberately must.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+
+        // Five bursts of half the required hold, each followed by a release. Total held time
+        // is 2.5x EXIT_HOLD, so an implementation that accumulates across releases reaches
+        // the exit during burst two.
+        //
+        // Two things here are load-bearing and were BOTH wrong in the first draft of this
+        // test, which passed against a deliberately broken implementation:
+        //   - exitRequested is checked on EVERY frame, not once per burst. It is a one-tick
+        //     event, so a check after the release frame has already missed it.
+        //   - the whole sequence must stay inside PAUSE_IDLE_TIMEOUT. Overrun it and the
+        //     pause auto-resumes to PLAYING, where exitHeld is ignored and the progress bar
+        //     has been reset — every later assertion then passes for the wrong reason.
+        repeat(5) {
+            repeat(30) {
+                lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, exitHeld = true)
+                assertFalse(lc.exitRequested, "a broken hold must never reach the exit")
+            }
+            lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, exitHeld = false)
+            assertFalse(lc.exitRequested, "a broken hold must never reach the exit")
+            assertEquals(0f, lc.exitHoldProgress, 0.0001f, "releasing must reset the progress bar to empty")
+        }
+        assertEquals(RunLifecycleState.PAUSED, lc.state, "the pause must not have timed out mid-test")
+    }
+
+    @Test
+    fun `an unbroken hold does exit, exactly once`() {
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+
+        var fired = 0
+        repeat(240) {
+            lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, exitHeld = true)
+            if (lc.exitRequested) fired++
+        }
+        assertEquals(1, fired, "exitRequested is a one-tick event, not a latched flag")
+    }
+
+    @Test
+    fun `the exit hold reports its progress so the bar is not a dead key`() {
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        assertEquals(0f, lc.exitHoldProgress, 0.0001f)
+        repeat(30) { lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, exitHeld = true) }
+        val half = lc.exitHoldProgress
+        assertTrue(half > 0.3f && half < 0.7f, "half a hold should read as about half a bar, was $half")
+    }
+
+    @Test
+    fun `a walked-away pause resumes on its own so it cannot block the queue`() {
+        // Every other state in this machine recovers unattended. A pause screen that sat
+        // forever would be the one that does not, which at a booth means the next person in
+        // the queue finds a dead cabinet.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        repeat((PAUSE_IDLE_TIMEOUT * 60).toInt() + 2) {
+            lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false)
+        }
+        assertEquals(RunLifecycleState.PLAYING, lc.state, "an abandoned pause must let the run continue")
+        assertFalse(lc.justStarted, "and must not restart it")
     }
 }

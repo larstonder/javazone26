@@ -21,6 +21,7 @@ import render.RunLifecycle
 import render.RunLifecycleState
 import render.anyLifecycleActionPressed
 import render.drawTextWithOutline
+import render.fillRect
 import score.ScoreRepository
 
 fun main() = PulseEngine.run<EnPustTil>()
@@ -140,6 +141,29 @@ object ScreenText
     const val PLAY_AGAIN = "SPACE / START to play again"
     const val INITIALS_HELP = "UP/DOWN: change letter   A / START: next"
 
+    // --- The pause / exit screen (Esc) -------------------------------------------------
+    // Deliberately plain ASCII. Not because anything here would break the font atlas (see
+    // [DefaultFont] — these are all well inside it, and AttractScreenTest proves it), but
+    // because these lines name physical keys, and a key legend is the one place a
+    // typographic flourish costs legibility for nothing.
+
+    /** Heading when the screen was opened mid-run. */
+    const val PAUSED_TITLE = "PAUSED"
+
+    /**
+     * Heading when the screen was opened from attract mode. Named for what it is — the
+     * technician's way to close the cabinet — rather than "PAUSED", which would be a lie:
+     * there is no run to pause, and a queue reading it over someone's shoulder would think
+     * the machine had stopped working.
+     */
+    const val MENU_TITLE = "CABINET MENU"
+
+    const val PAUSE_RESUME_HINT = "ESC to resume"
+    const val MENU_RESUME_HINT = "ESC to go back"
+
+    /** The exit affordance, on both variants. See RunLifecycle.EXIT_HOLD_SECONDS. */
+    const val EXIT_HINT = "HOLD Q to exit"
+
     /** Dev overlay (EPT_DEV only) — see [EnPustTil.renderGamepadOverlay]. Still drawn text. */
     const val UNMAPPED_JOYSTICK_WARNING = "!! joystick present but NOT gamepad-mapped${SEPARATOR}invisible to this game !!"
 
@@ -168,6 +192,11 @@ object ScreenText
         PLAY_AGAIN,
         INITIALS_HELP,
         UNMAPPED_JOYSTICK_WARNING,
+        PAUSED_TITLE,
+        MENU_TITLE,
+        PAUSE_RESUME_HINT,
+        MENU_RESUME_HINT,
+        EXIT_HINT,
         runOver(0),
         runOver(99999),
         newScore(12345),
@@ -287,6 +316,74 @@ object AttractLayout
 
     /** Right edge of the score column. Draw with `xOrigin = 1`. */
     fun scoreX(centreX: Float, screenHeight: Float) = centreX + screenHeight * ROW_HALF_SPAN
+}
+
+/**
+ * Pure, engine-free layout for the pause / exit screen, extracted for the same reason
+ * [AttractLayout] is: the properties worth asserting are RELATIONSHIPS between numbers, and a
+ * relationship can be checked without a GL context (see PauseScreenTest).
+ *
+ * Unlike the attract screen this one does NOT have to dodge the diver and the waterline,
+ * because it is drawn over a full-screen scrim (see [EnPustTil.drawPauseScreen]) which takes
+ * the live world down to a dim backdrop. What it does have to guarantee is that its four
+ * elements — heading, resume line, exit line, exit progress bar — never run into each other
+ * at any screen size, and that the bar still fits across the squarest booth panel we might be
+ * given. Everything is a fraction of screen HEIGHT for the usual reason: `engine.window
+ * .width/height` are PHYSICAL framebuffer pixels and the booth display's resolution and
+ * aspect ratio are both unknown until we plug it in (see [render.Viewport]).
+ *
+ * As with [AttractLayout], vertical anchors are the TOP of the text box and text grows
+ * downward, so a block occupies `y .. y + fontSize`.
+ */
+object PauseLayout
+{
+    /**
+     * Displayed alpha of the full-screen scrim. Dark enough that the frozen world stops
+     * competing with the text and the screen reads unmistakably as "the game is not running
+     * right now" — but transparent enough that the diver, the pearls and the (stopped) HUD
+     * clock are all still visible behind it, which is what tells a player their run is being
+     * held rather than thrown away.
+     *
+     * Handed through `Hud.authoredAlphaFor` at the draw site, not here: this is the alpha we
+     * want to SEE, and the HUD surface stores alpha squared (see Hud's measurement), so
+     * authoring 0.72 directly would come out at about half that.
+     */
+    const val SCRIM_ALPHA = 0.72f
+
+    const val TITLE_Y = 0.38f
+    const val TITLE_FONT = 0.07f
+
+    const val RESUME_Y = 0.50f
+    const val EXIT_Y = 0.56f
+    const val HINT_FONT = 0.03f
+
+    /** Top of the exit-hold progress bar, and its thickness. */
+    const val BAR_Y = 0.62f
+    const val BAR_HEIGHT = 0.012f
+
+    /**
+     * Half the bar's length, as a fraction of screen HEIGHT — height, so the bar keeps the
+     * same proportion to the "HOLD Q to exit" line above it on any aspect ratio, exactly as
+     * [AttractLayout.ROW_HALF_SPAN] does for a leaderboard row.
+     */
+    const val BAR_HALF_SPAN = 0.15f
+
+    /** Left edge of the bar, given the screen centre. Draw with the default `xOrigin = 0`. */
+    fun barX(centreX: Float, screenHeight: Float) = centreX - screenHeight * BAR_HALF_SPAN
+
+    /** Full length of the bar's track. */
+    fun barTrackWidth(screenHeight: Float) = screenHeight * BAR_HALF_SPAN * 2f
+
+    /**
+     * Length of the filled part of the bar at [progress] (0..1).
+     *
+     * Clamps rather than trusting its input. `RunLifecycle.exitHoldProgress` already clamps,
+     * so this is belt and braces — but an unclamped multiply is exactly how a rectangle ends
+     * up drawn off the side of the screen, and on a booth cabinet with no console attached
+     * that is a bug nobody can diagnose from a photograph.
+     */
+    fun barFillWidth(progress: Float, screenHeight: Float) =
+        barTrackWidth(screenHeight) * progress.coerceIn(0f, 1f)
 }
 
 /**
@@ -454,11 +551,21 @@ class EnPustTil : PulseEngineGame()
 
     override fun onFixedUpdate()
     {
-        // IDLE = attract mode: the clock must not run, and nothing should be reachable
-        // by a bumped button while the machine sits unattended between players. Ticking
-        // is otherwise unconditional — DiveSim.tick already no-ops once runOver is true,
-        // so RUN_OVER need not be special-cased here.
-        if (lifecycle.state != RunLifecycleState.IDLE)
+        // THE ONLY CALL TO DiveSim.tick IN THE GAME (grep it), and therefore the only place
+        // the clock counts down or air burns — both are `private set` on the sim and written
+        // nowhere else. That is what lets a pause be airtight rather than cosmetic: gating
+        // this one line freezes the entire simulation, with no second path by which a paused
+        // run can lose time, air, depth or a pearl.
+        //
+        // The condition is asked of RunLifecycle rather than spelled out here as a state
+        // comparison (it used to read `state != IDLE`) so that the rule lives in the pure,
+        // unit-tested state machine next to the states it talks about, and so that adding a
+        // state cannot silently pick a default: RunLifecycle.simulationAdvances is an
+        // exhaustive `when` with no `else`, so a sixth state is a compile error there. It is
+        // false for IDLE (attract mode must not run a clock while the machine sits
+        // unattended) and for PAUSED, and true for the rest — RUN_OVER and ENTER_INITIALS
+        // included, unchanged, since DiveSim.tick already no-ops once runOver is set.
+        if (lifecycle.simulationAdvances)
             sim.tick(engine.data.fixedDeltaTime, readInput())
     }
 
@@ -503,6 +610,37 @@ class EnPustTil : PulseEngineGame()
         // for the up/down source.
         val (cycleUp, cycleDown) = readInitialsCycle()
 
+        // PAUSE AND EXIT ARE KEYBOARD-ONLY, AND THAT IS THE WHOLE POINT.
+        //
+        // No gamepad button reaches either of these, unlike every other lifecycle input in
+        // this file (which deliberately scans EVERY connected gamepad — see
+        // anyLifecycleActionPressed). Three reasons, in increasing order of severity:
+        //
+        //  1. The cabinet has a joystick and two buttons, and both buttons are already
+        //     spoken for twice over — A/B are kick and bleed during a run, and START/A are
+        //     start-and-confirm outside one. There is no third button to spend, and
+        //     overloading one of the two would mean a player's kick could open a menu.
+        //  2. Pause is the one lifecycle action a player benefits from ABUSING. A pause
+        //     reachable from the stick is a free think about a dive you are losing, on a
+        //     leaderboard the whole queue can see.
+        //  3. Exit lives on this screen. Putting a "shut the cabinet down" path behind a
+        //     booth encoder button is precisely the class of failure RunLifecycle was
+        //     written to fix — a held or bumped button destroying a run — except the blast
+        //     radius is the whole day rather than one run. The encoder may also be unmapped
+        //     and noisy (see logGamepadDiagnostics); a phantom press must never be able to
+        //     reach an action this final.
+        //
+        // A keyboard is present at the booth for technicians only, which is exactly the
+        // population this screen is for, and Esc/Q are inert on the cabinet's own controls.
+        //
+        // Levels, not edges, for both — matching every other lifecycle input in this file
+        // (Key.wasClicked exists, Gamepad has no equivalent, so this codebase has exactly
+        // one convention and RunLifecycle does the edge detection). For the exit key the
+        // level is not merely conventional but required: RunLifecycle measures how long it
+        // has been held, and an edge carries no duration.
+        val pausePressed = engine.input.isPressed(Key.ESCAPE)
+        val exitHeld = engine.input.isPressed(Key.Q)
+
         lifecycle.update(
             dt = engine.data.deltaTime,
             anyInputPressed = actionPressed,
@@ -510,8 +648,27 @@ class EnPustTil : PulseEngineGame()
             bankedScore = sim.banked,
             cycleUp = cycleUp,
             cycleDown = cycleDown,
-            confirmPressed = actionPressed
+            confirmPressed = actionPressed,
+            pausePressed = pausePressed,
+            exitHeld = exitHeld
         )
+
+        // The deliberate way out of the cabinet, replacing the accidental one that the
+        // ALT+ENTER fullscreen binding used to be (see src/main/resources/init.pes).
+        //
+        // window.close() is the engine's OWN shutdown path, not a shortcut around it: the
+        // `exit` console command does exactly this one call and nothing else (verified by
+        // disassembling CommandRegistry.registerEngineCommands in pulse-engine-0.13.0.jar).
+        // It asks GLFW to close the window, which ends PulseEngineImpl's game loop, which
+        // then runs destroy() — onDestroy on this game, and onDestroy on every registered
+        // Service. ScoreRepository is registered as a Service precisely so that hook fires,
+        // so the leaderboard is saved synchronously on the way out. Deliberately NOT
+        // exitProcess(): that would skip all of it and lose the day's scores.
+        if (lifecycle.exitRequested)
+        {
+            Logger.info { "Exit requested from the pause screen" }
+            engine.window.close()
+        }
 
         if (lifecycle.justStarted)
         {
@@ -569,6 +726,17 @@ class EnPustTil : PulseEngineGame()
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
 
             RunLifecycleState.PLAYING -> Hud.render(hud, sim, camera, w, h)
+
+            // The screen underneath is drawn FIRST and in full, then dimmed by the pause
+            // screen's own scrim. A paused run keeps its HUD — a stopped clock and a full
+            // ring of bubbles behind the scrim is the clearest possible statement that the
+            // run is being held, not ended — and the attract variant keeps its leaderboard,
+            // so the queue can still read the board while a technician has the menu open.
+            RunLifecycleState.PAUSED ->
+            {
+                if (lifecycle.pausedFromIdle) drawIdleScreen(hud, w, h) else Hud.render(hud, sim, camera, w, h)
+                drawPauseScreen(hud, w, h)
+            }
 
             RunLifecycleState.RUN_OVER ->
             {
@@ -668,6 +836,61 @@ class EnPustTil : PulseEngineGame()
             w * 0.5f, h * 0.5f + h * 0.045f,
             h * 0.022f, h, Color.WHITE, xOrigin = 0.5f
         )
+    }
+
+    /**
+     * The pause / exit screen (Esc). Wording and geometry are [ScreenText]'s and
+     * [PauseLayout]'s problems; this method only issues the draw calls.
+     *
+     * Every solid rectangle here goes through [render.fillRect] and never `drawQuad` —
+     * `drawQuad` renders nothing at all on macOS and, more to the point, still renders
+     * nothing in the shipped Windows `.exe`, which keeps the engine's stock shaders (see
+     * render/Draw.kt and the shader-override block in build.gradle.kts). A pause screen whose
+     * scrim and progress bar silently failed to draw would be discovered in front of a queue.
+     */
+    private fun drawPauseScreen(hud: Surface, w: Float, h: Float)
+    {
+        // Full-screen scrim. Authored alpha, not displayed alpha: the HUD surface stores
+        // alpha squared, so asking for 0.72 directly would land near 0.5 (Hud's doc has the
+        // measurement). This surface is not relit by global illumination, so what is authored
+        // is what is shown — there is no later pass to rescue a scrim that came out too weak.
+        hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(PauseLayout.SCRIM_ALPHA))
+        hud.fillRect(0f, 0f, w, h)
+
+        val centreX = w * 0.5f
+        val fromIdle = lifecycle.pausedFromIdle
+
+        // Outlined like the rest of the HUD: the scrim darkens the world but does not
+        // flatten it, and this text can land over a bright Shallows waterline.
+        hud.drawTextWithOutline(
+            if (fromIdle) ScreenText.MENU_TITLE else ScreenText.PAUSED_TITLE,
+            centreX, h * PauseLayout.TITLE_Y,
+            h * PauseLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+        hud.drawTextWithOutline(
+            if (fromIdle) ScreenText.MENU_RESUME_HINT else ScreenText.PAUSE_RESUME_HINT,
+            centreX, h * PauseLayout.RESUME_Y,
+            h * PauseLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+        hud.drawTextWithOutline(
+            ScreenText.EXIT_HINT,
+            centreX, h * PauseLayout.EXIT_Y,
+            h * PauseLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+
+        // The exit-hold bar: an empty track always, plus a fill that grows while the key is
+        // down. Drawn unconditionally rather than only while held, so the affordance is
+        // visible before anyone touches anything — an empty track under "HOLD Q to exit" is
+        // what tells a technician the key wants holding rather than pressing.
+        val barX = PauseLayout.barX(centreX, h)
+        val barY = h * PauseLayout.BAR_Y
+        val barHeight = h * PauseLayout.BAR_HEIGHT
+
+        hud.setDrawColor(1f, 1f, 1f, Hud.authoredAlphaFor(0.25f))
+        hud.fillRect(barX, barY, PauseLayout.barTrackWidth(h), barHeight)
+
+        hud.setDrawColor(1f, 0.85f, 0.3f, Hud.authoredAlphaFor(0.95f))
+        hud.fillRect(barX, barY, PauseLayout.barFillWidth(lifecycle.exitHoldProgress, h), barHeight)
     }
 
     /**
