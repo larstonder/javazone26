@@ -780,7 +780,9 @@ Even so, the strip loop must not trust the world rect blindly: clamp its iterati
 
 ### 4.7 GI ambient occlusion radius
 
-§1.7. `aoRadius` is multiplied by `camScale`, which goes from 1 to ≈30. This is the one setting that will visibly change and that nobody chose in the first place (it is the engine default).
+§1.7, and read the derivation box there before touching it. **The risk is not that the radius scales with the camera — it does not.** `camScale` cancels in `ao.frag` and the radius is already scale-invariant in world units. The risk is that the *world unit* changes meaning (1 px → 1 m), so the untouched engine default of `30f` becomes a **120 metre** radius: twice the visible column, i.e. a flat full-screen darkening. This is the one setting that will visibly change and that nobody chose in the first place.
+
+*Second risk, and the reason Task 6 is written the way it is:* the obvious compensation — dividing by `pixelsPerMetre` — pins AO to a constant number of screen pixels, which `CLAUDE.md` forbids and which makes the world-space radius depend on the display's height. A resolution-independent fix is a constant **metre** value set once.
 
 *Verify and compensate:* Task 6.
 
@@ -1340,39 +1342,62 @@ git commit -m "refactor: draw the world in metres through the engine camera"
 
 ---
 
-### Task 6: Retune the GI parameters that are defined in camera scale
+### Task 6: Give `aoRadius` a constant value in **metres** — REWORKED
 
-`mainCamera.scale` went from 1 to ≈30. `aoRadius` is multiplied by it (§1.7).
+> **This task was rewritten after the review. The earlier version had the mechanism backwards and its fix violated `CLAUDE.md`.** It is spelled out here because an executor who reads `ao.frag:36`, finds the old explanation does not match, and improvises will do one of two harmful things: conclude the task is spurious and skip it (leaving a 120 m AO radius in the shipped build), or "fix" the shader's multiply (introducing the zoom-dependence that is not there today). Read §1.7's derivation box before Step 1.
+>
+> **What is true.** `radius = aoRadius * camScale` (`ao.frag:36`) is a **world→texel conversion**, not a zoom knob: `ray` marches in SDF texels (`:53-64` ÷ `localSdfTexRes`; the SDF is fragCoord-based, `sdf.frag:14, 20`) and `camScale` is px-per-world-unit, so it cancels and `radius_world = aoRadius / localSceneTexScale` — **already scale-invariant**. The upload site is **`GiAo.kt:48`**, which the earlier draft never cited.
+>
+> **What actually regresses.** The *world unit* changes meaning, 1 px → 1 m. The untouched engine default `aoRadius = 30f` (`GlobalIlluminationSystem.kt:57`) with our `localSceneTexScale = 0.25f` goes from `30/0.25 = 120` **pixels** to `120` **metres** — twice `VISIBLE_DEPTH_METRES`, i.e. AO stops being occlusion and becomes a flat full-screen darkening.
+>
+> **What the fix must not be.** ~~`aoRadius = 30 / CameraRig.pixelsPerMetre(h)`~~. That pins AO at a constant 120 **screen pixels**, which is the convention `CLAUDE.md` forbids outright ("never … a pixel count"), and it is *resolution-dependent in world terms*: 4 m of water at h = 1800, 8 m at h = 900. It is also a per-frame write for a value that never changes. Do not do this.
 
 **Files:**
-- Modify: `src/main/kotlin/render/DiveLighting.kt`
+- Modify: `src/main/kotlin/render/DiveLighting.kt` (one constant and one assignment in `setup`, plus its comment)
 
-- [ ] **Step 1: Measure**
+**Interfaces:**
+- Consumes: `system.localSceneTexScale` (already `0.25f` at `DiveLighting.kt:225`)
+- Produces: nothing; `aoRadius` is set once, in `setup`, and never touched again
 
-Capture the Abyss (≥120 m, several pearls in frame) before and after Task 5 at the same seed and depth. Compare the dark halo around each pearl light quad. `ao.frag:36` computes `radius = aoRadius * camScale`, so a ~30× change should be obvious; if it is not, say so and move on rather than tuning a number nobody can see.
+- [ ] **Step 1: Set a constant metre value, once, in `setup`**
 
-- [ ] **Step 2: Compensate, if the measurement says to**
-
-Set `aoRadius` from `CameraRig.apply` (it already knows the surface height and the scale) so the effective screen-space radius is what it was:
+Next to the existing `lightTexScale` / `dithering` block — where the other measured GI constants and their justifications already live, and where they stay Kotlin-owned:
 
 ```kotlin
-// aoRadius is multiplied by the camera scale in ao.frag:36. With the old identity camera
-// that scale was 1 and the engine default of 30 was an implicit screen-space value; now the
-// scale is pixelsPerMetre, so hold the product constant.
-gi?.aoRadius = ENGINE_DEFAULT_AO_RADIUS / CameraRig.pixelsPerMetre(surfaceHeight)
+// AO radius, in METRES. ao.frag:36 is `radius = aoRadius * camScale`, which reads like a
+// zoom knob and is not one: `ray` marches in SDF TEXELS (ao.frag:53-64 divides by
+// localSdfTexRes; the SDF is fragCoord-based, sdf.frag:14,20) and camScale is px per world
+// unit, so camScale cancels and the world radius is aoRadius / localSceneTexScale. The AO
+// radius is therefore already scale-invariant in world units -- do NOT "fix" that multiply,
+// and do NOT divide by the camera scale here: that would pin AO to a constant pixel count,
+// which CLAUDE.md forbids and which would make the radius 4 m at h=1800 and 8 m at h=900.
+//
+// What the migration changes is what a world unit MEANS: 1 px before, 1 m after. Left at
+// the engine default of 30 (GlobalIlluminationSystem.kt:57) the radius would be
+// 30 / 0.25 = 120 METRES -- twice VISIBLE_DEPTH_METRES, so every pixel sits inside every
+// occluder and AO degenerates into a flat darkening. AO_RADIUS_METRES is chosen instead,
+// once, and is resolution- and aspect-independent by construction.
+private const val AO_RADIUS_METRES = 4f   // ~1/15 of the 60 m column; matches the old ~120 px
+system.aoRadius = AO_RADIUS_METRES * system.localSceneTexScale
 ```
 
-If the measurement says the change is invisible or an improvement, leave the default and write down which, with the capture that says so.
+`4f × 0.25f = 1f`. Set it **after** `localSceneTexScale`, so the two cannot silently disagree; a comment saying so is cheaper than the bug.
+
+- [ ] **Step 2: Look at it, and tune the metre value if the picture says to**
+
+Capture the Abyss (≥120 m, several pearls in frame) at the same seed and depth before and after Task 5, and again after this task. The middle capture — post-Task-5, pre-Task-6 — is expected to show AO smeared across the entire frame; if it does not, the derivation above is wrong somewhere and that is worth knowing before shipping a number.
+
+`AO_RADIUS_METRES` is now a plain artistic quantity: *how many metres of water around an occluder are darkened*. Tune it by eye between roughly 1 m and 10 m and write down the value and the capture that chose it. **Do not reintroduce a screen-relative expression while tuning** — if 4 m looks wrong at one resolution and right at another, something else is wrong and a pixel count will hide it rather than fix it.
 
 - [ ] **Step 3: Confirm the two non-issues, in a comment**
 
-`radius = 0f` on every `drawLight` skips the falloff branch entirely (`radiance_cascades.frag:120-127`), so its `camScale` dependence does not reach us — but leave a note, because the first person to set a non-zero radius will be tuning a number whose meaning depends on the display's height. The `scene.vert:86-88` minimum-size clamp is scale-invariant (`1500/(resolution.y·camScale)` world units is a constant number of screen pixels) and needs nothing.
+`radius = 0f` on every `drawLight` skips the falloff branch entirely (`radiance_cascades.frag:120-127`), so its `camScale` dependence does not reach us — but leave a note, because `radius·camScale/dist²` has dimension 1/length and is genuinely **not** scale-invariant, so the first person to set a non-zero radius is tuning a number whose meaning depends on the display's height. The `scene.vert:86-88` minimum-size clamp *is* scale-invariant (`screenSpacePos.w` is exactly 1.0 for an affine ortho, so `1500/(resolution.y·camScale)` world units is a constant number of screen pixels) and needs nothing.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/main/kotlin/render/DiveLighting.kt src/main/kotlin/render/CameraRig.kt
-git commit -m "fix: keep GI ambient occlusion the same size now the camera has scale"
+git add src/main/kotlin/render/DiveLighting.kt
+git commit -m "fix: give the GI ambient occlusion radius a constant size in metres"
 ```
 
 ---
