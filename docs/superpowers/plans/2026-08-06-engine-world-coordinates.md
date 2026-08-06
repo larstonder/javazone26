@@ -4,10 +4,27 @@
 
 **Goal:** Make `engine.gfx.mainCamera` the single authority on where a world point lands on screen, in world units (metres), so that the world, the GI light map and the diver-tracking parts of the HUD cannot disagree — at any framebuffer size or aspect ratio — and so that real art can be authored in metres.
 
-**Scope extension (2026-08-06, Stage D).** The original plan stopped at "the camera is real and the world is in metres" and explicitly ruled out scene entities (§2.5, §8). Opening the project in the engine's scene editor showed why that is not the end of the story: the Outliner reads **0/0**, so there is nothing to select, no Inspector, no `@TexRef` asset picker and no gizmo — the editor is a settings panel for Global Illumination and nothing else. Stage D adds a **small, authored entity layer whose only job is appearance**, so the art phase can tune with a slider instead of the edit → gradle → relaunch → screenshot loop. It does **not** adopt one-entity-per-game-object; §1.8 shows why that would buy nothing. §2.5 and §8 are amended in place where Stage D supersedes them.
+**Scope, after the review (2026-08-06, revised at `231c6a6`).** [`docs/superpowers/reports/2026-08-06-world-coordinates-plan-review.md`](../reports/2026-08-06-world-coordinates-plan-review.md) (commit `0a21992`) approved Stages A–C with required changes and rejected Stage D as written. The owner accepted it. What this plan now ships:
+
+| | Tasks | State |
+|---|---|---|
+| **Stage A** | 1 | ✅ done, `6ea1f53` |
+| | 2–4 | ship as written, with the `MainCameraOwnershipTest` sequencing corrected (Tasks 2, 3, 5) |
+| **Stage B** | 5 | ships; one commit, atomic |
+| **Stage C** | 6 | **reworked** — the original mechanism was inverted and its fix reintroduced a pixel-count constant (§1.7, Task 6) |
+| | 7–9 | ship as written |
+| **Stage D** | 10 | **reduced to ~20 lines** — two comment fixes, a conditional `start()`, the `CameraRig` editor gate, the `sim.tick` freeze. No `dive.scn` file, no entities, no `.scn`-ownership question. Its payoff is the one editor capability that demonstrably works today: live `@Prop` editing on the running `GlobalIlluminationSystem`. |
+| | 11–14 | **deferred, not deleted** — moved verbatim (with the review's corrections applied) to §9. Revisit when art exists. |
+
+**Architecture, in one line:** `CameraRig` becomes the sole writer of `engine.gfx.mainCamera`; `DiveRenderer` and `DiveLighting` draw the world in **metres**; `Hud` stays in **screen pixels** on its own surface; `Framing` keeps the framing constants and owns no transform. **No scene entities of our own are added** — `dive.scn` stays an empty in-memory scene created by `createEmptyAndSetActive`, and `EntityRendererImpl` + `GlobalIlluminationSystem` stay owned by Kotlin in `DiveLighting.setup`.
+
+**Estimate:** **1.5–2 focused days** for Tasks 2–9 (of which about a third is capture verification at three aspect ratios), plus **~1 hour** for the reduced Task 10. Roughly four weeks remain and the art is not started.
+
+**Currency.** This plan was written at `574d67b` and revised at `231c6a6`. Since it was written: `6b05f07` shadowed the quad/line vertex shaders so `drawQuad`/`drawLine` render on macOS in dev (dev-only; the shaders are excluded from the release jar), `c47a4b0` added the `EPT_EDITOR` hook that launches `SceneEditor`, `231c6a6` reworked the air ring into a clock face, and `0a21992` is the review. Test counts in this plan's step expectations are stale (233 → **238** at `231c6a6`); treat them as "the suite is green", not as literal numbers.
 
 **Spec:** [`docs/superpowers/specs/2026-08-04-en-pust-til-design.md`](../specs/2026-08-04-en-pust-til-design.md) — 🔒 LOCKED
 **Predecessor plan:** [`2026-08-04-en-pust-til-gameloop.md`](2026-08-04-en-pust-til-gameloop.md)
+**Review:** [`2026-08-06-world-coordinates-plan-review.md`](../reports/2026-08-06-world-coordinates-plan-review.md) — accepted
 **Branch:** `feat/en-pust-til-gameloop`
 
 ---
@@ -153,8 +170,38 @@ Today `mainCamera.scale.x == 1`. After the migration it becomes `surfaceHeight /
 | Quantity | Where | Effect of `camScale` going 1 → ≈30 |
 |---|---|---|
 | light `radius` | `radiance_cascades.frag:120-127` — `radius * camScale / dist²`, `dist` in light-texture pixels | **None for us** — we pass `radius = 0f` everywhere, which skips the branch. But its meaning changes, so anyone who later sets it must re-tune. |
-| `aoRadius` | `ao.frag:36` — `radius = aoRadius * camScale` | **Real regression risk.** Left at the engine default `30f` (`GlobalIlluminationSystem.kt:57`), the effective AO radius grows ~30×. Our light quads are drawn with `Color`'s default alpha 1 and therefore also seed the SDF (`jfa_seed.frag:12-13`, `final.frag:33`), so we *do* have AO. Must be measured and compensated — see Task 6. |
+| `aoRadius` | `ao.frag:36` — `radius = aoRadius * camScale`; uploaded at **`GiAo.kt:48`** | **Real regression risk, but NOT because the radius scales.** See the unit derivation below. `camScale` cancels; the shader is already scale-invariant in world units. What changes is the *world unit itself* — 1 px becomes 1 m — so the engine default `30f` (`GlobalIlluminationSystem.kt:57`) silently goes from a ~120 px radius to a **120 metre** one, twice the visible column, i.e. AO degenerates into full-screen darkening. Fix is a constant metre value set once — Task 6. |
 | minimum light quad size | `scene.vert:86-88` — `max(size, pixelSizeInWorld · 1500 / camScale)` | **None.** `pixelSizeInWorld = 1/(resolution.y)` for an orthographic camera, so the floor is `1500/(resolution.y · camScale)` *world* units, which is a constant number of screen pixels. Scale-invariant by construction. |
+
+> **The `aoRadius` unit derivation, because the obvious reading of `ao.frag:36` is backwards.**
+> `ao.frag` marches `ray` in **SDF texels**: `:53-64` divides by `localSdfTexRes`, and the SDF is
+> fragCoord-based (`sdf.frag:14, 20`). `camScale` is `mainCamera.scale.x`, i.e. **screen pixels per
+> world unit**. Working `radius = aoRadius * camScale` through to a world distance, `camScale`
+> cancels and what is left is
+>
+> ```
+> radius_world = aoRadius / localSceneTexScale
+> ```
+>
+> — **no camera scale in it at all.** The multiply at `:36` is a world→texel conversion, not a zoom
+> knob. So the AO radius is *already* scale-invariant in world units, and removing that multiply
+> would **introduce** zoom-dependence rather than remove it. Do not "fix" the shader; we do not
+> modify engine shaders in any case.
+>
+> The regression is that the **world unit changes meaning**. Today one world unit is one screen
+> pixel, so the engine default `aoRadius = 30` with our `localSceneTexScale = 0.25f`
+> (`DiveLighting.kt:225`) is `30 / 0.25 = 120` *pixels* — a plausible-looking halo nobody chose.
+> After the migration one world unit is one metre, so the same untouched default is **120 metres**:
+> twice `VISIBLE_DEPTH_METRES`, i.e. every pixel on screen is inside every occluder's AO radius and
+> the effect stops being ambient occlusion and becomes a flat darkening. Task 6 sets a constant
+> **metre** value instead.
+
+A **fourth** consumer, harmless today but worth naming so nobody thinks the table is exhaustive:
+`GlobalIlluminationSystem.onFixedUpdate` (`:220-231`) copies `mainCamera.position`/`rotation`/`scale`
+into `GI_GLOBAL_SCENE`'s camera whenever `traceWorldRays` (default `true`). We draw nothing to that
+surface, so it changes nothing for us — but `DiveLighting`'s own existing comment already cites
+`:227-229`, and the table did not. Note also that `GI_GLOBAL_SCENE` is the only GI surface created
+*without* `camera = mainCamera` (`:90`), which is why §1.2 says "six of its nine surfaces".
 
 One quantity gets **better**: `jitterFix` (`GiSceneRenderer.kt:150-162`) derives a sub-pixel UV offset from `camera.viewMatrix.m30()/m31()`. Today that translation is always zero, so the quarter-resolution light map cannot be jitter-compensated at all and light sampling snaps to the light-texture grid as pearls scroll past a stationary camera. After the migration the camera translates and the compensation actually engages.
 
@@ -218,17 +265,23 @@ Deletion is `entity.set(DEAD)` (`SceneEditor.kt:547-551` is the canonical form, 
 
 * `engine.scene.forEachEntityTypeList` walks every type list; **the type test is done on element 0 only** (`:95-96`) and the rest of the list is assumed homogeneous. Safe, because `entityTypeMap` is keyed on the exact `entity::class.java` (`Scene.kt:46-53`).
 * Per entity: one `isNot(HIDDEN)` bitmask test, one checked cast, one `ArrayList.add` (`:98-104`).
-* **`entities.sortWith(BackToFrontEntityComparator)` (`:132`) — the engine's own source carries the comment `// TODO: This creates alot of garbage internally`.** It is `Arrays.sort(Object[], Comparator)` → TimSort, which allocates a temp array every frame, every task.
-* Per entity: one virtual `onRender(engine, surface)` (`:133-137`).
+* **`entities.sortWith(BackToFrontEntityComparator)` (`:132`) — the engine's own source carries the comment `// TODO: This creates alot of garbage internally`.** It is `Arrays.sort(Object[], Comparator)` → TimSort. **Corrected (review claim 5):** that is the *only* steady-state garbage on this path, and it is not unconditional — `Arrays.sort` allocates nothing below n = 32 and is skipped entirely below n = 2. The **render queue itself is pooled**, not rebuilt: `taskPool` (`:76`), `createRenderTask` allocates only when the pool is empty (`:114-121`), `entities.clear()` retains capacity (`:138`), the task goes back to the pool (`:140`) and `forEachFast` is `inline`. So the allocation objection applies to a *large* cast, not to the entity path as such.
+* Per entity: one virtual `onRender(engine, surface)` (`:135`; the plan previously cited `:133-137`, which is the enclosing `when`).
 * **There is no culling anywhere in this file** — no frustum test, no `SpatialGrid` query, no bounds check. Every non-`HIDDEN` `Renderable` in the scene is sorted and drawn every frame, on screen or not.
 
 Our cast if we converted everything: `PearlColumn.PEARLS_PER_ZONE = 14` × 5 zones = **70 pearls** (`OURS/src/main/kotlin/dive/Pearl.kt:26`, `dive/Zone.kt:13-17`), 3 vents (`dive/AirPocket.kt:34`), 1 anglerfish, 1 diver — **75 entities**, i.e. the ~100 in the question.
 
 Is 75 quads a frame expensive? In isolation, no. But three specific things are worse than they look:
 
-1. **It breaks a stated project rule.** `CLAUDE.md`: *"No per-frame allocation in the render path."* TimSort at `EntityRenderer.kt:132` allocates every frame, forever, in engine code we do not control. Today `DiveRenderer` allocates nothing.
-2. **It loses culling we already have.** `drawPearls` currently rejects off-screen pearls by screen y (`DiveRenderer.kt:237`). With ~60 m visible out of a 160 m column, the entity path submits roughly **2.7× more geometry** than today, and Task 7 (`cam.isInView`) would become unreachable for exactly the objects it was written for.
-3. **`BackToFrontEntityComparator` is intransitive and 70 > 32.** It is `((b.z - a.z) * 10_000f).toInt()` (`EntityRenderer.kt:155-158`). Any two entities whose `z` differs by less than 1e-4 compare equal, so `z = 0.0, 0.00005, 0.0001` gives `a≈b`, `b≈c`, `a≠c`. TimSort throws `IllegalArgumentException: Comparison method violates its general contract!` for n ≥ 32. Uniform `z` is fine; the moment someone jitters pearl `z` for layering, the booth cabinet crashes mid-queue. This is a latent trap, not a hypothetical.
+1. **At 75 entities it starts allocating every frame.** `CLAUDE.md`: *"No per-frame allocation in the render path."* TimSort's temp array at `EntityRenderer.kt:132` is allocated only at n ≥ 32 — which 75 pearls clears and today's zero-entity scene does not. **This is an argument against converting pearls, not against entities**; it does not apply at a cast of one.
+2. **It loses culling we already have.** `drawPearls` currently rejects off-screen pearls by screen y (`DiveRenderer.kt:237`). With ~60 m visible out of a 160 m column, the entity path submits roughly **2.7× more geometry** than today, and Task 7 (`cam.isInView`) would become unreachable for exactly the objects it was written for. **This is the strongest of the three** and it does not depend on any measurement of the engine's internals.
+3. **`BackToFrontEntityComparator` violates the `Comparator` contract, and 70 > 32 — stated at its measured strength, which is lower than the plan originally claimed.** It is `((b.z - a.z) * 10_000f).toInt()` (`EntityRenderer.kt:155-158`). Any two entities whose `z` differs by less than 1e-4 compare equal, so `z = 0.0, 0.00005, 0.0001` gives `a≈b`, `b≈c`, `a≠c` — intransitive, provably. **What the review measured (claim 3):**
+   * n ≥ 32 is the correct and *tight* floor for TimSort to be able to throw `IllegalArgumentException: Comparison method violates its general contract!` — exhaustive for n ≤ 15, and 20 M random trials at n = 31 threw zero times.
+   * Throwing is **probabilistic, not certain**: ~7 % of arrangements at n = 32, ~33 % at n = 70.
+   * It only bites inside a narrow band — a **total z spread of roughly 2e-4 … 1e-3**. Both idiomatic layering schemes measured **0 %** at every N up to 50 000: discrete layers ≥ 1e-4 apart with sub-1e-4 jitter, and plainly separated z.
+   * Inside the band, **100 % of the runs that did not throw came out with a strict ordering inversion.** The choice there is crash-or-mis-layered, not crash-or-correct.
+
+   So the original phrasing — "the moment someone jitters pearl `z` for layering, the booth cabinet crashes" — is **not supported** and is withdrawn. The honest statement is: this is a real latent trap with a narrow trigger and a one-in-three failure rate inside it, and it is a reason to be deliberate about `z`, not the load-bearing reason to avoid entities. Reason 2 carries that on its own.
 
 One more ordering fact: `game.onRender()` runs **before** `scene.render()` (`ENG/core/PulseEngineImpl.kt:298-299`), so **entity draws always composite on top of every immediate-mode draw on the same surface.** Fine for actors-over-background; it means you can never put an immediate-mode object in front of an entity one.
 
@@ -284,9 +337,11 @@ In F10 mode:
 
 * **Outliner selection and Inspector editing work while RUNNING.** `rootUI.update(engine)` (`SceneEditor.kt:381`) is not state-gated; clicking a row reaches `selectSingleEntity` (`:261-272`) and every subsequent edit hits `setter.call` on the live entity. **This is the real prize, and it is real.**
 * **Viewport selection and the gizmo do not** — `:345`.
-* **Entities added at runtime never appear in the Outliner.** The only refresh is `outliner?.reloadEntitiesFromActiveScene()` behind `if (engine.scene.activeScene.hashCode() != lastSceneHashCode)` (`SceneEditor.kt:336-343`). `Scene` has no `hashCode` override (`Scene.kt:17-21`), so that is an *identity* hash which changes only when a different `Scene` instance becomes active. `Scene.insertEntity` (`Scene.kt:42-61`) notifies nobody. `Outliner.addEntities` (`Outliner.kt:244-269`) is called only from `SceneEditor.createNewEntity` (`:932`) and reparenting (`:979`).
+* **Entities added at runtime do not appear in the Outliner *automatically*.** The only refresh is `outliner?.reloadEntitiesFromActiveScene()` behind `if (engine.scene.activeScene.hashCode() != lastSceneHashCode)` (`SceneEditor.kt:336-343`). `Scene` has no `hashCode` override (`Scene.kt:17-21`), so that is an *identity* hash which changes only when a different `Scene` instance becomes active. `Scene.insertEntity` (`Scene.kt:42-61`) notifies nobody. `Outliner.addEntities` (`Outliner.kt:244-269`) is called from `SceneEditor.createNewEntity` (`:933`), reparenting (`:979`) and Ctrl+D duplicate (`:565`).
 
-  > **This single fact kills pearls-as-entities.** Seventy pearls spawned from the daily seed at runtime would be invisible in the Outliner, unselectable, uninspectable and un-tunable. They would buy **none** of the workflow and pay all of the cost in §1.8.3.
+  > **Corrected (review claim 1): "never appear" is false and must not be repeated.** Closing the Outliner window removes it from its parent (`UiElementFactory.kt:150`), and reopening it from Windows → Outliner rebuilds it and calls `reloadEntitiesFromActiveScene()` (`SceneEditor.kt:276`). A runtime-spawned entity *is* reachable — by closing and reopening one window. The accurate claim is "no automatic refresh", which is an annoyance, not a wall.
+  >
+  > **The argument that actually kills pearls-as-entities is simpler and does not depend on any editor implementation detail:** the pearls are **regenerated from `dailySeed` on every run** (design spec §10), so any value tuned on pearl #37 is discarded at the next `lifecycle.justStarted` — and anything that *did* persist would be the §1.8.6 scene-pollution hazard, i.e. the failure mode, not the feature. Seventy pearls buy **none** of the workflow and pay all of the cost in §1.8.3. Use this reason; it is unrefutable and the Outliner one is not.
 
 * **The Inspector never re-reads values from the entity.** `updateEntityPropertiesPanel` (`SceneEditor.kt:1030-1033`) pushes back only `x`/`y`/`rotation`/`width`/`height`, and only when the *gizmo* moved them. Anything game code writes goes stale in the panel immediately. A diver entity whose position is pushed every fixed tick will show a frozen `x` while the diver visibly moves. Not fatal — but say so in the entity's class doc, or the first person to look will file it as a bug.
 
@@ -536,9 +591,52 @@ Step 4 is not optional and is why the scene file must stay ~6 entities: a 100 KB
 
 ## 3. What replaces `ViewportTest`
 
-`ViewportTest` (104 lines, 9 tests) is deleted by this plan. It has to be, and it is worth being blunt about what it was and was not doing.
+`ViewportTest` (104 lines, 9 tests) is dissolved by this plan: three cases move to a new `FramingTest`, two are absorbed by `CameraRigTest`, two lose their subject with `depthAt`, and two are deleted as measured tautologies. **The original version of this section said all nine "could not have failed". That was wrong, and it was wrong in the direction that would have destroyed working tests.** It has been replaced with measurement.
 
-**What it was.** A test that `Viewport`'s own arithmetic is internally consistent. Every assertion in it is of the form "this expression, divided by `h`, equals that expression, divided by `h`" — which is true for any function of the shape `f(x)·h`, by algebra, at every aspect ratio and every resolution. It could not have failed. It passed throughout the entire life of the shipped bug, because the bug was never in `Viewport`; it was in the disagreement between `Viewport` and a transform `Viewport` had no knowledge of.
+### 3.0 What the mutation run actually found
+
+The claim was tested rather than argued: `render/Viewport.kt` was mutated one edit at a time against `231c6a6` and the surviving `ViewportTest` failures recorded (source verified byte-identical afterwards; full table in `…/scratchpad/glitch/viewport-mutation-results.md`).
+
+| mutation | outcome | tests killed |
+|---|---|---|
+| `VISIBLE_DEPTH_METRES` 60 → 45 | **SURVIVED** | — |
+| `DIVER_SCREEN_FRACTION` 0.4 → 0.6 | **SURVIVED** | — |
+| `screenX` uses `screenWidth` instead of `screenHeight` for pixels-per-metre | **SURVIVED** | — |
+| `DIVER_SIZE_METRES` 3 → 0.3 | killed | `the diver is large enough to see` |
+| `screenX` drops the `screenWidth * 0.5f` centring term | killed | `x is centred and scales with the display` |
+| `targetCameraDepth` sign flip | killed | `the diver sits at the same screen fraction on every display`, `camera keeps the diver above the top edge of visible water` |
+| `depthAt` multiplies instead of divides | killed | `depthAt inverts screenY`, `depthAt is resolution independent, like screenY` |
+
+**Six of the nine cases die to at least one mutation.** Only three were never killed by anything tried: `a world point maps to the same screen fraction on every display`, `the diver occupies the same screen fraction on every display`, and `only part of the water column is visible so descending scrolls`. Two of those three are the literal `f(x)·h/h == f(x)·h/h` shape — an algebraic identity that holds for any function of that form — which is what the original critique described, correctly, for a *minority* of the file.
+
+### 3.1 The finding that matters most, and it is not about `ViewportTest`'s pass count
+
+> **`screenX` computing pixels-per-metre from `screenWidth` instead of `screenHeight` survives the entire suite.** Nine tests, all green, and the one substitution that would misplace every object on every non-square display goes undetected.
+
+That is precisely the aspect-independence bug class — the same class as the shipped ultrawide misalignment closed in `6ea1f53`, and the exact convention `CLAUDE.md` exists to protect ("Express sizes as a fraction of screen **height**, never width and never a pixel count — the booth display's aspect ratio is not known in advance").
+
+**A suite that cannot distinguish width from height is not evidence of resolution independence, whatever its pass count.** Every replacement below is measured against that sentence: `CameraRigTest`'s assertions must be evaluated at several *aspect ratios*, not several *resolutions*, or they inherit the same blindness; and §3(d)'s capture protocol at 4:3 / 16:9 / 21:9 is not a nice-to-have appended to the unit tests — it is the only part of the verification that can catch this class at all.
+
+Two secondary findings, recorded as decisions rather than left as accidents:
+
+* **`VISIBLE_DEPTH_METRES` and `DIVER_SCREEN_FRACTION` are free to change to any value without a test noticing** (60 → 45 and 0.4 → 0.6 both survived). They are tuning constants, not invariants, and `FramingTest` deliberately pins only their *relationships* (`VISIBLE_DEPTH_METRES < MAX_DEPTH * 0.6`, `diverDepth − targetCameraDepth == VISIBLE_DEPTH_METRES · DIVER_SCREEN_FRACTION`), not their values. Pinning the values would just be a second copy of the source. **Accepted deliberately.**
+* One case the review classed as a tautology — `the diver sits at the same screen fraction on every display` — **does** die, to the `targetCameraDepth` sign flip. It is nonetheless redundant once the transform is gone, because `camera keeps the diver above the top edge of visible water` kills the same mutation using only `Framing` constants. It is dropped for redundancy, not for being unfalsifiable.
+
+### 3.2 Case by case: what happens to each of the nine
+
+| # | Case | Killed by | Disposition |
+|---|---|---|---|
+| 1 | `the diver sits at the same screen fraction on every display` | `targetCameraDepth` sign flip | **Delete.** Calls `screenY`, which is gone. Its only real content — the diver's frame position — is asserted by case 9 from constants alone, which kills the same mutation. |
+| 2 | `a world point maps to the same screen fraction on every display` | nothing | **Delete.** Measured tautology, `f(x)·h/h` on both sides. |
+| 3 | `the diver occupies the same screen fraction on every display` | nothing | **Delete.** Measured tautology; `DIVER_SIZE_METRES·(h/60)/h` is `DIVER_SIZE_METRES/60` twice. |
+| 4 | `the diver is large enough to see` | `DIVER_SIZE_METRES` 3 → 0.3 | **Keep → `FramingTest`.** Re-express without the deleted `pixelsPerMetre`: `DIVER_SIZE_METRES / VISIBLE_DEPTH_METRES > 0.02f`, which is the same number. Same mutation must still kill it. |
+| 5 | `only part of the water column is visible so descending scrolls` | nothing tried | **Keep → `FramingTest`, verbatim.** Not a tautology: it is a genuine one-sided bound, `VISIBLE_DEPTH_METRES < MAX_DEPTH * 0.6`. The mutation tried (60 → 45) moved it the safe way; 60 → 100 fails it. Kept because it guards a gameplay property — if the whole column fits on screen, the camera never moves and the sense of descent is gone. |
+| 6 | `x is centred and scales with the display` | dropping the `* 0.5f` centring term | **Absorbed by `CameraRigTest`.** It cannot move to `FramingTest` verbatim — it calls `Viewport.screenX`, which this plan deletes. Its content becomes `CameraRigTest`'s `world (0, camDepth) → (W/2, 0)` pin, which kills the same mutation. |
+| 7 | `depthAt inverts screenY` | `depthAt` multiply-vs-divide | **Delete with its subject.** `depthAt` is removed in Task 5; nothing in `CameraRig` replaces it. |
+| 8 | `depthAt is resolution independent, like screenY` | same | **Delete with its subject.** See below for what covers the inverse mapping afterwards. |
+| 9 | `camera keeps the diver above the top edge of visible water` | `targetCameraDepth` sign flip | **Keep → `FramingTest`, verbatim.** Pure `Framing` constants plus `targetCameraDepth`, all of which survive the rename. |
+
+**What replaces the inverse mapping (cases 7 and 8).** After Task 5 nothing of ours converts screen y back to a depth: the strip walk reads `cam.topLeftWorldPosition.y` / `bottomRightWorldPosition.y`, computed by the **engine** in `initFrame` from the actual framebuffer (`GraphicsImpl.kt:112`). There is no pure function left to unit-test. It is checked instead by `CameraInvariants` rule 2 on a real framebuffer — `worldBottom − worldTop ≈ VISIBLE_DEPTH_METRES` — which is a strictly stronger check than a pure inverse, because it exercises the engine's actual matrix rather than our transcription of it. **Stated plainly: this is a net loss of two unit tests and a net gain of one runtime check, and the runtime check only runs under `EPT_DEV`.**
 
 **What replaces it, honestly:**
 
@@ -546,11 +644,13 @@ Step 4 is not optional and is why the scene file must stay ~6 entities: a 100 KB
 
 * world `(0, camDepth)` lands at `(W/2, 0)`;
 * world `(0, camDepth + 60)` lands at `(W/2, H)` — exactly 60 m of water, at 1200×900, 1920×1080, 2400×1800, 3440×1440 and 3840×2160;
-* the same world point lands at the same *fraction of screen height* at all five;
-* the horizontal visible extent in metres is `W/H · 60` — so a 21:9 panel shows more water sideways and the same water vertically;
 * the new mapping is numerically identical to the old `Viewport.screenX/screenY` for a grid of `(x, depth, camDepth, W, H)` — the migration is defined to be a no-op, and this is the assertion that says so. (Written against a copy of the old formulas inlined in the test, since `Viewport` is gone.)
 
-  **The limitation, stated plainly:** this tests our camera *parameters* against a transcription of the engine's formula. It would not catch the engine changing that formula in 0.14.0. It is strictly better than `ViewportTest` — it tests agreement with something outside our own file — and it is not a substitute for looking.
+  **Two assertions the earlier draft of this plan specified are removed, because they cannot fail** (review finding 6, and every test here must have a plausible mutation that makes it red — `CLAUDE.md`: *"A test that cannot fail is worse than no test"*, and commit `4493eeb` deleted several for exactly this):
+  * ~~"the visible horizontal extent, `w / CameraRig.pixelsPerMetre(h)`, equals `w/h · 60`"~~ — reduces to `w / (h/60) = 60w/h`, an algebraic identity that holds for **any** value `pixelsPerMetre` returns, including a wrong one. It would not even catch the width-for-height substitution §3.1 is about. Cut. The property it was trying to state — a 21:9 panel shows more water sideways and the same water vertically — is real, and it is checked by `CameraInvariants` rules 2 and 3 on a real framebuffer and by the 21:9 capture in §3(d).
+  * ~~"a given world point lands at the same fraction of `h` on all of them"~~ — the same `f(x)·h/h` shape §3.0 measured as unkillable, two paragraphs after condemning it. Cut. **Note it is the `(W/2, 0)` and `(W/2, H)` pins that carry aspect independence here, and only because the display list contains genuinely different aspects (4:3, 16:9, 16:10, 21:9, 16:9-at-4K).** Substituting `w` for `h` inside `pixelsPerMetre` moves the `(W/2, H)` pin on every non-square entry, so `CameraRigTest` does kill the mutation `ViewportTest` could not. If that display list is ever reduced to one aspect, this test rejoins the class of suites §3.1 describes.
+
+  **The limitation, stated plainly:** this tests our camera *parameters* against a transcription of the engine's formula. It would not catch the engine changing that formula in 0.14.0. It is better than `ViewportTest` — it tests agreement with something outside our own file, and it kills a mutation `ViewportTest` demonstrably could not — and it is not a substitute for looking.
 
 **(b) `CameraInvariantsTest` + a live dev-mode check — the part that runs on the real framebuffer.** A pure `object CameraInvariants` takes the numbers the *engine* reports back and returns violations:
 
@@ -572,7 +672,7 @@ with three rules:
 
 **(c) The `drawQuad` source guard.** A test that scans `src/main/kotlin/**.kt` for `drawQuad(` / `drawLine(` and fails. Cheap, real, and directly aimed at the risk that a rewrite touching every draw call in the codebase reintroduces a call that renders nothing on macOS with no error (see `render/Draw.kt`).
 
-**(d) Capture-based verification — the only thing that catches an aspect bug.** No test in `./gradlew test` can. The migration is only signed off after a human has looked at:
+**(d) Capture-based verification — the only thing that reliably catches an aspect bug.** §3.1 is the evidence: nine green unit tests did not notice `screenX` deriving pixels-per-metre from the width. `CameraRigTest`'s multi-aspect pins narrow that gap but do not close it, because they still test our transcription rather than the engine. The migration is only signed off after a human has looked at:
 
 | Window | `application-dev.cfg` | Why |
 |---|---|---|
