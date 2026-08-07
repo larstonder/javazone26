@@ -91,7 +91,10 @@ class DiveRendererTest
      * RGB length falls under `minReflectance` and substitutes flat grey — see
      * [DiveRenderer.GI_REFLECTANCE_FLOOR] for the full mechanism and the measurement. A single
      * strip falling through is enough to draw a hairline across the whole play column, so this
-     * sweeps the entire reachable depth range at a quarter of a strip's height.
+     * sweeps the entire reachable depth range at a quarter of a strip's height. "Reachable" is
+     * [deepestPaintedDepth], derived from the camera's own lag clamp — it used to be a
+     * hand-picked 200 m, which was 11 m short of the depth the bottom row of the frame can
+     * actually reach.
      *
      * Deliberately checks the QUANTIZED colour: `Surface.setDrawColor` truncates each channel
      * to 8 bits after this code has run (`(c * 255).toInt()`), and that truncation is what
@@ -102,7 +105,7 @@ class DiveRendererTest
     fun `every zone band colour clears the GI reflectance floor once quantized`()
     {
         var depth = 0f
-        while (depth <= 200f)
+        while (depth <= deepestPaintedDepth)
         {
             val length = DiveRenderer.reflectanceLength(
                 quantize(DiveRenderer.zoneRedAt(depth)),
@@ -340,19 +343,36 @@ class DiveRendererTest
     }
 
     /**
-     * The sweep above proves the colour curve clears the floor at every depth in [0, 200]. This
-     * proves the walk only ever asks it for depths where that is true — including the ones the
-     * sweep does not cover, above the waterline, where the camera sits at a NEGATIVE depth for
-     * the whole first second of every run.
+     * WHAT THIS ADDS OVER THE SWEEP ABOVE, because it is less than it looks and saying so is
+     * the point. Measured, not assumed: mutating the floor out of `zoneBlueAt` kills this test
+     * and the sweep together, and nothing kills this one alone through the colour code. It
+     * cannot, because `floorBlueForReflectance` holds the floor at EVERY depth by construction
+     * — so a walk that sampled the wrong depths entirely would still paint colours that clear
+     * it, and the floor assertion below can only ever restate the sweep. Depths above the
+     * waterline add nothing either: `DepthBlend` clamps everything shallower than the
+     * shallowest zone midpoint to that zone's flat value, so a strip at -24 m is coloured
+     * identically to one at 0 m, which the sweep already checks.
+     *
+     * What this test is for is therefore the COUPLING: that the depth a strip is coloured by
+     * lies inside that strip, and that no strip the camera can ever reach is coloured from
+     * outside the range the sweep covers. That is what lets the sweep's bounded loop stand for
+     * the whole frame — and it is not decoration. Written with the sweep's hand-picked 200 m
+     * bound still in place, it went red immediately: the camera's lag clamp lets it sit 9 m off
+     * the sea floor, so the bottom of the frame reaches 211 m and eleven metres of painted
+     * water had never been checked by anything. See [deepestPaintedDepth], which both tests now
+     * derive.
+     *
+     * The floor assertion below is kept as the direct statement of risk 4.2's property and is,
+     * measured, redundant with the sweep. No single-edit mutation of today's production code
+     * kills this test alone; the assertions that only it makes are guards against a future
+     * widening of MAX_DEPTH, the camera's lag bounds or VISIBLE_DEPTH_METRES outrunning the
+     * swept range. Recorded plainly rather than dressed up as verification.
      */
     @Test
-    fun `every strip the walk paints clears the GI reflectance floor once quantized`()
+    fun `every strip is coloured from inside itself, by a depth the floor sweep covers`()
     {
-        // The camera eases toward targetCameraDepth over the diver's whole reachable range,
-        // 0 m to MAX_DEPTH, plus a little margin for the easing overshooting neither end.
-        var cam = Viewport.targetCameraDepth(0f) - 5f
-        val deepest = Viewport.targetCameraDepth(Tuning.MAX_DEPTH) + 5f
-        while (cam <= deepest)
+        var cam = shallowestCameraDepth
+        while (cam <= deepestCameraDepth)
         {
             val worldTop = cam
             val worldBottom = cam + Viewport.VISIBLE_DEPTH_METRES
@@ -360,6 +380,17 @@ class DiveRendererTest
             for (i in 0 until count)
             {
                 val depth = DiveRenderer.stripCentreDepth(worldTop, worldBottom, i)
+                val stripTop = DiveRenderer.stripTopDepth(worldTop, i)
+                assertTrue(
+                    depth >= stripTop && depth <= minOf(stripTop + DiveRenderer.BAND_STRIP_METRES, worldBottom),
+                    "with the camera at ${cam}m, strip $i covers ${stripTop}m onward but is coloured by ${depth}m"
+                )
+                assertTrue(
+                    depth <= deepestPaintedDepth,
+                    "with the camera at ${cam}m, strip $i is coloured by ${depth}m — past the " +
+                    "${deepestPaintedDepth}m the reflectance-floor sweep covers, so nothing has checked that colour"
+                )
+
                 val length = DiveRenderer.reflectanceLength(
                     quantize(DiveRenderer.zoneRedAt(depth)),
                     quantize(DiveRenderer.zoneGreenAt(depth)),
@@ -377,4 +408,25 @@ class DiveRendererTest
 
     /** The engine truncates rather than rounds — see `SurfaceConfigInternal.setDrawColor`. */
     private fun quantize(channel: Float): Float = (channel.coerceIn(0f, 1f) * 255f).toInt() / 255f
+
+    // --- How deep the frame can actually reach ------------------------------------------
+    //
+    // Derived rather than picked, because picking is how the sweep above ended up bounded at a
+    // round 200 m while the strip walk could paint 211 m. What decides it is DiveCamera's own
+    // clamp, not targetCameraDepth: `clampSoDiverStaysVisible` lets the camera sit anywhere
+    // from diverDepth - VISIBLE_DEPTH_METRES * DIVER_MAX_FRACTION to
+    // diverDepth - VISIBLE_DEPTH_METRES * DIVER_MIN_FRACTION, and the diver's own depth is
+    // clamped to [0, MAX_DEPTH] by DiveSim. So the deepest the camera can ever be is 9 m above
+    // the sea floor, and the bottom of the frame is a further VISIBLE_DEPTH_METRES below that.
+    //
+    // Nothing below 135 m (the abyss's midpoint) has a colour of its own — DepthBlend clamps
+    // there — so extending the sweep past 200 m proves nothing new about the curve. It is
+    // derived anyway so that raising MAX_DEPTH or widening the camera's lag bounds moves the
+    // sweep with them instead of silently leaving painted depths unchecked.
+
+    private val shallowestCameraDepth = 0f - Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_MAX_FRACTION
+
+    private val deepestCameraDepth = Tuning.MAX_DEPTH - Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_MIN_FRACTION
+
+    private val deepestPaintedDepth = deepestCameraDepth + Viewport.VISIBLE_DEPTH_METRES
 }
