@@ -13,6 +13,7 @@ import no.njoh.pulseengine.core.shared.utils.LogLevel
 import no.njoh.pulseengine.core.shared.utils.Logger
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import org.lwjgl.glfw.GLFW
+import render.CameraInvariants
 import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
@@ -427,6 +428,10 @@ class EnPustTil : PulseEngineGame()
     // draw calls) when unset.
     private val devMode = System.getenv("EPT_DEV") != null
 
+    // Seconds since [CameraInvariants] was last consulted. Only ever advanced behind `devMode`
+    // (see onRender), so at the booth it stays at zero and costs one float compare per frame.
+    private var secondsSinceCameraCheck = 0f
+
     override fun onCreate()
     {
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
@@ -755,7 +760,62 @@ class EnPustTil : PulseEngineGame()
         // inert without EPT_DEV — this call is the ONLY thing standing between "shipped
         // build" and "overlay drawn", and it is a single boolean branch before any
         // allocation or draw call happens. See renderGamepadOverlay's doc.
-        if (devMode) renderGamepadOverlay(hud, w, h)
+        if (devMode)
+        {
+            renderGamepadOverlay(hud, w, h)
+            checkCameraInvariants()
+        }
+    }
+
+    /**
+     * The runtime half of the world-offset-from-HUD guard — the half that runs on a real
+     * framebuffer. See [CameraInvariants] for the mechanism and for what each rule catches.
+     *
+     * WHY IT LIVES IN onRender rather than onUpdate: the numbers it reads are recomputed once
+     * per frame in `GraphicsImpl.initFrame` (:112, `camera.updateWorldPositions`), which runs at
+     * the top of the frame, before any of our code. Asking here means asking about the matrix
+     * this frame is actually being drawn with, which is the whole point of consulting the engine
+     * rather than recomputing our own transform and comparing it to itself.
+     *
+     * ONCE PER SECOND, not per frame, because a violation is a persistent structural fault (a
+     * camera scaled by the wrong factor stays wrong until something resizes again) and 60
+     * identical WARN lines a second would bury the log it is trying to be found in.
+     *
+     * WARN, not DEBUG, for the same reason [logGamepadDiagnostics] warns: application.cfg sets
+     * `logLevel = WARN` at the booth, and if anyone ever runs a dev build on the cabinet this
+     * has to survive that level to be worth having.
+     *
+     * `topLeftWorldPosition` / `bottomRightWorldPosition` are two DISTINCT `Vector2f` fields on
+     * `Camera` (Camera.kt:32-33), not the single shared return buffer `worldPosToScreenPos`
+     * hands back (:85) — so unlike that method, reading one does not clobber the other. Their
+     * components are copied into locals anyway, which is free and removes the question.
+     */
+    private fun checkCameraInvariants()
+    {
+        secondsSinceCameraCheck += engine.data.deltaTime
+        if (secondsSinceCameraCheck < 1f)
+            return
+        secondsSinceCameraCheck = 0f
+
+        val topLeft = engine.gfx.mainCamera.topLeftWorldPosition
+        val worldTop = topLeft.y
+        val worldLeft = topLeft.x
+        val bottomRight = engine.gfx.mainCamera.bottomRightWorldPosition
+        val worldBottom = bottomRight.y
+        val worldRight = bottomRight.x
+
+        val config = engine.gfx.mainSurface.config
+        CameraInvariants.violations(
+            windowWidth = engine.window.width,
+            windowHeight = engine.window.height,
+            surfaceWidth = config.width,
+            surfaceHeight = config.height,
+            worldTop = worldTop,
+            worldBottom = worldBottom,
+            worldLeft = worldLeft,
+            worldRight = worldRight,
+            worldRectIsInMetres = WORLD_RECT_IS_IN_METRES
+        ).forEach { Logger.warn { "camera invariant violated — $it" } }
     }
 
     /**
@@ -1092,6 +1152,23 @@ class EnPustTil : PulseEngineGame()
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
+
+        /**
+         * Whether `engine.gfx.mainCamera` has been flipped to world coordinates yet — see
+         * [CameraInvariants.violations]' `worldRectIsInMetres` parameter.
+         *
+         * FALSE, deliberately, and it is a lie that expires. The camera is still the identity
+         * the engine constructs it with, so the "visible world rect" the engine reports back is
+         * the PIXEL rect: 1800 "metres" of visible depth on a Retina panel, which is not a bug
+         * and must not be warned about every second. Rule 1 (window size == surface size) is
+         * checked either way, and it is the rule that describes the PRECONDITION of the shipped
+         * bug, so the check is not inert in the meantime.
+         *
+         * Task 5 of docs/superpowers/plans/2026-08-06-engine-world-coordinates.md flips this to
+         * true in the same commit that makes it true, and deletes both this constant and the
+         * parameter it feeds.
+         */
+        const val WORLD_RECT_IS_IN_METRES = false
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90
