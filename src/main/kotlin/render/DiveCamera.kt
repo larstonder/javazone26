@@ -11,7 +11,7 @@ import kotlin.math.exp
  * drifts down the screen, then settles back when you stop — which is where the sense of
  * speed and weight comes from.
  *
- * The lag is bounded: [Viewport.DIVER_MIN_FRACTION] and [Viewport.DIVER_MAX_FRACTION] cap how
+ * The lag is bounded: [Framing.DIVER_MIN_FRACTION] and [Framing.DIVER_MAX_FRACTION] cap how
  * far the diver may drift, so no amount of velocity can push them off-screen.
  */
 class DiveCamera
@@ -22,17 +22,17 @@ class DiveCamera
     /** Jump straight to the ideal position — used at the start of a run and after a reset. */
     fun snapTo(diverDepth: Float)
     {
-        depth = Viewport.targetCameraDepth(diverDepth)
+        depth = Framing.targetCameraDepth(diverDepth)
     }
 
     fun update(dt: Float, diverDepth: Float)
     {
-        val target = Viewport.targetCameraDepth(diverDepth)
+        val target = Framing.targetCameraDepth(diverDepth)
 
         // Exponential smoothing. Using 1 - e^(-k*dt) rather than a fixed alpha makes the
         // easing frame-rate independent: the same wall-clock time produces the same motion
         // whether the game is running at 60 or 240 fps.
-        val t = 1f - exp(-Viewport.CAMERA_SMOOTHING * dt.coerceAtLeast(0f))
+        val t = 1f - exp(-Framing.CAMERA_SMOOTHING * dt.coerceAtLeast(0f))
         depth += (target - depth) * t
 
         clampSoDiverStaysVisible(diverDepth)
@@ -40,8 +40,8 @@ class DiveCamera
 
     private fun clampSoDiverStaysVisible(diverDepth: Float)
     {
-        val lowest = diverDepth - Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_MAX_FRACTION
-        val highest = diverDepth - Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_MIN_FRACTION
+        val lowest = diverDepth - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MAX_FRACTION
+        val highest = diverDepth - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MIN_FRACTION
         depth = depth.coerceIn(lowest, highest)
     }
 }

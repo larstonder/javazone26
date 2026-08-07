@@ -10,14 +10,23 @@ class DiveCameraTest
     /** The clamp lands exactly on the boundary, so allow for float rounding. */
     private val EPS = 1e-5f
 
+    /**
+     * Where in the frame the diver sits, 0 at the top edge and 1 at the bottom.
+     *
+     * This was `Viewport.screenFraction(depth, cameraDepth)`, which went with the rest of that
+     * object's transform when the world moved into metres — [Framing] deliberately owns no
+     * mapping at all now, not even a resolution-free one, so that nothing can grow back into a
+     * second coordinate authority beside [CameraRig]. Inlined here rather than reinstated: it is
+     * one subtraction, only this file wants it, and every assertion below is unchanged.
+     */
     private fun fractionOf(cam: DiveCamera, diverDepth: Float) =
-        Viewport.screenFraction(diverDepth, cam.depth)
+        (diverDepth - cam.depth) / Framing.VISIBLE_DEPTH_METRES
 
     @Test
     fun `snapTo puts the diver exactly at the target screen fraction`() {
         val cam = DiveCamera()
         cam.snapTo(50f)
-        assertEquals(Viewport.DIVER_SCREEN_FRACTION, fractionOf(cam, 50f), 0.0001f)
+        assertEquals(Framing.DIVER_SCREEN_FRACTION, fractionOf(cam, 50f), 0.0001f)
     }
 
     @Test
@@ -30,7 +39,7 @@ class DiveCameraTest
 
         assertTrue(cam.depth > before, "camera must move toward the diver")
         assertTrue(
-            cam.depth < Viewport.targetCameraDepth(20f),
+            cam.depth < Framing.targetCameraDepth(20f),
             "camera must NOT arrive instantly — that is the whole point of smoothing"
         )
     }
@@ -40,7 +49,7 @@ class DiveCameraTest
         val cam = DiveCamera()
         cam.snapTo(0f)
         repeat(300) { cam.update(1f / 60f, diverDepth = 40f) }
-        assertEquals(Viewport.targetCameraDepth(40f), cam.depth, 0.01f)
+        assertEquals(Framing.targetCameraDepth(40f), cam.depth, 0.01f)
     }
 
     @Test
@@ -70,7 +79,7 @@ class DiveCameraTest
         }
 
         assertTrue(
-            fractionOf(cam, diverDepth) > Viewport.DIVER_SCREEN_FRACTION,
+            fractionOf(cam, diverDepth) > Framing.DIVER_SCREEN_FRACTION,
             "outrunning the camera should push the diver down the screen"
         )
     }
@@ -87,7 +96,7 @@ class DiveCameraTest
             cam.update(1f / 60f, diverDepth)
             val f = fractionOf(cam, diverDepth)
             assertTrue(
-                f in (Viewport.DIVER_MIN_FRACTION - EPS)..(Viewport.DIVER_MAX_FRACTION + EPS),
+                f in (Framing.DIVER_MIN_FRACTION - EPS)..(Framing.DIVER_MAX_FRACTION + EPS),
                 "diver at screen fraction $f escaped the visible band"
             )
         }
@@ -104,7 +113,7 @@ class DiveCameraTest
             cam.update(1f / 60f, diverDepth)
             val f = fractionOf(cam, diverDepth)
             assertTrue(
-                f in (Viewport.DIVER_MIN_FRACTION - EPS)..(Viewport.DIVER_MAX_FRACTION + EPS),
+                f in (Framing.DIVER_MIN_FRACTION - EPS)..(Framing.DIVER_MAX_FRACTION + EPS),
                 "diver at screen fraction $f escaped the visible band while ascending"
             )
         }

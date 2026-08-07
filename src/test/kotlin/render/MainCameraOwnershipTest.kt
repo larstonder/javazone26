@@ -21,41 +21,52 @@ import kotlin.test.assertTrue
  * camera, was not. Measured: booting at 1200x900 and toggling to 3440x1440 put the diver's
  * world square at 0.63 of screen width while its own HUD-anchored air ring stayed at 0.40.
  *
- * WHY A SOURCE SCAN. `render/Viewport`'s entire screen-pixel coordinate model is correct if
- * and only if `engine.gfx.mainCamera` stays at the identity the engine constructs it with
- * (`DefaultCamera.createOrthographic`, position 0 / origin 0 / scale 1 — GraphicsImpl.init:47).
- * That is a whole-process invariant about a mutable object owned by the engine, so there is
- * nothing pure to assert: `DiveLighting.setup` needs a live `PulseEngine`, and the disagreement
- * only becomes visible once two surfaces with two cameras have both been rasterised. The real
- * verification is a framebuffer capture at several window sizes, and it is not automatable
- * here. What IS automatable is the precondition: no production source touches that camera at
- * all. Reintroducing either half of the fault then fails the build instead of the booth.
+ * WHY A SOURCE SCAN. The invariant is a whole-process property of a mutable object owned by the
+ * engine, so there is nothing pure to assert: `DiveLighting.setup` needs a live `PulseEngine`,
+ * and the disagreement only becomes visible once two surfaces with two cameras have both been
+ * rasterised. The real verification is a framebuffer capture at several window sizes and aspect
+ * ratios, and it is not automatable here. What IS automatable is the ownership: exactly one file
+ * writes that camera, on purpose. Reintroducing either half of the fault then fails the build
+ * instead of the booth.
  *
- * WHEN TO NARROW THIS — WHICH IS WHAT ALREADY HAPPENED, TWICE, AND IT IS NOT A DELETION.
+ * WHAT THIS GUARD SAYS NOW, after the world-coordinate migration:
  *
- * The original version of this file said the world-coordinate migration would make this guard
- * "obsolete" and that deleting it was part of that change. That was wrong, and wrong in the
- * direction that would have thrown away the only thing standing between us and a second silent
- * writer of the shared camera. The invariant was never "nobody writes `mainCamera`" — it was
- * "EXACTLY ONE place writes `mainCamera`, on purpose". A source scan can state that just as
- * well as it can state "nobody", and it keeps stating it after the migration.
+ *   > No production source outside `render/CameraRig.kt` WRITES `engine.gfx.mainCamera`.
+ *   > Reads are allowed and named.
+ *
+ * It was NOT deleted by that migration, though an early version of this file predicted it would
+ * be. That prediction was wrong in the direction that throws away the only thing standing
+ * between us and a second silent writer of the shared camera. The invariant was never "nobody
+ * writes `mainCamera`" — it was "EXACTLY ONE place writes `mainCamera`". A source scan states
+ * that just as well as it states "nobody", and a second file easing, resetting or zooming that
+ * camera is precisely the fault `6ea1f53` fixed.
  *
  * So the second case below is an ALLOW-LIST, not a prohibition, and it is exact set equality
  * rather than a substring skip: a third file that mentions the camera fails, and so does
  * silently losing an allow-listed one. Current members and why each is allowed:
  *
- *   - `EnPustTil.kt` — READS ONLY, `topLeftWorldPosition` / `bottomRightWorldPosition`, to feed
- *     [CameraInvariants]. A read cannot cause the bug above, which is a WRITE from a second
- *     place; the read-only clause is enforced below rather than trusted.
- *   - `render/CameraRig.kt` — the ONE legitimate writer. Not yet called by anything; Task 5 of
- *     docs/superpowers/plans/2026-08-06-engine-world-coordinates.md wires it in and narrows this
- *     list again, at which point the read-only clause on `EnPustTil.kt` is the whole guard.
+ *   - `render/CameraRig.kt` — the ONE legitimate writer. Called from `EnPustTil.onFixedUpdate`,
+ *     and from `onCreate`/`justStarted` right after `DiveCamera.snapTo`.
+ *   - `EnPustTil.kt` — READS ONLY: `topLeftWorldPosition` / `bottomRightWorldPosition` to feed
+ *     [CameraInvariants], and `worldPosToScreenPos` for the HUD's diver anchor. A read cannot
+ *     cause the bug above, which is a WRITE from a second place; the read-only clause is
+ *     enforced below rather than trusted.
  *
- * The plan asked for CameraRig's entry to be added here in Task 2, before the file existed, so
- * that Task 3 need not touch a test file. It was added in Task 3 instead: exact set equality
- * against a file that does not exist yet means committing Task 2 red, and a red commit is how
- * work gets lost. The cost is one line, and the benefit is that the guard was watched going red
- * on CameraRig.kt specifically before being told to expect it.
+ * WHAT IS NO LONGER GUARANTEED, STATED PLAINLY BECAUSE NOTHING REPLACES IT. Since `c47a4b0` the
+ * process has a SECOND legitimate writer under `EPT_EDITOR=1`: `SceneEditor`'s
+ * `Camera2DController` (`SceneEditor.kt:347`) drives the same object. It lives in engine code, so
+ * no scan of `src/main/kotlin` can see it and this file stays green while the invariant is, at
+ * runtime, false.
+ *
+ *   - AT THE BOOTH IT DOES NOT EXIST. `EPT_EDITOR` is unset, `SceneEditor` is never constructed
+ *     (see `EnPustTil.onCreate`), and `CameraRig` is the only writer in the process. The shipped
+ *     configuration is fully guarded by what is below.
+ *   - IN EDITOR MODE the invariant becomes "exactly one writer AT A TIME", and what enforces it
+ *     is not a test — it is Task 10's gate, which skips `CameraRig.apply` while the editor
+ *     service is running. Its failure mode is loud and immediate (you cannot pan the editor
+ *     viewport), not silent, which is why no test is bought for it.
+ *   - NO TEST ASSERTS THAT GATE. It is verified by hand, once. Do not read this file as covering
+ *     more than the two bullets above it.
  */
 class MainCameraOwnershipTest
 {
@@ -76,35 +87,61 @@ class MainCameraOwnershipTest
     }
 
     @Test
-    fun `only the allow-listed sources touch the shared main camera, and EnPustTil only reads it`()
+    fun `only the allow-listed sources reach the shared main camera by name`()
     {
         val touching = productionSources().filter { (_, code) -> code.contains("mainCamera") }
 
         assertEquals(
             CAMERA_ALLOW_LIST,
             touching.map { it.first }.toSet(),
-            "engine.gfx.mainCamera has exactly one intended writer and no other toucher at all — " +
-            "render/Viewport's screen-pixel maths, DiveRenderer, DiveLighting's immediate-mode drawLight " +
-            "calls and the HUD's own surface camera all depend on that. A file MISSING from this set is " +
-            "as much a failure as an extra one: it means the intended owner stopped owning it. " +
-            "See this test's class doc."
+            "engine.gfx.mainCamera has exactly one intended writer (render/CameraRig.kt) and no other " +
+            "toucher at all — DiveRenderer's world rect, DiveLighting's immediate-mode drawLight calls " +
+            "and the HUD's diver anchor all read one camera and would be silently moved apart by a " +
+            "second writer. A file MISSING from this set is as much a failure as an extra one: it means " +
+            "the intended owner stopped owning it. See this test's class doc."
         )
+    }
 
-        // The allow-list says EnPustTil.kt may READ the camera, so check that it does only that
-        // rather than trusting the sentence. Every `mainCamera` mention there must be one of the
-        // two world-rect reads CameraInvariants is fed; a write would be indistinguishable from
-        // the deleted Camera entity as far as the bug is concerned, and set equality above cannot
-        // see it, because the file is allow-listed either way.
-        val illegalUses = touching
-            .filter { (path, _) -> path.endsWith("EnPustTil.kt") }
-            .flatMap { (_, code) -> code.lineSequence().filter { it.contains("mainCamera") } }
-            .filterNot { line -> ALLOWED_READS.any { line.contains("mainCamera.$it") } }
+    /**
+     * THE CLAUSE THAT SURVIVED THE MIGRATION, IN A STRONGER FORM.
+     *
+     * Until the flip, "EnPustTil may only READ the camera" was checked line by line: every
+     * `mainCamera` mention in that file had to be followed by one of two named field reads. That
+     * proxy stopped working the moment the camera became something legitimately PASSED AROUND —
+     * `DiveRenderer.render(surface, sim, engine.gfx.mainCamera)` mentions the camera and reads no
+     * named field, and `val cam = engine.gfx.mainCamera` would have satisfied a line check while
+     * handing an alias to anything.
+     *
+     * So the proxy is replaced by the thing it was standing in for: NOBODY OUTSIDE
+     * `render/CameraRig.kt` MUTATES A CAMERA'S TRANSFORM. That is strictly stronger. It follows
+     * aliases (the write itself is what is scanned for, not the name it is reached through), and
+     * it covers files that never say `mainCamera` at all — which now includes `DiveRenderer`,
+     * holding the very object as a parameter.
+     *
+     * WHAT IT DOES NOT COVER, so nobody assumes more: only the four transform fields, and only
+     * the `.set(...)` and `.x =` idioms. `nearPlane`/`farPlane` are settable and unscanned; they
+     * cannot produce the world-offset-from-HUD bug, which is a scale/translation fault. A camera
+     * written through reflection, or a fifth field added by an engine upgrade, would also pass.
+     * And the editor's own `Camera2DController` is engine code and invisible to any source scan
+     * — see the class doc.
+     */
+    @Test
+    fun `no production source outside CameraRig writes a camera transform`()
+    {
+        val offenders = productionSources()
+            .filterNot { (path, _) -> path == CAMERA_WRITER }
+            .flatMap { (path, code) ->
+                code.lineSequence()
+                    .filter { TRANSFORM_WRITE.containsMatchIn(it) }
+                    .map { "$path: ${it.trim()}" }
+            }
 
         assertTrue(
-            illegalUses.isEmpty(),
-            "EnPustTil.kt may only READ engine.gfx.mainCamera ($ALLOWED_READS) to feed CameraInvariants. " +
-            "Writing it from here would be a second writer of the shared camera, which is the shipped " +
-            "bug in this test's class doc. Offending lines: ${illegalUses.map { it.trim() }}"
+            offenders.isEmpty(),
+            "Only $CAMERA_WRITER may write scale/position/origin/rotation on a camera. A second writer " +
+            "of engine.gfx.mainCamera is the shipped world-offset-from-HUD bug (see this test's class " +
+            "doc), and since the camera is now passed to DiveRenderer as a parameter, a write does not " +
+            "have to mention `mainCamera` to be one. Found: $offenders"
         )
     }
 
@@ -120,8 +157,21 @@ class MainCameraOwnershipTest
             "src/main/kotlin/render/CameraRig.kt"
         )
 
-        /** What EnPustTil.kt is allowed to touch on it: reads of the engine-computed world rect. */
-        val ALLOWED_READS = listOf("topLeftWorldPosition", "bottomRightWorldPosition")
+        /** The one file allowed to write a camera transform. */
+        const val CAMERA_WRITER = "src/main/kotlin/render/CameraRig.kt"
+
+        /**
+         * A write to one of `Camera`'s four transform fields (Camera.kt:20-23), which are JOML
+         * `Vector3f`s: either `field.set(...)`, as CameraRig writes them, or a component
+         * assignment like `field.x = `. The `[^=]` tail keeps `==` from matching.
+         *
+         * Deliberately name-based rather than type-aware — there is no lexer here, same as
+         * [stripComments]. Measured against this codebase: the four names appear outside
+         * CameraRig only inside comments (DiveLighting's transcription of the deleted entity's
+         * arithmetic), which [productionSources] has already stripped. A false positive here is
+         * a failing test, not a shipped bug.
+         */
+        val TRANSFORM_WRITE = Regex("\\b(scale|position|origin|rotation)\\s*(\\.\\s*set\\s*\\(|\\.\\s*[xyz]\\s*=[^=])")
 
         /**
          * Every production Kotlin source, paired with its code WITH COMMENTS STRIPPED — the

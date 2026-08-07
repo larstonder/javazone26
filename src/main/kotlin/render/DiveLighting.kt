@@ -31,11 +31,23 @@ import kotlin.math.hypot
  *
  * `GiSceneRenderer.drawLight()` is immediate-mode: callable directly on the GI "local scene"
  * surface from anywhere, with no scene entity required (confirmed against the engine's own
- * `Torch.onRenderLightSource`, which does exactly this). So [render] is now called from
- * `EnPustTil.onRender()` — the SAME call that drives `DiveRenderer`, reading the SAME
- * `camera.depth` on the SAME frame — which is what makes the light and the object it
- * illuminates agree pixel-for-pixel. There is nothing left to pool: no entities, no
- * per-frame entity-system update pass, no repositioning step that can fall out of sync.
+ * `Torch.onRenderLightSource`, which does exactly this). There is nothing left to pool: no
+ * entities, no per-frame entity-system update pass, no repositioning step that can fall out of
+ * sync.
+ *
+ * STILL CALLED FROM onRender, but the alignment guarantee is now STRUCTURAL rather than
+ * procedural. GI's local scene surface is created with `camera = engine.gfx.mainCamera`
+ * (GlobalIlluminationSystem.kt:78) — the same object mainSurface uses — and every matrix is
+ * built once per frame in gfx.initFrame (GraphicsImpl.kt:111-113) before any game code runs. So
+ * a light drawn at world (x, depth) and a square drawn at world (x, depth) go through the
+ * identical viewProjectionMatrix and CANNOT drift, whichever callback issued them. What
+ * onRender still buys is ordering: GiSceneRenderer's batch must be filled before gfx.drawFrame,
+ * and onRender is where the rest of the drawing lives. Do not move this back to onUpdate.
+ *
+ * The drift risk has MOVED TO THE HUD, which is on its own screen-space camera and must
+ * therefore transform the diver's position by hand. See the diver anchor in
+ * `EnPustTil.onRender`, which takes it from `mainCamera.worldPosToScreenPos` — the same matrix,
+ * on the same frame — rather than from `DiveCamera.depth`.
  *
  * ONE CONE, RAMPED BY SPEED. The diver's light used to switch between a 50-degree beam while
  * moving and `coneAngle = 360` while stopped. The second of those is not "a very wide torch":
@@ -49,9 +61,6 @@ import kotlin.math.hypot
  */
 object DiveLighting
 {
-    /** How far off-screen (px) a light may sit before it is culled. */
-    private const val CULL_MARGIN = 50f
-
     private val pearlLight = Color(1f, 0.82f, 0.45f)
     private val diverLight = Color(0.6f, 0.85f, 1f)
 
@@ -180,27 +189,23 @@ object DiveLighting
         //     scale=(1.6,1.6) origin=(0,0) position=(0,0)
         // i.e. min(3440/1200, 1440/900) = 1.6, and put the diver's world square at 0.632 of
         // screen width while its own HUD-anchored air ring — computed from the SAME sim.x
-        // through the SAME Viewport.screenX — stayed at 0.395. That 0.40-vs-0.63 split is
-        // exactly the shipped "world offset from the HUD" report. The diver square also came
-        // out 115 px instead of 72, the same 1.6x.
+        // through the SAME (then screen-space) transform — stayed at 0.395. That 0.40-vs-0.63
+        // split is exactly the shipped "world offset from the HUD" report. The diver square
+        // also came out 115 px instead of 72, the same 1.6x.
         //
-        // Left alone, mainCamera is DefaultCamera.createOrthographic(window.width,
-        // window.height) at position 0, origin 0, scale 1 (GraphicsImpl.init:47,
-        // Camera.kt:16-25) — the identity — and its projection is re-issued as
-        // ortho(0, w, h, 0) for EVERY surface camera on every window change
-        // (GraphicsImpl.onWindowChanged:95). It is therefore a correct screen-pixel camera at
-        // every framebuffer size, forever, with no maintenance. That identity is precisely
-        // what render/Viewport's top-left-origin pixel maths already assumes, and it is what
-        // lets the immediate-mode drawLight calls below use the exact same
-        // Viewport.screenX/screenY pixel values DiveRenderer uses: GI's "local scene" surface
-        // is created with `camera = engine.gfx.mainCamera` (GlobalIlluminationSystem.kt:78),
-        // the SAME camera mainSurface uses. Nothing in this process writes it now, so both
-        // surfaces agree on what a pixel coordinate means at any size.
+        // WHO WRITES mainCamera NOW: [CameraRig], from EnPustTil.onFixedUpdate, and nothing
+        // else — MainCameraOwnershipTest enforces that as exact set equality over the sources.
+        // It writes all four parameters from scratch every tick against mainSurface.config, so
+        // there is no frozen viewport left to go stale. World coordinates are METRES, and GI's
+        // "local scene" surface is created with `camera = engine.gfx.mainCamera`
+        // (GlobalIlluminationSystem.kt:78) — the SAME object mainSurface uses — so the
+        // immediate-mode drawLight calls below and DiveRenderer's squares go through one
+        // matrix, built once per frame in gfx.initFrame before any of our code runs. They
+        // cannot disagree about where a metre is at any framebuffer size.
         //
-        // Nothing may reintroduce a scene Camera entity here without also moving every draw
-        // in DiveRenderer, DiveLighting and Hud into the same coordinate space — which is the
-        // (deliberately deferred) migration in
-        // docs/superpowers/plans/2026-08-06-engine-world-coordinates.md.
+        // Nothing may reintroduce a scene Camera entity here. It would be a SECOND writer of
+        // that shared camera, which is the mechanism above, and it would fight CameraRig every
+        // fixed tick.
         engine.scene.createEmptyAndSetActive("dive.scn")
 
         // EntityUpdater is GONE with the Camera entity, because it existed only to tick it.
@@ -279,33 +284,28 @@ object DiveLighting
     }
 
     /**
-     * Immediate-mode light draws. MUST be called from the same place, on the same frame, and
-     * with the same [camera] read `DiveRenderer.render` uses — see the class doc for why.
+     * Immediate-mode light draws, IN WORLD METRES — the same coordinates `DiveRenderer` draws
+     * the objects these lights sit on. Must still be called from `onRender`; see the class doc
+     * for what that buys now that it is no longer alignment.
      */
-    fun render(engine: PulseEngine, sim: DiveSim, camera: DiveCamera, dt: Float, w: Float, h: Float)
+    fun render(engine: PulseEngine, sim: DiveSim, dt: Float)
     {
         val surface = engine.gfx.getSurface(GlobalIlluminationSystem.GI_LOCAL_SCENE) ?: return
         val renderer = surface.getRenderer<GiSceneRenderer>() ?: return
-        val cam = camera.depth
 
-        drawPearlLights(surface, renderer, sim, cam, w, h)
-        drawAnglerfishLight(surface, renderer, sim, cam, w, h)
-        drawDiverBeam(surface, renderer, sim, cam, dt, w, h)
+        drawPearlLights(surface, renderer, sim)
+        drawAnglerfishLight(surface, renderer, sim)
+        drawDiverBeam(surface, renderer, sim, dt)
     }
 
-    private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Float, w: Float, h: Float)
+    private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim)
     {
-        val ppm = Viewport.pixelsPerMetre(h)
-        val size = PEARL_LIGHT_SIZE_METRES * ppm
         surface.setDrawColor(pearlLight)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
-            val screenY = Viewport.screenY(pearl.depth, cam, h)
-            if (!isOnScreen(screenY, h)) return@forEach
-            val screenX = Viewport.screenX(pearl.x, w, h)
             renderer.drawLight(
                 texture = Texture.BLANK,
-                x = screenX, y = screenY, w = size, h = size,
+                x = pearl.x, y = pearl.depth, w = PEARL_LIGHT_SIZE_METRES, h = PEARL_LIGHT_SIZE_METRES,
                 angle = 0f,
                 intensity = pearlIntensityForDepth(pearl.depth),
                 coneAngle = WIDE_GLOW_CONE_ANGLE,
@@ -318,18 +318,13 @@ object DiveLighting
      * The anglerfish lure. Same colour AND same intensity curve as a real pearl, deliberately
      * — the tell is motion, never light (see DiveRenderer.drawAnglerfish).
      */
-    private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Float, w: Float, h: Float)
+    private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim)
     {
         val fish = sim.anglerfish ?: return
-        val screenY = Viewport.screenY(fish.depth, cam, h)
-        if (!isOnScreen(screenY, h)) return
-        val ppm = Viewport.pixelsPerMetre(h)
-        val size = PEARL_LIGHT_SIZE_METRES * ppm
-        val screenX = Viewport.screenX(fish.x, w, h)
         surface.setDrawColor(pearlLight)
         renderer.drawLight(
             texture = Texture.BLANK,
-            x = screenX, y = screenY, w = size, h = size,
+            x = fish.x, y = fish.depth, w = PEARL_LIGHT_SIZE_METRES, h = PEARL_LIGHT_SIZE_METRES,
             angle = 0f,
             intensity = pearlIntensityForDepth(fish.depth),
             coneAngle = WIDE_GLOW_CONE_ANGLE,
@@ -341,8 +336,8 @@ object DiveLighting
      * The diver's own light: a flashlight beam, always pointed somewhere. Three things this
      * must get right (all playtest-driven):
      *
-     *   - It must track `sim.x` (the old lamp was hardcoded to screen centre) — done simply
-     *     by using the same `Viewport.screenX(sim.x, w, h)` call `DiveRenderer.drawDiver` uses.
+     *   - It must track `sim.x` (the old lamp was hardcoded to screen centre) — which is now
+     *     nothing more than passing `sim.x`, the same number `DiveRenderer.drawDiver` passes.
      *   - Near-zero velocity gives `atan2` a meaningless direction that would jitter wildly
      *     frame to frame, so below [STATIONARY_SPEED_THRESHOLD] the aim STOPS TRACKING and
      *     the last heading is held. That gate is genuinely a threshold and stays one.
@@ -368,31 +363,28 @@ object DiveLighting
      * tightening this further, but it would change the focused beam too, and the focused
      * beam is known-good.
      */
-    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Float, dt: Float, w: Float, h: Float)
+    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, dt: Float)
     {
-        val ppm = Viewport.pixelsPerMetre(h)
-        val screenX = Viewport.screenX(sim.x, w, h)
-        val screenY = Viewport.screenY(sim.depth, cam, h)
-
         val speed = hypot(sim.vx, sim.vy)
         if (speed >= STATIONARY_SPEED_THRESHOLD)
         {
-            // GiSceneRenderer's cone direction is Y-flipped relative to Viewport's
-            // screen-space-Y-down convention. Originally found empirically; now confirmed
-            // from the shader source — scene.frag builds the cone direction as
-            // `vec2(cos(a), sin(a))` in a framebuffer whose +y runs UP the screen, while
-            // Viewport's screenY runs DOWN. See AimAngle's class doc.
+            // GiSceneRenderer's cone direction is Y-flipped relative to the world's y-DOWN
+            // convention. Originally found empirically; now confirmed from the shader source —
+            // scene.frag builds the cone direction as `vec2(cos(a), sin(a))` in a framebuffer
+            // whose +y runs UP the screen, while world y (which IS depth) runs DOWN. Unchanged
+            // by the migration to metres: the flip is between world-y-down and the
+            // framebuffer's y-up, and a uniform positive scale plus a translation cannot alter
+            // it. See AimAngle's class doc.
             val target = AimAngle.headingDegrees(sim.vx, -sim.vy)
             beamAngleDeg = if (beamInitialized) AimAngle.smooth(beamAngleDeg, target, dt, AIM_SMOOTHING_RATE) else target
             beamInitialized = true
         }
 
-        val size = DIVER_LIGHT_SIZE_METRES * ppm
         val baseIntensity = diverIntensityForDepth(sim.depth)
         surface.setDrawColor(diverLight)
         renderer.drawLight(
             texture = Texture.BLANK,
-            x = screenX, y = screenY, w = size, h = size,
+            x = sim.x, y = sim.depth, w = DIVER_LIGHT_SIZE_METRES, h = DIVER_LIGHT_SIZE_METRES,
             angle = beamAngleDeg,
             intensity = beamIntensity(baseIntensity, speed),
             coneAngle = beamConeAngle(speed),
@@ -472,7 +464,12 @@ object DiveLighting
     /** Same continuity treatment as [pearlIntensityForDepth], for the diver's own light. */
     internal fun diverIntensityForDepth(depth: Float): Float = DepthBlend.blend(depth, diverIntensityByZone)
 
-    /** Whether a light at [screenY] is close enough to the visible band to bother drawing. */
-    internal fun isOnScreen(screenY: Float, screenHeight: Float): Boolean =
-        screenY >= -CULL_MARGIN && screenY <= screenHeight + CULL_MARGIN
+    // `isOnScreen(screenY, screenHeight)` USED TO LIVE HERE and went with the coordinates it was
+    // written in: it was a screen-row bounds check with a 50-PIXEL margin, and there are no
+    // screen rows in this file any more. Nothing culls in the meantime, which is fine — there
+    // are at most a few dozen lights and a quad outside the frustum is clipped by the GPU. Task
+    // 7 of docs/superpowers/plans/2026-08-06-engine-world-coordinates.md restores it as
+    // `cam.isInView(...)` with a padding derived from the glow's reach, which also tests x —
+    // something the old check never did, so a pearl far outside the visible half-width was
+    // submitted every frame.
 }

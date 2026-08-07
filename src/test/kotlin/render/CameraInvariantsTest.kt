@@ -21,7 +21,7 @@ class CameraInvariantsTest
 {
     // Numbers that satisfy all three rules: window == surface, exactly VISIBLE_DEPTH_METRES of
     // water visible, and a visible world rect with the surface's own 4:3 aspect.
-    private val depth = Viewport.VISIBLE_DEPTH_METRES
+    private val depth = Framing.VISIBLE_DEPTH_METRES
     private val consistentWidth = depth * (1200f / 900f)
 
     private fun violations(
@@ -133,33 +133,10 @@ class CameraInvariantsTest
         assertTrue(inverted.all { it.contains("degenerate") || it.contains("window") }, "unexpected messages: $inverted")
     }
 
-    // Killed by: make the world-rect gate unconditional (drop the `if (!worldRectIsInMetres) return`)
-    // -> the pre-Task-5 call site starts reporting the 1800 m "depth" of an identity camera every
-    // second and this fails. The gate exists because EnPustTil wires this check in one task BEFORE
-    // the camera is flipped to world coordinates; see CameraInvariants' doc.
-    @Test
-    fun `with the world rect still in screen pixels only the size rule is checked`()
-    {
-        val found = CameraInvariants.violations(
-            windowWidth = 1200, windowHeight = 900,
-            surfaceWidth = 1200, surfaceHeight = 900,
-            // What an identity camera reports: the world rect IS the pixel rect.
-            worldTop = 0f, worldBottom = 900f, worldLeft = 0f, worldRight = 1200f,
-            worldRectIsInMetres = false
-        )
-
-        assertEquals(emptyList(), found)
-
-        // ...and rule 1 still is, because it is true of the numbers regardless of what space the
-        // world rect is in. Without this half, deleting rule 1 would also pass this case.
-        assertTrue(
-            CameraInvariants.violations(
-                windowWidth = 1200, windowHeight = 900,
-                surfaceWidth = 2400, surfaceHeight = 1800,
-                worldTop = 0f, worldBottom = 1800f, worldLeft = 0f, worldRight = 2400f,
-                worldRectIsInMetres = false
-            ).isNotEmpty(),
-            "the surface-size rule does not depend on the world rect and must still be checked"
-        )
-    }
+    // `with the world rect still in screen pixels only the size rule is checked` LIVED HERE and
+    // was deleted with its subject. It pinned the `worldRectIsInMetres` gate, which existed only
+    // because this check was wired into the game one task BEFORE the camera was flipped to world
+    // coordinates: until then rules 2 and 3 would have warned every second about the 1800 m
+    // "visible depth" of a correctly-behaving identity camera. The flip removed the parameter and
+    // its only caller, so rules 2 and 3 are now unconditional and there is nothing left to gate.
 }

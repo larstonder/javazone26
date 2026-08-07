@@ -14,6 +14,7 @@ import no.njoh.pulseengine.core.shared.utils.Logger
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import org.lwjgl.glfw.GLFW
 import render.CameraInvariants
+import render.CameraRig
 import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
@@ -208,14 +209,14 @@ object ScreenText
 
 /**
  * Pure, engine-free layout for the attract screen — extracted for the same reason
- * [render.Viewport] and [render.DepthBlend] are: the interesting property is a RELATIONSHIP
+ * [render.Framing] and [render.DepthBlend] are: the interesting property is a RELATIONSHIP
  * between numbers ("the title clears the diver", "the leaderboard is centred under its own
  * heading"), and a relationship can be asserted without a GL context.
  *
  * WHY THIS EXISTS: the world keeps rendering behind the attract screen on purpose (see
  * [EnPustTil.drawIdleScreen]) — the queue watches live water, not a static image. That is a
  * good decision that had a bad consequence: the title was drawn at 0.44 of screen height,
- * and the diver is pinned by [render.Viewport.DIVER_SCREEN_FRACTION] to 0.40 with a large
+ * and the diver is pinned by [render.Framing.DIVER_SCREEN_FRACTION] to 0.40 with a large
  * additive glow around it. `idle-view.png` shows the result — "ÉN PUST TIL" landed inside
  * the diver's halo with a pearl sitting in the bowl of the U, and the waterline (which is
  * also at 0.40 whenever the diver is at the surface) ran immediately above it, so the title
@@ -227,7 +228,7 @@ object ScreenText
  * them, and put the leaderboard below. Everything stays a fraction of screen HEIGHT — never
  * a pixel count and never a fraction of width — because `engine.window.width/height` are
  * PHYSICAL framebuffer pixels and the booth display may be 16:9, 16:10 or 4K (see
- * [render.Viewport]'s doc for the HiDPI bug this convention exists to prevent).
+ * [render.Framing]'s doc for the HiDPI bug this convention exists to prevent).
  *
  * VERTICAL ANCHORS ARE THE TOP OF THE TEXT BOX, not the baseline. Measured off the captures
  * at commit 44a3902: the clock is drawn at `y = h*0.02 + h*0.05` and its glyph tops land at
@@ -238,7 +239,7 @@ object AttractLayout
 {
     /**
      * Half-height of the screen band the diver and its glow occupy, centred on
-     * [render.Viewport.DIVER_SCREEN_FRACTION]. The diver itself is only
+     * [render.Framing.DIVER_SCREEN_FRACTION]. The diver itself is only
      * `DIVER_SIZE_METRES / VISIBLE_DEPTH_METRES` = 0.05 of screen height, so this is
      * almost entirely the light: measured off `idle-view.png`, the blue halo is still
      * clearly reading 0.14h above and below the diver before it fades into the ambient
@@ -331,7 +332,7 @@ object AttractLayout
  * at any screen size, and that the bar still fits across the squarest booth panel we might be
  * given. Everything is a fraction of screen HEIGHT for the usual reason: `engine.window
  * .width/height` are PHYSICAL framebuffer pixels and the booth display's resolution and
- * aspect ratio are both unknown until we plug it in (see [render.Viewport]).
+ * aspect ratio are both unknown until we plug it in (see [render.Framing]).
  *
  * As with [AttractLayout], vertical anchors are the TOP of the text box and text grows
  * downward, so a block occupies `y .. y + fontSize`.
@@ -473,10 +474,15 @@ class EnPustTil : PulseEngineGame()
         //
         // Inert at the booth: EPT_EDITOR is unset there, so this is one getenv at startup and
         // SceneEditor is never constructed. Note the editor drives engine.gfx.mainCamera via
-        // its own Camera2DController, so panning or zooming in the editor moves the world out
-        // from under the HUD — Viewport's screen-space maths assumes mainCamera is at identity
-        // (see 6ea1f53, where a second writer of that same camera was the shipped
-        // misalignment bug).
+        // its own Camera2DController (SceneEditor.kt:347), which makes it a SECOND writer of
+        // the camera CameraRig owns — the exact shape of the bug 6ea1f53 fixed. Under
+        // EPT_EDITOR the two fight every fixed tick: panning moves the world out from under
+        // the HUD, which still anchors itself through mainCamera.worldPosToScreenPos in
+        // onRender, and CameraRig snaps it back. MainCameraOwnershipTest cannot see this,
+        // because Camera2DController lives in engine code; Task 10 of
+        // docs/superpowers/plans/2026-08-06-engine-world-coordinates.md is the gate that skips
+        // CameraRig.apply while the editor is running. Its failure mode is loud (you cannot pan
+        // the viewport), not silent, and it cannot reach the booth.
         //
         // dive.scn currently holds NO entities at all: it exists only so
         // GlobalIlluminationSystem, which is a scene SYSTEM, has a scene to be added to. That
@@ -491,6 +497,14 @@ class EnPustTil : PulseEngineGame()
         engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
+
+        // Applied HERE as well as every fixed tick, so that frame 1 is drawn with a real
+        // matrix. `topLeftWorldPosition` and the view matrix behind it are computed in
+        // GraphicsImpl.initFrame at the top of each frame, before any of our callbacks run
+        // (PulseEngineImpl.kt:69-73, 216-224), so without this the first frame would be drawn —
+        // and DiveRenderer's strip walk would read its visible rect — from the identity camera
+        // the engine constructs. Cheap, and it removes a whole class of first-frame question.
+        CameraRig.apply(engine, camera.depth)
 
         // Registering as a Service (rather than calling its methods directly) gives
         // ScoreRepository its own onCreate (load scores from disk) and onDestroy (final
@@ -533,14 +547,13 @@ class EnPustTil : PulseEngineGame()
         //   - camera: left null (default) deliberately — the engine default IS "create a
         //     fresh orthographic camera" (GraphicsImpl.createSurface builds its own
         //     DefaultCamera.createOrthographic when none is passed), which is exactly what a
-        //     screen-space HUD needs. It must NOT be handed the shared main camera. That used
-        //     to be justified by "the GI Camera entity drives it"; that entity is gone (see
-        //     DiveLighting.setup — it WAS the world-offset-from-HUD bug), so the shared camera
-        //     now sits at the identity and passing it would look harmless today. It is not:
-        //     the HUD's independence from the world camera is the whole reason Hud and
-        //     AttractLayout can be pure screen space, and the world-coordinate migration in
-        //     docs/superpowers/plans/2026-08-06-engine-world-coordinates.md would make that
-        //     camera scale by ~30 and smear the entire HUD off screen. Leave it null.
+        //     screen-space HUD needs. It must NOT be handed the shared main camera, and this
+        //     is no longer a subtle point: engine.gfx.mainCamera is now a WORLD camera scaled
+        //     by pixels-per-metre (~20 at 1200 px tall, ~36 at 4K — see CameraRig), so passing
+        //     it would multiply every HUD coordinate by that factor and smear the whole
+        //     overlay off screen. The HUD is authored in screen pixels and stays that way;
+        //     what makes its diver-anchored elements track the world is the single
+        //     worldPosToScreenPos call in onRender, not a shared camera. Leave it null.
         val hudSurface = engine.gfx.createSurface(
             name = "hud",
             backgroundColor = Color.BLANK,
@@ -572,6 +585,24 @@ class EnPustTil : PulseEngineGame()
         // included, unchanged, since DiveSim.tick already no-ops once runOver is set.
         if (lifecycle.simulationAdvances)
             sim.tick(engine.data.fixedDeltaTime, readInput())
+
+        // CAMERA EASING RUNS ON THE FIXED TICK, NOT THE RENDER CLOCK. It used to be the other
+        // way round, and CLAUDE.md used to describe that as deliberate presentation-side
+        // smoothing. It stopped being right the moment CameraRig started writing the ENGINE's
+        // camera: `updateViewMatrix` interpolates `position` between the value snapshotted at
+        // the top of each fixed step and the current one (Camera.kt:120-123,
+        // PulseEngineImpl.kt:279), so a render-clock write hands it two values that were never
+        // consecutive fixed states and the interpolator judders sub-frame.
+        //
+        // Nothing is lost. DiveCamera's 1 - e^(-k*dt) easing is already frame-rate independent,
+        // so sampling it at 60 Hz produces the same motion, and the engine's interpolation then
+        // renders it SMOOTHER above 60 fps than a per-frame update did.
+        //
+        // Note this runs unconditionally, outside the `simulationAdvances` gate above: a paused
+        // or attract-mode frame still has to be drawn with a valid camera, and easing toward a
+        // sim depth that is not changing is a no-op that costs four float stores.
+        camera.update(engine.data.fixedDeltaTime, sim.depth)
+        CameraRig.apply(engine, camera.depth)
     }
 
     override fun onUpdate()
@@ -579,10 +610,6 @@ class EnPustTil : PulseEngineGame()
         // Ambient is a continuous function of depth only — no camera/screen dependence — so
         // unlike the positional light draws in onRender, timing here doesn't matter.
         DiveLighting.updateAmbient(sim)
-
-        // Camera easing is presentation only, so it runs on the render clock rather than
-        // the fixed tick — that keeps it smooth independently of the simulation rate.
-        camera.update(engine.data.deltaTime, sim.depth)
 
         // Start/restart is a LEVEL reading here — deliberately. The engine's Gamepad only
         // exposes isPressed/getAxis (confirmed against the engine jar: no gamepad
@@ -679,6 +706,12 @@ class EnPustTil : PulseEngineGame()
         {
             sim = DiveSim(seed = dailySeed)
             camera.snapTo(sim.depth)
+            // Pushed through immediately, for the same reason as in onCreate: this runs on the
+            // render clock, so without it the frame drawn right after a restart would use the
+            // camera the PREVIOUS run ended at — a full-frame jump from the abyss back to the
+            // surface, one frame late. CameraRig.apply is idempotent, so the fixed tick simply
+            // writes the same four values again.
+            CameraRig.apply(engine, camera.depth)
             DiveLighting.resetAim()
         }
 
@@ -707,30 +740,63 @@ class EnPustTil : PulseEngineGame()
 
     override fun onRender()
     {
-        val w = engine.window.width.toFloat()
-        val h = engine.window.height.toFloat()
-
         // World: lit by GlobalIlluminationSystem, which multiplies mainSurface by the
-        // computed light map — this is what makes the Abyss genuinely dark.
-        DiveRenderer.render(engine.gfx.mainSurface, sim, camera, w, h)
+        // computed light map — this is what makes the Abyss genuinely dark. Drawn in METRES
+        // through engine.gfx.mainCamera, which CameraRig wrote on the last fixed tick; the
+        // renderer takes that camera so the rect it walks is the rect the frame is drawn with.
+        val worldCamera = engine.gfx.mainCamera
+        DiveRenderer.render(engine.gfx.mainSurface, sim, worldCamera)
 
-        // Lights: immediate-mode drawLight calls issued HERE, in onRender, reading the SAME
-        // camera.depth DiveRenderer just used above — not repositioned earlier in onUpdate,
-        // which is what let the light and the object it illuminates drift apart by a frame
-        // whenever the camera was still easing. See DiveLighting's class doc.
-        DiveLighting.render(engine, sim, camera, engine.data.deltaTime, w, h)
+        // Lights: immediate-mode drawLight calls, also in metres, onto GI's local scene
+        // surface — which is created with `camera = engine.gfx.mainCamera`, the SAME object,
+        // so a light and the thing it lights go through one matrix and cannot drift. Still
+        // issued from onRender: GiSceneRenderer's batch must be filled before gfx.drawFrame.
+        // See DiveLighting's class doc for what changed and what did not.
+        DiveLighting.render(engine, sim, engine.data.deltaTime)
 
-        // HUD: its own surface, composited on top unaffected by GI — see the comment in
-        // onCreate for why it cannot share mainSurface. What it shows depends on the
-        // lifecycle state: the numeric HUD (BANKED/clock/air/depth tape) only makes sense
-        // once a run actually exists, so IDLE gets its own simple attract text instead.
+        // HUD: its own surface, its own screen-pixel camera, composited on top unaffected by
+        // GI — see the comment in onCreate for why it cannot share mainSurface. What it shows
+        // depends on the lifecycle state: the numeric HUD (BANKED/clock/air/depth tape) only
+        // makes sense once a run actually exists, so IDLE gets its own simple attract text.
         val hud = engine.gfx.getSurfaceOrDefault("hud")
+
+        // The HUD's own size, from the surface it is drawn on rather than from engine.window.
+        // The two are the same number and CameraInvariants rule 1 exists to notice if they
+        // ever stop being — but `config` is what this surface's projection was actually built
+        // from (SurfaceImpl.init:46-47), so it is the only value that cannot disagree with
+        // what is being rasterised. Reading the window instead was one half of the mechanism
+        // that shipped.
+        val w = hud.config.width.toFloat()
+        val h = hud.config.height.toFloat()
+
+        // THE DIVER'S ANCHOR ON THE HUD SURFACE — the crux of the world-coordinate migration,
+        // and the exact spot the shipped ultrawide bug would come back.
+        //
+        // worldPosToScreenPos multiplies by mainCamera's viewMatrix: the SAME matrix the world
+        // surface is being drawn with this frame, built once in gfx.initFrame
+        // (GraphicsImpl.kt:111) before any of our code ran. Deriving this any other way — most
+        // temptingly from `camera.depth`, which is what Hud used to do — reads camera state
+        // from a different point in the frame and puts the air ring one frame ahead of the
+        // diver whenever the camera is easing. That is the drift DiveLighting's class doc
+        // records killing on the world side.
+        //
+        // The returned Vector2f is a SHARED instance (Camera.kt:85), reused by the next call.
+        // No allocation, but the second call clobbers the first — hence both components are
+        // read out into locals BEFORE asking again.
+        val anchor = worldCamera.worldPosToScreenPos(sim.x, sim.depth)
+        val diverX = anchor.x
+        val diverY = anchor.y
+
+        // Pixels per metre as the screen distance between two world points one metre apart,
+        // rather than as `mainCamera.scale.x`. Identical today, and exactly right on the one
+        // frame a resize is being interpolated through, which the raw scale would not be.
+        val pixelsPerMetre = worldCamera.worldPosToScreenPos(sim.x + 1f, sim.depth).x - diverX
 
         when (lifecycle.state)
         {
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
 
-            RunLifecycleState.PLAYING -> Hud.render(hud, sim, camera, w, h)
+            RunLifecycleState.PLAYING -> Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
 
             // The screen underneath is drawn FIRST and in full, then dimmed by the pause
             // screen's own scrim. A paused run keeps its HUD — a stopped clock and a full
@@ -739,19 +805,20 @@ class EnPustTil : PulseEngineGame()
             // so the queue can still read the board while a technician has the menu open.
             RunLifecycleState.PAUSED ->
             {
-                if (lifecycle.pausedFromIdle) drawIdleScreen(hud, w, h) else Hud.render(hud, sim, camera, w, h)
+                if (lifecycle.pausedFromIdle) drawIdleScreen(hud, w, h)
+                else Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
                 drawPauseScreen(hud, w, h)
             }
 
             RunLifecycleState.RUN_OVER ->
             {
-                Hud.render(hud, sim, camera, w, h)
+                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
                 drawRunOverScreen(hud, w, h)
             }
 
             RunLifecycleState.ENTER_INITIALS ->
             {
-                Hud.render(hud, sim, camera, w, h)
+                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
                 drawInitialsEntryScreen(hud, w, h)
             }
         }
@@ -813,8 +880,7 @@ class EnPustTil : PulseEngineGame()
             worldTop = worldTop,
             worldBottom = worldBottom,
             worldLeft = worldLeft,
-            worldRight = worldRight,
-            worldRectIsInMetres = WORLD_RECT_IS_IN_METRES
+            worldRight = worldRight
         ).forEach { Logger.warn { "camera invariant violated — $it" } }
     }
 
@@ -1152,23 +1218,6 @@ class EnPustTil : PulseEngineGame()
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
-
-        /**
-         * Whether `engine.gfx.mainCamera` has been flipped to world coordinates yet — see
-         * [CameraInvariants.violations]' `worldRectIsInMetres` parameter.
-         *
-         * FALSE, deliberately, and it is a lie that expires. The camera is still the identity
-         * the engine constructs it with, so the "visible world rect" the engine reports back is
-         * the PIXEL rect: 1800 "metres" of visible depth on a Retina panel, which is not a bug
-         * and must not be warned about every second. Rule 1 (window size == surface size) is
-         * checked either way, and it is the rule that describes the PRECONDITION of the shipped
-         * bug, so the check is not inert in the meantime.
-         *
-         * Task 5 of docs/superpowers/plans/2026-08-06-engine-world-coordinates.md flips this to
-         * true in the same commit that makes it true, and deletes both this constant and the
-         * parameter it feeds.
-         */
-        const val WORLD_RECT_IS_IN_METRES = false
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90

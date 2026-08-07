@@ -7,10 +7,11 @@ import no.njoh.pulseengine.core.PulseEngine
  *
  * The engine's view transform is  screen(p) = origin + scale * (p + position - origin)
  * (ENG/core/graphics/api/Camera.kt:125-131). Pinning the camera's world point (0, depth)
- * to screen (W/2, 0) and choosing scale = H / VISIBLE_DEPTH_METRES reproduces the old
- * Viewport.screenX/screenY EXACTLY -- which is what makes the migration a no-op on screen
+ * to screen (W/2, 0) and choosing scale = H / VISIBLE_DEPTH_METRES reproduces the pre-migration
+ * Viewport.screenX/screenY EXACTLY -- which is what made the migration a no-op on screen
  * and any visible change a bug. CameraRigTest asserts that equality over a grid of world
- * points at six display shapes.
+ * points at six display shapes, against a copy of those formulas inlined in the test, since
+ * `Viewport` itself is gone (it is [Framing] now, and owns no transform).
  *
  * Deliberately NOT the engine's `Camera` scene entity, for two independent reasons:
  *
@@ -41,11 +42,10 @@ import no.njoh.pulseengine.core.PulseEngine
  * [CameraInvariants] rule 3 on a real framebuffer and by nothing in `./gradlew test`. Do not
  * "simplify" the two lines below into one that reads `w`.
  *
- * NOT WIRED IN YET. Nothing calls [apply]; Task 5 of
- * docs/superpowers/plans/2026-08-06-engine-world-coordinates.md is the flip, and it is
- * atomic -- the moment mainCamera stops being the identity, everything on `main` and
- * `gi_local_scene` must already be in metres and the HUD anchor must already come from
- * `worldPosToScreenPos`, or the frame is garbage.
+ * WIRED IN FROM EnPustTil.onFixedUpdate, and from onCreate/justStarted right after
+ * DiveCamera.snapTo so that frame 1 (and the first frame of a fresh run) is drawn with a real
+ * matrix rather than whatever the previous run left behind: `topLeftWorldPosition` is computed
+ * in GraphicsImpl.initFrame before any of our code runs that frame.
  */
 object CameraRig
 {
@@ -58,7 +58,7 @@ object CameraRig
      * is a presentation difference; a taller one would reveal more DEPTH, which would be a
      * gameplay difference, and is exactly what this constant scale prevents.
      */
-    fun pixelsPerMetre(surfaceHeight: Float) = surfaceHeight / Viewport.VISIBLE_DEPTH_METRES
+    fun pixelsPerMetre(surfaceHeight: Float) = surfaceHeight / Framing.VISIBLE_DEPTH_METRES
 
     /** Screen x that world x = 0 is pinned to: the horizontal centre of the frame. */
     fun originX(surfaceWidth: Float) = surfaceWidth * 0.5f

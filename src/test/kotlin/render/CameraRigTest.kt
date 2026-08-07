@@ -11,9 +11,9 @@ import kotlin.test.assertEquals
  *
  * PROVES: that [CameraRig]'s four camera parameters, pushed through the engine's own view
  * transform, put world (0, cameraDepth) at the top centre of the screen and exactly
- * [Viewport.VISIBLE_DEPTH_METRES] of water between the top and bottom edges, on displays of
+ * [Framing.VISIBLE_DEPTH_METRES] of water between the top and bottom edges, on displays of
  * four different aspect ratios; and that the resulting mapping is numerically identical to
- * `Viewport.screenX`/`screenY`, the pre-migration transform. The migration is DEFINED to be a
+ * `Framing.screenX`/`screenY`, the pre-migration transform. The migration is DEFINED to be a
  * no-op on screen, so that last assertion is the one that says so.
  *
  * CANNOT CATCH — and this is the most useful sentence in the file. The bug class that actually
@@ -92,9 +92,9 @@ class CameraRigTest
         for ((w, h) in DISPLAYS)
             for (camDepth in CAMERA_DEPTHS)
             {
-                val p = screenPos(w, h, camDepth, 0f, camDepth + Viewport.VISIBLE_DEPTH_METRES)
+                val p = screenPos(w, h, camDepth, 0f, camDepth + Framing.VISIBLE_DEPTH_METRES)
                 assertEquals(w * 0.5f, p.x, TOLERANCE, "x at ${w}x$h, camera at $camDepth m")
-                assertEquals(h, p.y, TOLERANCE, "the bottom edge is not ${Viewport.VISIBLE_DEPTH_METRES} m " +
+                assertEquals(h, p.y, TOLERANCE, "the bottom edge is not ${Framing.VISIBLE_DEPTH_METRES} m " +
                              "below the camera at ${w}x$h, camera at $camDepth m")
             }
     }
@@ -112,16 +112,16 @@ class CameraRigTest
                         val p = screenPos(w, h, camDepth, x, depth)
 
                         // The PRE-MIGRATION formulas, inlined rather than called: this is what
-                        // Viewport.screenX/screenY did at 231c6a6, and Task 5 deletes them. The
+                        // Framing.screenX/screenY did at 231c6a6, and Task 5 deletes them. The
                         // migration is defined to be a no-op on screen, so any difference here is
                         // a bug in CameraRig and not a change of intent.
-                        val pixelsPerMetre = h / Viewport.VISIBLE_DEPTH_METRES
+                        val pixelsPerMetre = h / Framing.VISIBLE_DEPTH_METRES
                         val oldX = w * 0.5f + x * pixelsPerMetre
                         val oldY = (depth - camDepth) * pixelsPerMetre
 
                         val where = "(x=$x, depth=$depth) at ${w}x$h, camera at $camDepth m"
-                        assertEquals(oldX, p.x, TOLERANCE, "x differs from Viewport.screenX for $where")
-                        assertEquals(oldY, p.y, TOLERANCE, "y differs from Viewport.screenY for $where")
+                        assertEquals(oldX, p.x, TOLERANCE, "x differs from Framing.screenX for $where")
+                        assertEquals(oldY, p.y, TOLERANCE, "y differs from Framing.screenY for $where")
                     }
     }
 
@@ -143,7 +143,7 @@ class CameraRigTest
         )
 
         // Includes a negative depth: the camera sits VISIBLE_DEPTH_METRES * DIVER_SCREEN_FRACTION
-        // above the diver (Viewport.targetCameraDepth), so it is above the waterline whenever the
+        // above the diver (Framing.targetCameraDepth), so it is above the waterline whenever the
         // diver is near the surface — which is where every run starts and where attract mode sits.
         val CAMERA_DEPTHS = listOf(-24f, 0f, 61.75f)
 

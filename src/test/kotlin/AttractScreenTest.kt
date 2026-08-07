@@ -1,4 +1,4 @@
-import render.Viewport
+import render.Framing
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
  *    doc.
  *
  * Both are drawing defects, and drawing needs a GL context — so the testable part was
- * extracted into pure objects first, exactly as [render.Viewport], [render.DepthBlend] and
+ * extracted into pure objects first, exactly as [render.Framing], [render.DepthBlend] and
  * [render.AimAngle] already are. What is asserted here is not "the right pixels came out"
  * but the relationships that made the pixels wrong: a character is outside the atlas, a
  * text block overlaps the diver's band, a row is off-centre from its own heading.
@@ -97,9 +97,9 @@ class AttractScreenTest
     fun `the sign clears the diver and its glow`()
     {
         // THE REPORTED DEFECT. The title was drawn at 0.44h with the diver pinned to
-        // Viewport.DIVER_SCREEN_FRACTION = 0.40h — text straight through a bright white
+        // Framing.DIVER_SCREEN_FRACTION = 0.40h — text straight through a bright white
         // square and its halo, with a pearl inside the letter U.
-        val haloTop = Viewport.DIVER_SCREEN_FRACTION - AttractLayout.DIVER_HALO_HALF_HEIGHT
+        val haloTop = Framing.DIVER_SCREEN_FRACTION - AttractLayout.DIVER_HALO_HALF_HEIGHT
 
         assertTrue(
             AttractLayout.TITLE_Y + AttractLayout.TITLE_FONT < haloTop,
@@ -116,7 +116,7 @@ class AttractScreenTest
     @Test
     fun `the leaderboard starts below the diver and its glow`()
     {
-        val haloBottom = Viewport.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT
+        val haloBottom = Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT
         assertTrue(
             AttractLayout.HEADING_Y > haloBottom,
             "the leaderboard heading is at ${AttractLayout.HEADING_Y}h but the diver's halo " +
@@ -221,7 +221,7 @@ class AttractScreenTest
     @Test
     fun `every attract anchor is a fraction of the screen, not a pixel count`()
     {
-        // engine.window.width/height are PHYSICAL framebuffer pixels (Viewport's doc), so
+        // engine.window.width/height are PHYSICAL framebuffer pixels (see render/Framing), so
         // the single most damaging mistake available here is writing a number that looks
         // like a position at 1080p. Every anchor this object exposes must be a fraction
         // strictly inside the screen — which no pixel count ever is.

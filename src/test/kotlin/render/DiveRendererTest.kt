@@ -174,7 +174,7 @@ class DiveRendererTest
     fun `strip centres start half a strip below the top and step one strip at a time`()
     {
         val worldTop = 37.5f
-        val worldBottom = worldTop + Viewport.VISIBLE_DEPTH_METRES
+        val worldBottom = worldTop + Framing.VISIBLE_DEPTH_METRES
         val count = DiveRenderer.stripCount(worldTop, worldBottom)
 
         assertEquals(
@@ -206,7 +206,7 @@ class DiveRendererTest
         // 61.3 m is deliberately NOT a multiple of the strip pitch. Today's rect is always
         // exactly VISIBLE_DEPTH_METRES tall, but once the rect comes from the engine's own
         // camera it is whatever the framebuffer makes it, so the clip has to be real.
-        for (span in listOf(Viewport.VISIBLE_DEPTH_METRES, 61.3f))
+        for (span in listOf(Framing.VISIBLE_DEPTH_METRES, 61.3f))
         {
             val worldTop = -24f
             val worldBottom = worldTop + span
@@ -233,15 +233,16 @@ class DiveRendererTest
     @Test
     fun `the standard visible rect is 120 strips`()
     {
-        // Both rects are derived through Viewport from a screen height, which is how
-        // drawZoneBands gets them. NOTE, so nobody reads more into this than is there: once
+        // Both rects are derived from a screen height the way the PRE-MIGRATION drawZoneBands
+        // got them ([oldDepthAt]) — the loop now reads cam.topLeftWorldPosition instead, which
+        // no unit test can produce. NOTE, so nobody reads more into this than is there: once
         // stripCount takes only world depths, "the same count at 900 px and at 2160 px" is true
         // by the signature and cannot fail — the 900/2160 pair documents the intent, and the
         // assertion that can actually fail is the count itself (120 = 60 m / 0.5 m).
         for (screenHeight in listOf(900f, 2160f))
         {
-            val worldTop = Viewport.depthAt(0f, 0f, screenHeight)
-            val worldBottom = Viewport.depthAt(screenHeight, 0f, screenHeight)
+            val worldTop = oldDepthAt(0f, 0f, screenHeight)
+            val worldBottom = oldDepthAt(screenHeight, 0f, screenHeight)
             assertEquals(120, DiveRenderer.stripCount(worldTop, worldBottom), "strip count for a ${screenHeight}px screen")
         }
     }
@@ -294,7 +295,7 @@ class DiveRendererTest
         {
             for (cam in listOf(-24f, 0f, 37.5f, 94.5f, 136f))
             {
-                val ppm = Viewport.pixelsPerMetre(screenHeight)
+                val ppm = oldPixelsPerMetre(screenHeight)
                 val stripHeight = DiveRenderer.BAND_STRIP_METRES * ppm
 
                 val oldTops = ArrayList<Float>()
@@ -306,12 +307,12 @@ class DiveRendererTest
                     val stripBottom = minOf(y + stripHeight, screenHeight)
                     oldTops += y
                     oldBottoms += stripBottom
-                    oldCentres += Viewport.depthAt((y + stripBottom) * 0.5f, cam, screenHeight)
+                    oldCentres += oldDepthAt((y + stripBottom) * 0.5f, cam, screenHeight)
                     y = stripBottom
                 }
 
-                val worldTop = Viewport.depthAt(0f, cam, screenHeight)
-                val worldBottom = Viewport.depthAt(screenHeight, cam, screenHeight)
+                val worldTop = oldDepthAt(0f, cam, screenHeight)
+                val worldBottom = oldDepthAt(screenHeight, cam, screenHeight)
                 val count = DiveRenderer.stripCount(worldTop, worldBottom)
                 val where = "${screenHeight}px, camera at ${cam}m"
 
@@ -375,7 +376,7 @@ class DiveRendererTest
         while (cam <= deepestCameraDepth)
         {
             val worldTop = cam
-            val worldBottom = cam + Viewport.VISIBLE_DEPTH_METRES
+            val worldBottom = cam + Framing.VISIBLE_DEPTH_METRES
             val count = DiveRenderer.stripCount(worldTop, worldBottom)
             for (i in 0 until count)
             {
@@ -409,6 +410,23 @@ class DiveRendererTest
     /** The engine truncates rather than rounds — see `SurfaceConfigInternal.setDrawColor`. */
     private fun quantize(channel: Float): Float = (channel.coerceIn(0f, 1f) * 255f).toInt() / 255f
 
+    // --- The PRE-MIGRATION screen transform, kept alive here and nowhere else ----------------
+    //
+    // These two were `Viewport.pixelsPerMetre` and `Viewport.depthAt` before the world moved
+    // into metres, and they are the transform the strip walk used to be expressed in. They are
+    // copied here, rather than the tests above being rewritten to state the new formula, for the
+    // same reason CameraRigTest inlines the old screenX/screenY: the point of a
+    // behaviour-preservation pin is agreement with WHAT SHIPPED, and a test that re-derives the
+    // new code's own arithmetic pins nothing. Nothing in `src/main` calls anything like them any
+    // more — `DiveRenderer` reads `cam.topLeftWorldPosition`, computed by the engine from the
+    // real framebuffer, which is why `depthAt`'s own two ViewportTest cases could not be moved
+    // to FramingTest and were deleted with their subject.
+
+    private fun oldPixelsPerMetre(screenHeight: Float) = screenHeight / Framing.VISIBLE_DEPTH_METRES
+
+    private fun oldDepthAt(screenY: Float, cameraDepth: Float, screenHeight: Float) =
+        cameraDepth + screenY / oldPixelsPerMetre(screenHeight)
+
     // --- How deep the frame can actually reach ------------------------------------------
     //
     // Derived rather than picked, because picking is how the sweep above ended up bounded at a
@@ -424,9 +442,9 @@ class DiveRendererTest
     // derived anyway so that raising MAX_DEPTH or widening the camera's lag bounds moves the
     // sweep with them instead of silently leaving painted depths unchecked.
 
-    private val shallowestCameraDepth = 0f - Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_MAX_FRACTION
+    private val shallowestCameraDepth = 0f - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MAX_FRACTION
 
-    private val deepestCameraDepth = Tuning.MAX_DEPTH - Viewport.VISIBLE_DEPTH_METRES * Viewport.DIVER_MIN_FRACTION
+    private val deepestCameraDepth = Tuning.MAX_DEPTH - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MIN_FRACTION
 
-    private val deepestPaintedDepth = deepestCameraDepth + Viewport.VISIBLE_DEPTH_METRES
+    private val deepestPaintedDepth = deepestCameraDepth + Framing.VISIBLE_DEPTH_METRES
 }

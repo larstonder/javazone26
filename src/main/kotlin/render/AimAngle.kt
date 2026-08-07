@@ -13,7 +13,10 @@ import kotlin.math.exp
  * responsible for handing it components in whatever axis convention `GiSceneRenderer.drawLight`
  * actually expects for its `angle`/cone-direction parameter.
  *
- * That convention is Y-flipped relative to [Viewport]'s screen-space-Y-down convention. This
+ * That convention is Y-flipped relative to this game's world axes, which run y-DOWN because
+ * world y IS depth (see [Framing]). Unaffected by the migration from screen pixels to metres:
+ * the flip is between world-y-down and the framebuffer's y-up, and [CameraRig]'s uniform
+ * POSITIVE scale plus a translation cannot change the handedness of anything. This
  * was originally recorded as an empirical screenshot finding (a straight vertical descent
  * produced a beam pointing straight UP, opposite of travel) with the caveat that it might
  * have been read off an already-broken beam. It is no longer a guess — it now falls out of
@@ -25,7 +28,8 @@ import kotlin.math.exp
  *     `coneDir = vec2(cos(sourceDir + camAngle), sin(sourceDir + camAngle))` — a plain
  *     +sin, i.e. counter-clockwise from +x, in the light texture's own pixel space.
  *   - That pixel space is a GL framebuffer, so its +y runs UP the screen, whereas
- *     `Viewport.screenY` grows DOWNWARD. (The same shader builds its march directions as
+ *     world y — and therefore screen y, the projection being y-down — grows DOWNWARD. (The
+ *     same shader builds its march directions as
  *     `rayDir = vec2(cos(rayAngle), -sin(rayAngle))`, negating sin precisely because ray
  *     angles are quoted in the opposite handedness — the two conventions coexist in one
  *     file, which is exactly how this is easy to get wrong.)

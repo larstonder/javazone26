@@ -27,17 +27,23 @@ import kotlin.math.abs
  * with — and says whether the world they describe is the world we asked for.
  *
  * Rule 2 is the one that matters. It is a statement about GAMEPLAY, not presentation: how far
- * ahead you can see is how far ahead you can plan, so exactly [Viewport.VISIBLE_DEPTH_METRES]
+ * ahead you can see is how far ahead you can plan, so exactly [Framing.VISIBLE_DEPTH_METRES]
  * of water must be on screen whatever the display is. It would have fired on the very first
  * frame after that fullscreen toggle.
  *
  * Rule 3 earns its place for a different reason, and it is worth stating because it is not
  * obvious: it is the ONLY automated check anywhere in this project that can catch a
- * pixels-per-metre derived from the surface WIDTH rather than its height. `ViewportTest` had
- * nine green cases and that exact substitution survived all of them (see the plan's §3.1) —
- * which is the same aspect-blindness class as the shipped bug. A width-derived scale leaves the
- * visible world rect with a square aspect on every display, so rule 3 reddens and nothing else
- * does.
+ * pixels-per-metre derived from the surface WIDTH rather than its height. The dissolved
+ * `ViewportTest` had nine green cases and that exact substitution survived all of them (see the
+ * plan's §3.1) — which is the same aspect-blindness class as the shipped bug. A width-derived
+ * scale leaves the visible world rect with a square aspect on every display, so rule 3 reddens
+ * and nothing else does.
+ *
+ * RULES 2 AND 3 ONLY BECAME MEANINGFUL WHEN THE CAMERA WAS FLIPPED TO METRES. They were gated
+ * off behind a `worldRectIsInMetres` flag while `mainCamera` was still the identity the engine
+ * constructs it with, because the "world rect" it reported back was then the PIXEL rect — 1800
+ * "metres" of visible depth on a Retina panel, which was correct behaviour and must not be
+ * warned about every second. The flag and its last caller went with the flip.
  *
  * NO ENGINE IMPORTS, deliberately — same pattern as [RunLifecycle] and [DepthBlend]. The rules
  * are testable without a GL context; feeding them the right eight numbers is [EnPustTil]'s job
@@ -71,17 +77,9 @@ object CameraInvariants
      * Returns one string per violated rule, empty when all is well.
      *
      * [worldTop]/[worldBottom]/[worldLeft]/[worldRight] are the visible world rect, i.e.
-     * `mainCamera.topLeftWorldPosition` and `bottomRightWorldPosition`.
-     *
-     * [worldRectIsInMetres] gates rules 2 and 3, and exists only because this check is wired
-     * into the game one task BEFORE the camera is flipped to world coordinates (Task 5 of
-     * docs/superpowers/plans/2026-08-06-engine-world-coordinates.md). Until then `mainCamera`
-     * is the identity the engine constructs it with, so the "world rect" the engine reports is
-     * the PIXEL rect — 1800 "metres" of visible depth on a Retina panel — and rule 2 would
-     * warn every second about a camera that is behaving exactly as intended. Rule 1 is checked
-     * either way: it is a statement about two framebuffer sizes and does not care what space
-     * anything is expressed in. Task 5 deletes the argument along with the last caller that
-     * passes `false`.
+     * `mainCamera.topLeftWorldPosition` and `bottomRightWorldPosition`, IN METRES — which is
+     * what they are now that [CameraRig] owns that camera. See the class doc for the flag that
+     * used to gate rules 2 and 3 while they were not yet true.
      */
     fun violations(
         windowWidth: Int,
@@ -91,8 +89,7 @@ object CameraInvariants
         worldTop: Float,
         worldBottom: Float,
         worldLeft: Float,
-        worldRight: Float,
-        worldRectIsInMetres: Boolean = true
+        worldRight: Float
     ): List<String>
     {
         val found = ArrayList<String>(3)
@@ -111,9 +108,6 @@ object CameraInvariants
                      "${windowWidth}x$windowHeight — the surface's projection and the framebuffer disagree"
         }
 
-        if (!worldRectIsInMetres)
-            return found
-
         val visibleDepth = worldBottom - worldTop
         val visibleWidth = worldRight - worldLeft
 
@@ -129,10 +123,10 @@ object CameraInvariants
         }
 
         // RULE 2 — exactly VISIBLE_DEPTH_METRES of water is visible, whatever the display is.
-        if (abs(visibleDepth - Viewport.VISIBLE_DEPTH_METRES) > VISIBLE_DEPTH_TOLERANCE_METRES)
+        if (abs(visibleDepth - Framing.VISIBLE_DEPTH_METRES) > VISIBLE_DEPTH_TOLERANCE_METRES)
         {
             found += "rule 2: $visibleDepth m of water is visible, expected " +
-                     "${Viewport.VISIBLE_DEPTH_METRES} m — how far ahead the player can see is a gameplay " +
+                     "${Framing.VISIBLE_DEPTH_METRES} m — how far ahead the player can see is a gameplay " +
                      "constant, so the world camera's scale is wrong"
         }
 

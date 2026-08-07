@@ -2,6 +2,7 @@ package render
 
 import dive.DiveSim
 import dive.Tuning
+import no.njoh.pulseengine.core.graphics.api.Camera
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
 import kotlin.math.ceil
@@ -16,9 +17,23 @@ import kotlin.math.sqrt
  *   zones  = flat horizontal bands
  * Real art replaces this after the loop is locked.
  *
- * All coordinate maths lives in [Viewport], which is pure and unit-tested — the screen
- * dimensions handed in here are PHYSICAL framebuffer pixels, not the logical size from
- * application.cfg, so nothing may assume a particular resolution.
+ * EVERYTHING HERE IS IN WORLD METRES, +x right, +y down, and world y IS depth. There is no
+ * coordinate maths left in this file at all: [CameraRig] writes `engine.gfx.mainCamera` once
+ * per fixed tick and the engine's own view matrix turns a metre into a pixel. This file does
+ * not know the resolution and must never learn it — a pixel count here is the bug class
+ * `CLAUDE.md` and [Framing] both exist to prevent.
+ *
+ * The visible region is asked of the camera ([Camera.topLeftWorldPosition] /
+ * [Camera.bottomRightWorldPosition]), which the engine recomputes each frame in
+ * `GraphicsImpl.initFrame` (:112) from the matrix that frame will actually be drawn with. That
+ * is stronger than re-deriving our own rect: the strip walk and the walls cannot disagree with
+ * what is on screen, because they are reading what is on screen.
+ *
+ * NO PER-OBJECT CULLING, deliberately, for now. The pixel-row bounds checks that used to guard
+ * each draw went with the coordinates they were written in; there are at most a few dozen
+ * objects and a fillRect outside the frustum is clipped by the GPU. Task 7 of
+ * docs/superpowers/plans/2026-08-06-engine-world-coordinates.md restores culling properly via
+ * `cam.isInView`, which tests x as well as y — which none of the old checks did.
  */
 object DiveRenderer
 {
@@ -46,7 +61,7 @@ object DiveRenderer
      * second; drawing an unbounded number is a frame that never ends. Four times the nominal
      * count is far more headroom than any real camera state needs and still bounds the loop.
      */
-    internal const val MAX_BAND_STRIPS = (4f * Viewport.VISIBLE_DEPTH_METRES / BAND_STRIP_METRES).toInt()
+    internal const val MAX_BAND_STRIPS = (4f * Framing.VISIBLE_DEPTH_METRES / BAND_STRIP_METRES).toInt()
 
     /**
      * THE REFLECTANCE FLOOR — the single most load-bearing number in this file. Nothing
@@ -145,16 +160,40 @@ object DiveRenderer
     /** Width of that inner face, in metres so it is resolution-independent like everything else. */
     private const val WALL_EDGE_METRES = 0.7f
 
-    fun render(surface: Surface, sim: DiveSim, camera: DiveCamera, screenWidth: Float, screenHeight: Float)
+    /**
+     * Thickness of the waterline, in metres. Was `pixelsPerMetre(h) * 0.4f` — i.e. 0.4 m, in a
+     * form that had to be multiplied out at the draw site. Named now that a size in this file is
+     * simply a size.
+     */
+    private const val SURFACE_LINE_METRES = 0.4f
+
+    /**
+     * [cam] is `engine.gfx.mainCamera` — the camera [surface] is drawn with, and the same object
+     * GI's local scene surface uses (`GlobalIlluminationSystem.kt:78`). Passed in rather than
+     * reached for so this object keeps no engine handle of its own, and so the visible rect the
+     * bands walk is provably the rect the frame is drawn with.
+     */
+    fun render(surface: Surface, sim: DiveSim, cam: Camera)
     {
-        val cam = camera.depth
-        drawZoneBands(surface, cam, screenWidth, screenHeight)
-        drawColumnWalls(surface, screenWidth, screenHeight)
-        drawSurfaceLine(surface, cam, screenWidth, screenHeight)
-        drawAirPockets(surface, sim, cam, screenWidth, screenHeight)
-        drawPearls(surface, sim, cam, screenWidth, screenHeight)
-        drawAnglerfish(surface, sim, cam, screenWidth, screenHeight)
-        drawDiver(surface, sim, cam, screenWidth, screenHeight)
+        // Read once. These are two DISTINCT Vector2f fields on Camera (Camera.kt:32-33), not
+        // the single shared return buffer worldPosToScreenPos hands back, so reading one does
+        // not clobber the other — but they are also live references into the camera, so their
+        // components are copied out here and the draw methods take plain floats. That keeps the
+        // rect a value rather than something a later engine call could move underneath us.
+        val topLeft = cam.topLeftWorldPosition
+        val bottomRight = cam.bottomRightWorldPosition
+        val worldLeft = topLeft.x
+        val worldTop = topLeft.y
+        val worldRight = bottomRight.x
+        val worldBottom = bottomRight.y
+
+        drawZoneBands(surface, worldLeft, worldTop, worldRight, worldBottom)
+        drawColumnWalls(surface, worldLeft, worldTop, worldRight, worldBottom)
+        drawSurfaceLine(surface, worldLeft, worldRight)
+        drawAirPockets(surface, sim)
+        drawPearls(surface, sim)
+        drawAnglerfish(surface, sim)
+        drawDiver(surface, sim)
     }
 
     /**
@@ -169,26 +208,24 @@ object DiveRenderer
      * Every strip colour here must clear [GI_REFLECTANCE_FLOOR] — read that constant's doc
      * before changing the zone tables, [BAND_STRIP_METRES], or anything else in this loop.
      *
-     * THE WALK ITSELF IS IN WORLD DEPTHS, not screen rows — [stripCount], [stripTopDepth] and
-     * [stripCentreDepth], all pure and asserted in `DiveRendererTest`. Only the two lines that
-     * derive the visible depth range, and the `fillRect`, are still in pixels. That is
-     * deliberate: which depth each strip is coloured by is the thing that decides where the
-     * reflectance floor bites, so it is the one part of this file that must be provable
-     * without a GL context.
+     * THE WALK ITSELF IS IN WORLD DEPTHS — [stripCount], [stripTopDepth] and [stripCentreDepth],
+     * all pure and asserted in `DiveRendererTest`. It always was, since the extraction in
+     * `4aecf7f`; what the migration removed is the pixel conversion that used to wrap it. Which
+     * depth each strip is coloured by is the thing that decides where the reflectance floor
+     * bites, so it is the one part of this file that must be provable without a GL context, and
+     * it is now the ONLY arithmetic here.
      */
-    private fun drawZoneBands(surface: Surface, cam: Float, w: Float, h: Float)
+    private fun drawZoneBands(surface: Surface, worldLeft: Float, worldTop: Float, worldRight: Float, worldBottom: Float)
     {
-        val worldTop = Viewport.depthAt(0f, cam, h)
-        val worldBottom = Viewport.depthAt(h, cam, h)
-        val ppm = Viewport.pixelsPerMetre(h)
+        val width = worldRight - worldLeft
         val count = stripCount(worldTop, worldBottom)
         for (i in 0 until count)
         {
             val centreDepth = stripCentreDepth(worldTop, worldBottom, i)
-            val top = (stripTopDepth(worldTop, i) - worldTop) * ppm
-            val bottom = (min(stripTopDepth(worldTop, i + 1), worldBottom) - worldTop) * ppm
+            val top = stripTopDepth(worldTop, i)
+            val bottom = min(stripTopDepth(worldTop, i + 1), worldBottom)
             surface.setDrawColor(zoneRedAt(centreDepth), zoneGreenAt(centreDepth), zoneBlueAt(centreDepth), 1f)
-            surface.fillRect(0f, top, w, bottom - top)
+            surface.fillRect(worldLeft, top, width, bottom - top)
         }
     }
 
@@ -233,43 +270,56 @@ object DiveRenderer
 
     /**
      * Solid rock bounding the playable column outside +-[Tuning.COLUMN_HALF_WIDTH]. Without
-     * this the boundary is invisible: on a 16:9 booth screen (see [Viewport.screenX], which
-     * derives pixels-per-metre from screen HEIGHT) the visible half-width is ~53m versus the
-     * 40m column, so the diver stops dead in open water with no visual reason — the stick
-     * reads as broken rather than blocked. Drawn onto the world surface (not "hud"), so it is
-     * behind [no.njoh.pulseengine.core.PulseEngineGame]'s lighting pass like everything else
+     * this the boundary is invisible: [CameraRig] derives pixels-per-metre from screen HEIGHT,
+     * so on a 16:9 booth screen the visible half-width is ~53m versus the 40m column and the
+     * diver stops dead in open water with no visual reason — the stick reads as broken rather
+     * than blocked. Drawn onto the world surface (not "hud"), so it is behind
+     * [no.njoh.pulseengine.core.PulseEngineGame]'s lighting pass like everything else
      * DiveRenderer draws, and it frames the play area rather than looking like a UI chrome.
      *
      * On a narrower aspect ratio (e.g. the 4:3 dev window) the column may fill the whole
      * screen and these rects fall entirely off both edges — that is fine and needs no special
      * case, since [Surface.fillRect] with a non-positive width simply draws nothing visible.
+     * Note this is now stated in metres against the visible rect rather than in pixels against
+     * the screen, and it is the same statement: the slab exists only where there is frame left
+     * over outside the column.
      */
-    private fun drawColumnWalls(surface: Surface, w: Float, h: Float)
+    private fun drawColumnWalls(surface: Surface, worldLeft: Float, worldTop: Float, worldRight: Float, worldBottom: Float)
     {
-        val leftEdge = Viewport.screenX(-Tuning.COLUMN_HALF_WIDTH, w, h)
-        val rightEdge = Viewport.screenX(Tuning.COLUMN_HALF_WIDTH, w, h)
-        val edgeWidth = WALL_EDGE_METRES * Viewport.pixelsPerMetre(h)
+        val height = worldBottom - worldTop
+        val leftSlab = -Tuning.COLUMN_HALF_WIDTH - worldLeft
+        val rightSlab = worldRight - Tuning.COLUMN_HALF_WIDTH
 
         surface.setDrawColor(wallColor)
-        if (leftEdge > 0f) surface.fillRect(0f, 0f, leftEdge, h)
-        if (rightEdge < w) surface.fillRect(rightEdge, 0f, w - rightEdge, h)
+        if (leftSlab > 0f) surface.fillRect(worldLeft, worldTop, leftSlab, height)
+        if (rightSlab > 0f) surface.fillRect(Tuning.COLUMN_HALF_WIDTH, worldTop, rightSlab, height)
 
         // The inner faces, drawn over the slabs above rather than beside them, so they can
         // never intrude on the water — and so the narrow-aspect case still needs no special
-        // handling: where the slab is off-screen its face is too.
+        // handling: where the slab is off-screen its face is too. Clamped to the slab's own
+        // width for the same reason, so a face never overhangs a sliver of rock.
         surface.setDrawColor(wallEdgeColor)
-        if (leftEdge > 0f) surface.fillRect(leftEdge - min(edgeWidth, leftEdge), 0f, min(edgeWidth, leftEdge), h)
-        if (rightEdge < w) surface.fillRect(rightEdge, 0f, min(edgeWidth, w - rightEdge), h)
+        if (leftSlab > 0f)
+        {
+            val face = min(WALL_EDGE_METRES, leftSlab)
+            surface.fillRect(-Tuning.COLUMN_HALF_WIDTH - face, worldTop, face, height)
+        }
+        if (rightSlab > 0f)
+        {
+            surface.fillRect(Tuning.COLUMN_HALF_WIDTH, worldTop, min(WALL_EDGE_METRES, rightSlab), height)
+        }
     }
 
-    /** The waterline. Without it there is no visual cue for where banking happens. */
-    private fun drawSurfaceLine(surface: Surface, cam: Float, w: Float, h: Float)
+    /**
+     * The waterline. Without it there is no visual cue for where banking happens.
+     *
+     * Spans the visible rect horizontally rather than the column, exactly as before: the water's
+     * surface does not stop at the rock.
+     */
+    private fun drawSurfaceLine(surface: Surface, worldLeft: Float, worldRight: Float)
     {
-        val y = Viewport.screenY(Tuning.SURFACE_DEPTH, cam, h)
-        if (y < -4f || y > h) return
-        val thickness = Viewport.pixelsPerMetre(h) * 0.4f
         surface.setDrawColor(surfaceColor)
-        surface.fillRect(0f, y - thickness * 0.5f, w, thickness)
+        surface.fillRect(worldLeft, Tuning.SURFACE_DEPTH - SURFACE_LINE_METRES * 0.5f, worldRight - worldLeft, SURFACE_LINE_METRES)
     }
 
     /**
@@ -277,28 +327,22 @@ object DiveRenderer
      * dimmed rather than hidden once spent — knowing where a used vent was is what lets a
      * player plan the next dive around it.
      */
-    private fun drawAirPockets(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)
+    private fun drawAirPockets(surface: Surface, sim: DiveSim)
     {
-        val size = Viewport.AIR_POCKET_SIZE_METRES * Viewport.pixelsPerMetre(h)
+        val size = Framing.AIR_POCKET_SIZE_METRES
         sim.airPockets.forEach { pocket ->
-            val screenY = Viewport.screenY(pocket.depth, cam, h)
-            if (screenY < -size || screenY > h + size) return@forEach
-            val screenX = Viewport.screenX(pocket.x, w, h)
             surface.setDrawColor(if (pocket.usedThisDive) airPocketSpentColor else airPocketColor)
-            surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+            surface.fillRect(pocket.x - size * 0.5f, pocket.depth - size * 0.5f, size, size)
         }
     }
 
-    private fun drawPearls(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)
+    private fun drawPearls(surface: Surface, sim: DiveSim)
     {
-        val size = Viewport.PEARL_SIZE_METRES * Viewport.pixelsPerMetre(h)
+        val size = Framing.PEARL_SIZE_METRES
         surface.setDrawColor(pearlColor)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
-            val screenY = Viewport.screenY(pearl.depth, cam, h)
-            if (screenY < -size || screenY > h + size) return@forEach
-            val screenX = Viewport.screenX(pearl.x, w, h)
-            surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+            surface.fillRect(pearl.x - size * 0.5f, pearl.depth - size * 0.5f, size, size)
         }
     }
 
@@ -307,26 +351,20 @@ object DiveRenderer
      * where pearls are the only light, you cannot tell treasure from predator by looking.
      * The tell is motion: a real pearl never moves, this drifts slowly toward the diver.
      */
-    private fun drawAnglerfish(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)
+    private fun drawAnglerfish(surface: Surface, sim: DiveSim)
     {
         val fish = sim.anglerfish ?: return
-        val size = Viewport.PEARL_SIZE_METRES * Viewport.pixelsPerMetre(h)
-        val screenY = Viewport.screenY(fish.depth, cam, h)
-        if (screenY < -size || screenY > h + size) return
-        val screenX = Viewport.screenX(fish.x, w, h)
+        val size = Framing.PEARL_SIZE_METRES
         surface.setDrawColor(pearlColor)
-        surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+        surface.fillRect(fish.x - size * 0.5f, fish.depth - size * 0.5f, size, size)
     }
 
-    private fun drawDiver(surface: Surface, sim: DiveSim, cam: Float, w: Float, h: Float)
+    private fun drawDiver(surface: Surface, sim: DiveSim)
     {
         // Size scales with load so weight is visible as well as felt.
-        val metres = Viewport.DIVER_SIZE_METRES + sim.heldMass * 0.03f
-        val size = metres * Viewport.pixelsPerMetre(h)
-        val screenX = Viewport.screenX(sim.x, w, h)
-        val screenY = Viewport.screenY(sim.depth, cam, h)
+        val size = Framing.DIVER_SIZE_METRES + sim.heldMass * 0.03f
         surface.setDrawColor(diverColor)
-        surface.fillRect(screenX - size * 0.5f, screenY - size * 0.5f, size, size)
+        surface.fillRect(sim.x - size * 0.5f, sim.depth - size * 0.5f, size, size)
     }
 
     // --- Continuous zone-band colour, exposed for testing (see DiveRendererTest) ---------

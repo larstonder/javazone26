@@ -20,14 +20,30 @@ import kotlin.math.sqrt
  *   Depth tape down the right edge, with the point-of-no-return marker.
  *   The clock.
  *
- * RESOLUTION INDEPENDENCE: `engine.window.width/height` are PHYSICAL framebuffer pixels
- * (2400x1800 on a Retina Mac, not the 1200x900 in application.cfg), so nothing here is a
- * hardcoded pixel value. Screen-anchored elements (BANKED, the clock, the tape) are sized
- * as a fraction of the actual surface height. World-anchored elements (the air ring,
- * HELD) are sized in metres via [Viewport.pixelsPerMetre] and positioned at the diver's
- * REAL screen position — computed with the same [DiveCamera] the world renderer used, not
- * a fixed screen fraction — so they track the diver correctly even while the camera is
- * lagging behind a hard descent (see [DiveCamera]).
+ * PURE SCREEN SPACE, ON ITS OWN SURFACE. This file has no camera and no coordinate maths: it
+ * is HANDED the diver's screen position and a pixels-per-metre scale and draws in pixels. The
+ * HUD's surface has its own identity camera and is deliberately NOT the world surface, because
+ * `GlobalIlluminationSystem` multiplies the world surface by the light map and would take
+ * BANKED in the Abyss to RGB(11,8,1) — measured. See the "hud" createSurface call in
+ * `EnPustTil.onCreate`.
+ *
+ * WHERE THE DIVER'S SCREEN POSITION COMES FROM, and why it is not computed here. The world is
+ * drawn in metres through `engine.gfx.mainCamera`; the anchor is `mainCamera
+ * .worldPosToScreenPos(sim.x, sim.depth)`, taken in `EnPustTil.onRender` from the SAME matrix
+ * the world surface is being drawn with this frame (built once in `gfx.initFrame`,
+ * GraphicsImpl.kt:111). Deriving it any other way — most temptingly from `DiveCamera.depth`,
+ * which is what this file used to do — reads camera state from a different point in the frame
+ * and puts the air ring one frame ahead of the diver while the camera is easing. That is the
+ * drift `DiveLighting`'s class doc records killing on the world side; the HUD boundary is where
+ * it would come back. [pixelsPerMetre] arrives the same way, as the screen distance between two
+ * world points one metre apart, which is exactly right even on a frame a resize is being
+ * interpolated through.
+ *
+ * RESOLUTION INDEPENDENCE: `w`/`h` are the HUD surface's own config size — PHYSICAL framebuffer
+ * pixels (2400x1800 on a Retina Mac, not the 1200x900 in application.cfg) — so nothing here is
+ * a hardcoded pixel value. Screen-anchored elements (BANKED, the clock, the tape) are sized as
+ * a fraction of that height, never its width. World-anchored elements (the air ring, HELD) are
+ * sized in metres times [pixelsPerMetre] so they stay the same size relative to the diver.
  *
  * Uses [Surface.fillRect] ONLY. `Surface.drawQuad`/`drawLine` render nothing at all on
  * macOS/Apple Silicon — silently, no GL error. See render/Draw.kt.
@@ -59,7 +75,8 @@ object Hud
     /**
      * Where slot 0 sits: straight up from the diver, 12 o'clock.
      *
-     * Screen space here runs Y-DOWNWARD ([Viewport.screenY] increases with depth) and
+     * Screen space here runs Y-DOWNWARD (screen y increases with depth, because world y IS
+     * depth and the engine's projection is y-down) and
      * [drawAirRing] places a bubble at `(cos a, sin a)`, so `a = 0` is 3 o'clock and
      * `a = +90` degrees is 6 o'clock, NOT 12. Twelve o'clock is therefore minus a quarter
      * turn, and — the part that is easy to get backwards — INCREASING the angle walks
@@ -201,15 +218,26 @@ object Hud
         if (remaining > AIR_LOW_THRESHOLD) 1f
         else 1f + (AIR_LOW_THRESHOLD - remaining + 1) * AIR_LOW_SIZE_GAIN
 
-    fun render(surface: Surface, sim: DiveSim, camera: DiveCamera, w: Float, h: Float)
+    /**
+     * [diverX]/[diverY] are the diver's position on THIS surface, in pixels, and
+     * [pixelsPerMetre] is the scale the world is being drawn at. Both come from the world
+     * camera in `EnPustTil.onRender` — see the class doc for why they are arguments rather than
+     * something this file works out for itself.
+     */
+    fun render(
+        surface: Surface,
+        sim: DiveSim,
+        diverX: Float,
+        diverY: Float,
+        pixelsPerMetre: Float,
+        w: Float,
+        h: Float
+    )
     {
-        val diverX = Viewport.screenX(sim.x, w, h)
-        val diverY = Viewport.screenY(sim.depth, camera.depth, h)
-
         drawBanked(surface, sim, h)
         drawClock(surface, sim, w, h)
-        drawAirRing(surface, sim, diverX, diverY, h)
-        drawHeld(surface, sim, diverX, diverY, h)
+        drawAirRing(surface, sim, diverX, diverY, pixelsPerMetre)
+        drawHeld(surface, sim, diverX, diverY, pixelsPerMetre, h)
         drawDepthTape(surface, sim, w, h)
     }
 
@@ -248,13 +276,12 @@ object Hud
      * when there is only one bubble left to shout with. All three were defects in earlier
      * versions; each is explained where its constants are declared.
      */
-    private fun drawAirRing(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, h: Float)
+    private fun drawAirRing(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, ppm: Float)
     {
         val remaining = airBubblesRemaining(sim.air, Tuning.BASE_AIR_SECONDS)
         if (remaining <= 0) return
 
         val low = remaining <= AIR_LOW_THRESHOLD
-        val ppm = Viewport.pixelsPerMetre(h)
         val pulse = if (low) 1f + sin(sim.clock * HEARTBEAT_HZ) * HEARTBEAT_AMPLITUDE else 1f
         val radius = AIR_RING_RADIUS_METRES * ppm * pulse
         // The heartbeat pulses the bubbles themselves as well as the orbit. A pulsing ORBIT
@@ -274,11 +301,10 @@ object Hud
     }
 
     /** Enormous amber numerals, attached to the diver, hotter and bigger as they grow. */
-    private fun drawHeld(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, h: Float)
+    private fun drawHeld(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, ppm: Float, h: Float)
     {
         if (sim.held <= 0) return
 
-        val ppm = Viewport.pixelsPerMetre(h)
         val heat = (sim.held / HELD_HEAT_SCALE).coerceIn(0f, 1f)
         val fontSize = h * (HELD_MIN_FONT_FRACTION + heat * HELD_MAX_FONT_BONUS_FRACTION)
         val wobble = sin(sim.clock * HELD_WOBBLE_HZ) * HELD_WOBBLE_METRES * ppm

@@ -70,32 +70,14 @@ class DiveLightingTest
         assertTrue(abyss < shallows, "diver light should be dimmer in the abyss than in the shallows")
     }
 
-    @Test
-    fun `a light well within the visible band is kept on screen`()
-    {
-        assertTrue(DiveLighting.isOnScreen(screenY = 900f, screenHeight = 1800f))
-    }
-
-    @Test
-    fun `a light far above the top edge is culled`()
-    {
-        assertFalse(DiveLighting.isOnScreen(screenY = -500f, screenHeight = 1800f))
-    }
-
-    @Test
-    fun `a light far below the bottom edge is culled`()
-    {
-        assertFalse(DiveLighting.isOnScreen(screenY = 2500f, screenHeight = 1800f))
-    }
-
-    @Test
-    fun `a light just past the edge within the cull margin is still kept, avoiding pop-in at the border`()
-    {
-        // Pearls near the very top/bottom of the screen must not visibly snap their light off
-        // one pixel before the pearl itself scrolls out of view.
-        assertTrue(DiveLighting.isOnScreen(screenY = -10f, screenHeight = 1800f))
-        assertTrue(DiveLighting.isOnScreen(screenY = 1810f, screenHeight = 1800f))
-    }
+    // FOUR `isOnScreen` CASES LIVED HERE and were deleted with their subject. `isOnScreen` was a
+    // screen-ROW bounds check with a 50-PIXEL margin, and there are no screen rows in
+    // DiveLighting any more — the lights are drawn in world metres through the engine's camera.
+    // Nothing culls in the meantime, deliberately: at most a few dozen lights, and a quad outside
+    // the frustum is clipped by the GPU. Task 7 of
+    // docs/superpowers/plans/2026-08-06-engine-world-coordinates.md brings culling back as
+    // `cam.isInView(...)`, which needs a live camera and so will be covered by looking at a
+    // capture rather than by a case here.
 
     // ---- Flashlight beam -------------------------------------------------------------
     //
