@@ -255,8 +255,7 @@ files. The workaround needs neither:
 `assets/` is 183 MB and git-lfs is not installed; committing it would cost every future clone
 that, permanently.
 
-- `.gitignore` gains `assets/` and `release/`. Neither is ignored today and both are sitting
-  untracked, so this must happen before anything else is committed.
+- `assets/` and `release/` are gitignored (`.gitignore:130-131`, done in `32f7e65`).
 - The two sheets (~1–2 MB) are committed under `src/main/resources/sprites/`, which ships inside
   the release `.exe`.
 - The script header records the source frames' provenance and the re-bake command.
