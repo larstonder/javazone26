@@ -220,9 +220,22 @@ numbers in the game source are copied from the bake instead of retyped from memo
 
 - Wiring the sheets into `render/DiveRenderer` and replacing the white square diver.
 - Frame timing and how the loop is driven from the sim or render clock.
-- Whether `GlobalIlluminationSystem` will consume the normal map at all. The engine's
-  `NormalMapped` interface is scene-entity-shaped — `getNormalMapTexture(): String` — while this
-  game draws immediate-mode, so there is real work to determine how a normal map reaches the
-  lighting pass. That question is worth answering before the normal sheet has a consumer, but it
-  does not change what the bake produces.
+- Wiring the normal sheet into the lighting pass. ~~Whether `GlobalIlluminationSystem` will
+  consume the normal map at all… there is real work to determine how a normal map reaches the
+  lighting pass.~~ **CORRECTED 2026-08-07 (Task 9): that question is already answered, against the
+  engine sources, in the world-coordinate plan's §1.9 — and the belief that an engine subsystem
+  "requires" a scene entity is the exact shape of the wrong comment that caused this project's
+  shipped ultrawide bug, so it is corrected here rather than left to be researched twice.**
+  `GlobalIlluminationSystem.kt:128-138` creates the `gi_normal_map` surface **and** attaches a
+  `NormalMapRenderer` to it, before its only early-out. `NormalMapRenderer.drawNormalMap(texture,
+  x, y, w, h, rot, xOrigin, yOrigin, …)` is a plain public method on a `BatchRenderer`; nothing
+  checks who calls it. It is reached immediate-mode exactly as `GiSceneRenderer.drawLight` already
+  is in `DiveLighting.render` — fetched per frame with `?:  return`, because `addRenderer` defers
+  through `runOnInitFrame` and the renderer is `null` until the frame after `onCreate`. The
+  `NormalMapped` interface is a convenience, **not a gate**: its default body is literally that
+  same call. It is also the wrong path for this art — `NormalMapped.kt:32` passes the whole asset,
+  so a `SpriteSheet` would be stretched across the quad with no frame index. The albedo and the
+  normal are then the *same world rect drawn twice*, which is what `render/Draw.kt`'s
+  `fillRectCentred` exists to make a copied argument list rather than a second derivation.
+  What genuinely remains is the frame-index plumbing and the draw itself, which is the work below.
 - Any other sprite set. Pearls, air pockets and the anglerfish are still primitives.

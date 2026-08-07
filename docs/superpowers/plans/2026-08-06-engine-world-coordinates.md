@@ -9,10 +9,12 @@
 | | Tasks | State |
 |---|---|---|
 | **Stage A** | 1 | ✅ done, `6ea1f53` |
-| | 2–4 | ship as written, with the `MainCameraOwnershipTest` sequencing corrected (Tasks 2, 3, 5) |
-| **Stage B** | 5 | ships; one commit, atomic |
-| **Stage C** | 6 | **reworked** — the original mechanism was inverted and its fix reintroduced a pixel-count constant (§1.7, Task 6) |
-| | 7–9 | ship as written |
+| | 2–4 | ✅ done, `b6fcfb7` / `7818083` / `4aecf7f` |
+| **Stage B** | 5 | ✅ done, `e9c546e` — plus `9855274`, which fixed a frame-1 identity-camera bug the plan's §1.5(2) had ruled *unfixable* on a false premise. See the correction there. |
+| **Stage C** | 6 | ✅ done, `aa6bb8b` — **reworked** before execution (the original mechanism was inverted and its fix reintroduced a pixel-count constant), and then its *reworked* prediction was measured and failed too: AO contributes nothing to our frame at any radius, because our local SDF holds only light quads. §1.7's box. |
+| | 7 | ✅ done, `4b80dc2` |
+| | 8 | ✅ done, `21075f6` |
+| | 9 | ✅ done — and it is where the failed predictions above were written down. |
 | **Stage D** | 10 | **reduced to ~20 lines** — two comment fixes, a conditional `start()`, the `CameraRig` editor gate, the `sim.tick` freeze. No `dive.scn` file, no entities, no `.scn`-ownership question. Its payoff is the one editor capability that demonstrably works today: live `@Prop` editing on the running `GlobalIlluminationSystem`. |
 | | 11–14 | **deferred, not deleted** — moved verbatim (with the review's corrections applied) to §9. Revisit when art exists. |
 
@@ -154,7 +156,13 @@ drawFrame()   :235-241   gfx.drawFrame  -> surfaces submit their batches with th
 Three consequences, all load-bearing:
 
 1. **The matrix used for frame N was built at frame N's `beginFrame`, before any camera write that frame.** Everything drawn through `mainCamera` is therefore uniformly one frame behind camera motion — world geometry on `main` *and* lights on `gi_local_scene`, because they share the same camera object. Uniform lag is invisible. **Relative drift between a light and the thing it lights becomes structurally impossible once both are submitted in world coordinates** — you could not reproduce the old bug on purpose.
-2. **`updateViewMatrix` interpolates `positionLast → position`** by `PulseEngine.INSTANCE.data.interpolation` (`ENG/core/graphics/api/Camera.kt:120-123`, `ENG/core/shared/utils/Extensions.kt:47-55`), and `positionLast` is snapshotted at the *top of each fixed step* (`PulseEngineImpl.kt:279` → `GraphicsImpl.updateCameras:247`). Writing `position` from the render clock therefore pairs a render-clock value with a fixed-step value and makes the interpolator pull the camera backwards by up to `interpolation` — sub-frame judder. `positionLast` is on `CameraInternal` and unreachable from our code, so this cannot be defeated. **The camera must be written from `onFixedUpdate`.** `DiveCamera`'s easing is already `1 − e^(−k·dt)` and therefore frame-rate independent, so nothing is lost by sampling it at 60 Hz; the engine's interpolator then produces *smoother* motion above 60 fps than the current render-clock update does.
+2. **`updateViewMatrix` interpolates `positionLast → position`** by `PulseEngine.INSTANCE.data.interpolation` (`ENG/core/graphics/api/Camera.kt:120-123`, `ENG/core/shared/utils/Extensions.kt:47-55`), and `positionLast` is snapshotted at the *top of each fixed step* (`PulseEngineImpl.kt:279` → `GraphicsImpl.updateCameras:247`). Writing `position` from the render clock therefore pairs a render-clock value with a fixed-step value and makes the interpolator pull the camera backwards by up to `interpolation` — sub-frame judder. **The camera must be written from `onFixedUpdate`.**
+
+   > **CORRECTION (2026-08-07, Task 9). This paragraph used to end "`positionLast` is on `CameraInternal` and unreachable from our code, so this cannot be defeated." That is FALSE, and believing it left a real bug in the shipped frame 1.** `CameraInternal` is `public abstract` and lives in `core.graphics.api` — the same public package as `Camera` — and `updateLastState()` is a `public abstract` method on it. Verified with `javap` against `pulse-engine-0.13.0.jar`, not inferred from the sources. Commit `9855274` uses it.
+   >
+   > Why it mattered: the interpolation the paragraph above protects has a *starting* value, and that value is the identity. A `Camera` is constructed with `scale = (1,1,1)` and everything else zero (`Camera.kt:16-25`), the first frame runs no fixed step at all (the accumulator has not filled), so at that frame's `initFrame` the interpolation factor is 0 and `updateViewMatrix` reads **only** the un-refreshed snapshot. Calling `CameraRig.apply` from `onCreate` — which §4.6 below prescribes, and which is all the plan ever asked for — therefore does *not* make frame 1 correct. Measured at 2400×1800: frame 1 was drawn with `viewMatrix = identity` (one screen pixel per metre, about the top-left corner) while `scale` already read 30, putting the whole 1800 px column into the top 60 m of water and making `CameraInvariants` rule 2 warn `1800.0 m of water is visible` once on **every single run** — which reads like a catastrophic scale fault and is really one transient frame.
+   >
+   > The fix is `CameraRig.snap`, which collapses the snapshot onto the values just written via a *safe* cast to `CameraInternal`, called wherever `DiveCamera` teleports and nowhere else. Full reasoning in `render/CameraRig.kt`'s class doc, which is the authority; this note exists so the plan stops asserting the opposite. `DiveCamera`'s easing is already `1 − e^(−k·dt)` and therefore frame-rate independent, so nothing is lost by sampling it at 60 Hz; the engine's interpolator then produces *smoother* motion above 60 fps than the current render-clock update does.
 3. **The HUD is the new drift risk.** The HUD surface has its own identity camera, so anything on it that must sit on the diver has to be transformed by hand. If that transform reads `DiveCamera.depth` directly (the obvious port), it will use the camera state *after* this frame's fixed steps while the world uses the state from `beginFrame` — the air ring will lead the diver by one frame, exactly the drift `DiveLighting`'s class doc records killing. The fix is `mainCamera.worldPosToScreenPos`, which reads the same `viewMatrix` the world will be drawn with. §2.4.
 
 ### 1.6 `GiLightSource` entities vs immediate-mode `GiSceneRenderer.drawLight`
@@ -194,9 +202,41 @@ Today `mainCamera.scale.x == 1`. After the migration it becomes `surfaceHeight /
 > pixel, so the engine default `aoRadius = 30` with our `localSceneTexScale = 0.25f`
 > (`DiveLighting.kt:225`) is `30 / 0.25 = 120` *pixels* — a plausible-looking halo nobody chose.
 > After the migration one world unit is one metre, so the same untouched default is **120 metres**:
-> twice `VISIBLE_DEPTH_METRES`, i.e. every pixel on screen is inside every occluder's AO radius and
-> the effect stops being ambient occlusion and becomes a flat darkening. Task 6 sets a constant
-> **metre** value instead.
+> twice `VISIBLE_DEPTH_METRES`. Task 6 sets a constant **metre** value instead.
+>
+> > **MEASURED, AND THE PREDICTION IN THE LAST SENTENCE FAILED (2026-08-07, Task 6, commit
+> > `aa6bb8b`).** This box predicted that the untouched 120 m default would put "every pixel on
+> > screen inside every occluder's AO radius" and degenerate into "a flat darkening". It does not,
+> > and the reason is not the radius at all. Captured at 16:9 (3200×1800) in the abyss with pearls
+> > in frame, four runs of the same pinned scene:
+> >
+> > | `aoRadius` | frame mean, out of 255 |
+> > |---|---|
+> > | engine default (120 m) | 14.866 / 14.864 over two runs |
+> > | `AO_RADIUS_METRES = 4` (this plan's value) | 14.913 |
+> > | 0, i.e. AO disabled outright | 14.913 |
+> >
+> > Two runs of the *same* build differ by a mean |delta| of 0.012/255 — the run-to-run floor, since
+> > GI accumulates temporally and `ao.frag` jitters its ray directions by `time`. **The 4 m build
+> > differs from AO-DISABLED by 0.005/255, below that floor: at this radius ambient occlusion
+> > contributes nothing to our frame at all.** The 120 m default differed from both by 0.088/255,
+> > peaking at 57/255, and every one of those pixels sat in the glow around a single pearl near the
+> > left wall; side-by-side crops are indistinguishable by eye.
+> >
+> > **Why the prediction was wrong.** `ao.frag:57-60` only accumulates occlusion where a ray hits
+> > SDF geometry that is *not* a light source (`hitLightSource` breaks without occluding).
+> > `GI_LOCAL_SCENE` is fed by exactly two things: `GiOccluder` entities via the system's
+> > `localOccluderPass`, and our three immediate-mode `drawLight` calls. **We have no scene
+> > entities at all**, so the only geometry in the local SDF is the light quads themselves — and
+> > they are excluded from occluding by that very branch. There is nothing in our scene for AO to
+> > darken, at any radius. The 120 m default was producing a faint halo around the *lights*, which
+> > is an artefact rather than the full-screen darkening this box expected.
+> >
+> > **Task 6 still ships, and no visual justification is claimed for 4 m.** The justification is the
+> > *unit*: the value goes live the moment something is drawn as an occluder — the rock walls are
+> > the obvious candidate when the art lands — and that is exactly the moment a wrong unit would be
+> > expensive to find. Tune by eye then, between roughly 1 m and 10 m, and never back into a
+> > screen-relative expression.
 
 A **fourth** consumer, harmless today but worth naming so nobody thinks the table is exhaustive:
 `GlobalIlluminationSystem.onFixedUpdate` (`:220-231`) copies `mainCamera.position`/`rotation`/`scale`
@@ -263,6 +303,8 @@ World axes are **metres, +x right, +y down**. World `y` *is* `depth` and world `
 ### 2.2 Who owns the camera
 
 **`engine.gfx.mainCamera`, written by a new `render/CameraRig.kt` from `onFixedUpdate`.** We do **not** use the engine `Camera` scene entity, for two reasons: its `viewPortWidth/Height` are the exact mechanism of the shipped bug (§1.1), and its `min(W/vpW, H/vpH)` contain fit would shrink `VISIBLE_DEPTH_METRES` below 60 on a panel narrower than the design aspect, which is a gameplay change (§1.4).
+
+> **Currency (2026-08-07, Task 9): the sketch below is NOT what shipped, and its last doc paragraph is wrong.** The shipped `render/CameraRig.kt` (`7818083`, then `9855274`) adds `applyTo`/`snapTo` — camera-level forms taking the size explicitly, which is what lets `CameraRigTest` evaluate the transform at six display *shapes* without a live engine — and a `snap` that also calls `CameraInternal.updateLastState()`. The claim in the sketch's KDoc that "`positionLast` is on CameraInternal and unreachable" is **false**; see the correction in §1.5(2) for what believing it cost. Read the real file, not this block.
 
 ```kotlin
 package render
@@ -539,7 +581,9 @@ Even so, the strip loop must not trust the world rect blindly: clamp its iterati
 
 ### 4.7 GI ambient occlusion radius
 
-§1.7, and read the derivation box there before touching it. **The risk is not that the radius scales with the camera — it does not.** `camScale` cancels in `ao.frag` and the radius is already scale-invariant in world units. The risk is that the *world unit* changes meaning (1 px → 1 m), so the untouched engine default of `30f` becomes a **120 metre** radius: twice the visible column, i.e. a flat full-screen darkening. This is the one setting that will visibly change and that nobody chose in the first place.
+§1.7, and read the derivation box there before touching it. **The risk is not that the radius scales with the camera — it does not.** `camScale` cancels in `ao.frag` and the radius is already scale-invariant in world units. The risk is that the *world unit* changes meaning (1 px → 1 m), so the untouched engine default of `30f` becomes a **120 metre** radius: twice the visible column.
+
+> **MEASURED (Task 6, `aa6bb8b`): this sentence used to end "…i.e. a flat full-screen darkening. This is the one setting that will visibly change." Both halves are wrong.** Setting the radius to 4 m moves the frame mean by 0.005/255 against AO disabled entirely — *below* the 0.012/255 run-to-run floor — because our local SDF contains nothing but light quads, and `ao.frag:57-60` excludes light sources from occluding. Nothing visibly changes at any radius. Task 6 is worth doing for the **unit**, not for the picture; the full measurement is in the box at §1.7 and in `DiveLighting.setup`'s comment. Do not go looking for the darkening this risk predicted.
 
 *Second risk, and the reason Task 6 is written the way it is:* the obvious compensation — dividing by `pixelsPerMetre` — pins AO to a constant number of screen pixels, which `CLAUDE.md` forbids and which makes the world-space radius depend on the display's height. A resolution-independent fix is a constant **metre** value set once.
 
@@ -676,7 +720,7 @@ git commit -m "fix: stop the GI scene camera scaling the world away from the HUD
 
 ---
 
-### Task 2: `CameraInvariants` and a dev-mode check that runs on the real framebuffer
+### Task 2: `CameraInvariants` and a dev-mode check that runs on the real framebuffer — ✅ DONE, commit `b6fcfb7`
 
 The thing that would have caught Task 1's bug the first time the window resized.
 
@@ -698,7 +742,7 @@ The thing that would have caught Task 1's bug the first time the window resized.
 - Consumes: `Framing.VISIBLE_DEPTH_METRES` (`Viewport.VISIBLE_DEPTH_METRES` until Task 5)
 - Produces: `CameraInvariants.violations(...): List<String>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/test/kotlin/render/CameraInvariantsTest.kt` with tests that:
 - a consistent set (`window == surface`, 60 m of visible depth, world-rect aspect == surface aspect) yields an empty list;
@@ -708,27 +752,27 @@ Create `src/test/kotlin/render/CameraInvariantsTest.kt` with tests that:
 - the tolerances behave: 60.4 m passes, 60.6 m fails; 1% aspect error passes, 3% fails;
 - a degenerate rect (zero or negative height) is reported rather than dividing by zero.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `./gradlew test --tests 'render.CameraInvariantsTest'`
 Expected: FAIL — `Unresolved reference: CameraInvariants`
 
-- [ ] **Step 3: Implement it**
+- [x] **Step 3: Implement it**
 
 Create `src/main/kotlin/render/CameraInvariants.kt`. Pure Kotlin, no engine imports, so it is testable without a GL context — same pattern as `RunLifecycle` and `DepthBlend`. Document at the top *why* each rule exists and what shipped bug it would have caught.
 
-- [ ] **Step 4: Run it to verify it passes**
+- [x] **Step 4: Run it to verify it passes**
 
 Run: `./gradlew test --tests 'render.CameraInvariantsTest'`
 Expected: PASS
 
-- [ ] **Step 5: Wire it into the dev overlay**
+- [x] **Step 5: Wire it into the dev overlay**
 
 In `EnPustTil.onRender`, behind the existing `devMode` boolean, at most once per second, feed it `engine.window.width/height`, `engine.gfx.mainSurface.config.width/height` and `engine.gfx.mainCamera.topLeftWorldPosition`/`bottomRightWorldPosition`, and `Logger.warn` each violation. Log at WARN, not DEBUG, for the same reason `logGamepadDiagnostics` does: it must survive the booth's default log level if anyone ever runs a dev build there.
 
 Rules 2 and 3 will fail until Task 5 — with the camera at identity the "world rect" is the pixel rect. Gate the depth/aspect rules behind a flag that Task 5 turns on, or accept a known-failing warning until then; state which in the commit message.
 
-- [ ] **Step 5a: Amend `MainCameraOwnershipTest` in the same commit, and re-red-test it**
+- [x] **Step 5a: Amend `MainCameraOwnershipTest` in the same commit, and re-red-test it**
 
 Step 5 just made the suite red. Run `./gradlew test --tests 'render.MainCameraOwnershipTest'` **first** and watch it fail on `no production source touches the shared main camera` — see it red before changing it, so you know the amendment is doing work and not papering over something else.
 
@@ -742,7 +786,7 @@ Implement it as "the set of production files containing `mainCamera` equals exac
 
 Then red-test the amendment the way `CLAUDE.md` requires: temporarily add `engine.gfx.mainCamera.scale.set(2f)` to `render/DiveRenderer.kt`, confirm the test fails and names that file, and remove it. A guard that has never been seen red is not a guard.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/main/kotlin/render/CameraInvariants.kt src/test/kotlin/render/CameraInvariantsTest.kt src/main/kotlin/EnPustTil.kt src/test/kotlin/render/MainCameraOwnershipTest.kt
@@ -751,7 +795,7 @@ git commit -m "feat: dev-mode camera invariants that check the real framebuffer"
 
 ---
 
-### Task 3: `CameraRig` — the camera parameters, proven against the old transform
+### Task 3: `CameraRig` — the camera parameters, proven against the old transform — ✅ DONE, commit `7818083`
 
 Pure and tested. Not wired in.
 
@@ -765,7 +809,7 @@ Pure and tested. Not wired in.
 - Consumes: `Viewport.VISIBLE_DEPTH_METRES` (becomes `Framing` in Task 5)
 - Produces: `CameraRig.pixelsPerMetre`, `originX`, `ORIGIN_Y`, `positionX`, `positionY`, `apply(engine, cameraDepth)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/test/kotlin/render/CameraRigTest.kt`. Build the view matrix from `CameraRig`'s parameters with the engine's own JOML, transcribing `ENG/core/graphics/api/Camera.kt:125-131` and citing it in a comment:
 
@@ -813,21 +857,21 @@ Before committing, confirm each of the three surviving assertions has a mutation
 
 If any assertion has no such mutation, it is documentation, not a test — say so in a comment rather than letting it read as verification.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `./gradlew test --tests 'render.CameraRigTest'`
 Expected: FAIL — `Unresolved reference: CameraRig`
 
-- [ ] **Step 3: Implement `CameraRig`**
+- [x] **Step 3: Implement `CameraRig`**
 
 Create `src/main/kotlin/render/CameraRig.kt` as sketched in §2.2, with the full doc comment — including why it is not the engine `Camera` entity and why `apply` must be called from `onFixedUpdate`.
 
-- [ ] **Step 4: Run it to verify it passes**
+- [x] **Step 4: Run it to verify it passes**
 
 Run: `./gradlew test --tests 'render.CameraRigTest'`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/kotlin/render/CameraRig.kt src/test/kotlin/render/CameraRigTest.kt
@@ -836,7 +880,7 @@ git commit -m "feat: CameraRig, proven to reproduce Viewport's transform exactly
 
 ---
 
-### Task 4: Make the zone-band strip walk a pure, world-space function
+### Task 4: Make the zone-band strip walk a pure, world-space function — ✅ DONE, commit `4aecf7f`
 
 Isolates the one part of `DiveRenderer` where the rewrite could disturb the reflectance floor.
 
@@ -847,7 +891,7 @@ Isolates the one part of `DiveRenderer` where the rewrite could disturb the refl
 **Interfaces:**
 - Produces: `DiveRenderer.stripCount(worldTop, worldBottom)`, `DiveRenderer.stripTopDepth(worldTop, index)`, `DiveRenderer.stripCentreDepth(worldTop, worldBottom, index)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `DiveRendererTest`:
 - consecutive strip centres are exactly `BAND_STRIP_METRES` apart (expose the constant as `internal`);
@@ -856,28 +900,28 @@ Add to `DiveRendererTest`:
 - the count for the standard 60 m rect is 120, and is clamped to a sane maximum for a degenerate or absurd rect (a camera that has not been applied yet — see risk 4.6);
 - every strip centre over `[0, 200]` still produces a colour clearing `GI_REFLECTANCE_FLOOR` once quantized. (The existing sweep test stays; this one asserts the *walk* hits those depths.)
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `./gradlew test --tests 'render.DiveRendererTest'`
 Expected: FAIL — unresolved references
 
-- [ ] **Step 3: Implement, and rewrite `drawZoneBands` in terms of them**
+- [x] **Step 3: Implement, and rewrite `drawZoneBands` in terms of them**
 
 Keep `drawZoneBands` drawing in screen pixels for now — it takes `worldTop`/`worldBottom` derived from `Viewport.depthAt(0f, cam, h)` and `Viewport.depthAt(h, cam, h)`, which is *numerically identical* to what it does today. Task 5 swaps the source of those two numbers for `cam.topLeftWorldPosition.y`/`bottomRightWorldPosition.y` and the `fillRect` for a world-space one. Doing the extraction now means Task 5's diff in this method is two lines.
 
-- [ ] **Step 4: Run it to verify it passes**
+- [x] **Step 4: Run it to verify it passes**
 
 Run: `./gradlew test`
 Expected: PASS
 
-- [ ] **Step 5: Verify nothing moved**
+- [x] **Step 5: Verify nothing moved**
 
 ```bash
 EPT_SCREENSHOT=/tmp/task4.png ./gradlew run ; pkill -9 -f EnPustTilKt
 ```
 `/tmp/task4-0.png` must be indistinguishable from a capture taken before this task. This is a pure refactor of the loop bounds; any visible difference is a bug.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/main/kotlin/render/DiveRenderer.kt src/test/kotlin/render/DiveRendererTest.kt
@@ -886,7 +930,7 @@ git commit -m "refactor: express the zone-band strip walk in world depths"
 
 ---
 
-### Task 5: The flip — world coordinates everywhere
+### Task 5: The flip — world coordinates everywhere — ✅ DONE, commit `e9c546e`, plus `9855274` (frame-1 snapshot, §1.5(2)) and `a068e0f`
 
 **One commit. It cannot be split** (§5). Everything drawn through `mainCamera` changes units in the same breath the camera stops being the identity.
 
@@ -902,13 +946,13 @@ git commit -m "refactor: express the zone-band strip walk in world depths"
 - Consumes: `CameraRig`, `no.njoh.pulseengine.core.graphics.api.Camera`
 - Produces: `DiveRenderer.render(surface, sim, cam)`, `DiveLighting.render(engine, sim, dt)`, `Hud.render(surface, sim, diverX, diverY, pixelsPerMetre, w, h)`
 
-- [ ] **Step 1: Rename `Viewport` to `Framing` and delete its transform functions**
+- [x] **Step 1: Rename `Viewport` to `Framing` and delete its transform functions**
 
 Move the file, rename the object, delete `pixelsPerMetre`, `screenX`, `screenY`, `depthAt` and `screenFraction`. Rewrite the class doc: it is now "how much water is on screen, and where the diver sits in the frame" — framing, not transforms — with a pointer to `CameraRig` for the transform and a one-line note that the HiDPI story it used to tell is now the engine's problem, solved by `ortho(0, w, h, 0)` being reissued on every window change.
 
 The compiler will now list every call site. That is the point of renaming rather than gutting in place.
 
-- [ ] **Step 2: Dissolve `ViewportTest` into `FramingTest` — do not simply delete it**
+- [x] **Step 2: Dissolve `ViewportTest` into `FramingTest` — do not simply delete it**
 
 > **The earlier version of this step was inverted and would have thrown away the working half of the file.** It said to keep "the 'same fraction on every display' ones" and to treat "the rest" as assertions that could not fail. §3.0's mutation run measures the opposite: **two of the three "same fraction" cases are the unkillable ones**, and six of the nine cases die to a real mutation. Follow §3.2's table, not the old sentence.
 
@@ -922,7 +966,7 @@ Then delete `src/test/kotlin/render/ViewportTest.kt` with the other six, and rec
 
 **Before deleting, re-run the three mutations above and watch the moved cases go red in their new home.** They were killable in `ViewportTest`; the point of moving rather than rewriting them is that they stay killable, and the only way to know is to look.
 
-- [ ] **Step 2a: Replace `MainCameraOwnershipTest`'s guard, and be honest about what is lost**
+- [x] **Step 2a: Replace `MainCameraOwnershipTest`'s guard, and be honest about what is lost**
 
 `CameraRig` is now wired in and writing `mainCamera` 60×/s. Narrow the Task 2 Step 5a allow-list to its final form:
 
@@ -936,7 +980,7 @@ That is still a real, red-testable guard against a real bug — a second file ea
 * **In editor mode the invariant becomes "exactly one writer *at a time*"**, and the thing that enforces it is not a test — it is Task 10's gate, which skips `CameraRig.apply` while the editor service is running. Its failure mode is loud and immediate (you cannot pan the editor viewport), not silent, which is why a test is not bought for it.
 * **No test asserts that gate.** It is verified by hand, once, in Task 10 Step 3. Say so in `MainCameraOwnershipTest`'s class doc so the next reader does not assume the file covers more than it does.
 
-- [ ] **Step 3: Drive the camera from the fixed tick**
+- [x] **Step 3: Drive the camera from the fixed tick**
 
 In `EnPustTil`:
 
@@ -960,7 +1004,7 @@ override fun onFixedUpdate()
 
 Remove `camera.update(...)` from `onUpdate`. Add `CameraRig.apply(engine, camera.depth)` in `onCreate` right after `camera.snapTo(sim.depth)`, so frame 1's `beginFrame` builds a real matrix (risk 4.6) — and after `lifecycle.justStarted`'s `camera.snapTo` in `onUpdate` too.
 
-- [ ] **Step 4: Convert `DiveRenderer` to metres**
+- [x] **Step 4: Convert `DiveRenderer` to metres**
 
 Signature becomes `render(surface: Surface, sim: DiveSim, cam: no.njoh.pulseengine.core.graphics.api.Camera)`.
 
@@ -970,7 +1014,7 @@ Signature becomes `render(surface: Surface, sim: DiveSim, cam: no.njoh.pulseengi
 - Sizes are now metres, so `Viewport.pixelsPerMetre` disappears from this file entirely.
 - Update the class doc: it no longer draws in screen pixels and no longer needs to know the resolution.
 
-- [ ] **Step 5: Convert `DiveLighting` to metres**
+- [x] **Step 5: Convert `DiveLighting` to metres**
 
 `render(engine, sim, dt)` — no more `camera`, `w`, `h`. `drawLight(texture = Texture.BLANK, x = pearl.x, y = pearl.depth, w = PEARL_LIGHT_SIZE_METRES, h = PEARL_LIGHT_SIZE_METRES, ...)`. Same for the anglerfish lure and the diver beam.
 
@@ -992,26 +1036,26 @@ Add to the class doc, replacing the paragraph about calling from `onRender` for 
 
 Delete `isOnScreen`; culling comes in Task 7 (until then, draw them all — there are at most a few dozen and they are cheap).
 
-- [ ] **Step 6: Convert `Hud` to a pure screen-space consumer**
+- [x] **Step 6: Convert `Hud` to a pure screen-space consumer**
 
 `render(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, pixelsPerMetre: Float, w: Float, h: Float)`. Remove the `Viewport` and `DiveCamera` imports. Replace every `Viewport.pixelsPerMetre(h)` with the passed-in `pixelsPerMetre`. Everything else — the golden angle, the low-air size gain, the tape, the alpha-squared constants — is untouched.
 
 Update the class doc's "World-anchored elements … positioned at the diver's REAL screen position — computed with the same `DiveCamera` the world renderer used" paragraph to say where the position now comes from and why.
 
-- [ ] **Step 7: Wire the HUD anchor to the world camera**
+- [x] **Step 7: Wire the HUD anchor to the world camera**
 
 In `EnPustTil.onRender`, exactly as in §2.4 — including the comment about the shared `Vector2f`. Take the HUD's `w`/`h` from `engine.gfx.getSurfaceOrDefault("hud").config.width/height`, not from `engine.window`. Update the `camera: left null` comment on the `createSurface` call (risk 4.3): the reason is no longer "the GI Camera entity drives mainCamera" but "mainCamera is now a world-space camera scaled by ~30, and the HUD is authored in screen pixels".
 
-- [ ] **Step 8: Fix up the tests that only need renaming**
+- [x] **Step 8: Fix up the tests that only need renaming**
 
 `DiveCameraTest` and `AttractScreenTest` reference `Viewport.*` constants. Rename only — do not change an assertion.
 
-- [ ] **Step 9: Run the suite**
+- [x] **Step 9: Run the suite**
 
 Run: `./gradlew test`
 Expected: PASS. Count should be 238 (at `231c6a6`) − 9 (`ViewportTest`) + 3 (`FramingTest`) + the new `CameraRigTest`/`CameraInvariantsTest`/`DiveRendererTest` cases. Do not treat the number as the check — the check is that every case moved in Step 2 has been seen red under its named mutation.
 
-- [ ] **Step 10: Verify on a real framebuffer, at three aspect ratios**
+- [x] **Step 10: Verify on a real framebuffer, at three aspect ratios**
 
 For each of `1200x900`, `1600x900`, `2100x900` in `application-dev.cfg`:
 
@@ -1032,7 +1076,7 @@ Check, for every shape:
 
 And with the camera easing hard (hold DOWN with a big haul): pearl halos sit on pearl squares, and the air ring sits on the diver (risk 4.1).
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add -A src/main/kotlin src/test/kotlin
@@ -1041,7 +1085,7 @@ git commit -m "refactor: draw the world in metres through the engine camera"
 
 ---
 
-### Task 6: Give `aoRadius` a constant value in **metres** — REWORKED
+### Task 6: Give `aoRadius` a constant value in **metres** — REWORKED — ✅ DONE, commit `aa6bb8b`. Its predicted visual effect was measured and DID NOT HAPPEN; see the box in §1.7.
 
 > **This task was rewritten after the review. The earlier version had the mechanism backwards and its fix violated `CLAUDE.md`.** It is spelled out here because an executor who reads `ao.frag:36`, finds the old explanation does not match, and improvises will do one of two harmful things: conclude the task is spurious and skip it (leaving a 120 m AO radius in the shipped build), or "fix" the shader's multiply (introducing the zoom-dependence that is not there today). Read §1.7's derivation box before Step 1.
 >
@@ -1058,7 +1102,7 @@ git commit -m "refactor: draw the world in metres through the engine camera"
 - Consumes: `system.localSceneTexScale` (already `0.25f` at `DiveLighting.kt:225`)
 - Produces: nothing; `aoRadius` is set once, in `setup`, and never touched again
 
-- [ ] **Step 1: Set a constant metre value, once, in `setup`**
+- [x] **Step 1: Set a constant metre value, once, in `setup`**
 
 Next to the existing `lightTexScale` / `dithering` block — where the other measured GI constants and their justifications already live, and where they stay Kotlin-owned:
 
@@ -1082,19 +1126,19 @@ system.aoRadius = AO_RADIUS_METRES * system.localSceneTexScale
 
 `4f × 0.25f = 1f`. Set it **after** `localSceneTexScale`, so the two cannot silently disagree; a comment saying so is cheaper than the bug.
 
-- [ ] **Step 2: Look at it, and tune the metre value if the picture says to**
+- [x] **Step 2: Look at it, and tune the metre value if the picture says to**
 
 Capture the Abyss (≥120 m, several pearls in frame) at the same seed and depth before and after Task 5, and again after this task. The middle capture — post-Task-5, pre-Task-6 — is expected to show AO smeared across the entire frame; if it does not, the derivation above is wrong somewhere and that is worth knowing before shipping a number.
 
 `AO_RADIUS_METRES` is now a plain artistic quantity: *how many metres of water around an occluder are darkened*. Tune it by eye between roughly 1 m and 10 m and write down the value and the capture that chose it. **Do not reintroduce a screen-relative expression while tuning** — if 4 m looks wrong at one resolution and right at another, something else is wrong and a pixel count will hide it rather than fix it.
 
-- [ ] **Step 3: Confirm the three non-issues, in a comment**
+- [x] **Step 3: Confirm the three non-issues, in a comment**
 
 `radius = 0f` on every `drawLight` skips the falloff branch entirely (`radiance_cascades.frag:120-127`), so its `camScale` dependence does not reach us — but leave a note, because `radius·camScale/dist²` has dimension 1/length and is genuinely **not** scale-invariant, so the first person to set a non-zero radius is tuning a number whose meaning depends on the display's height. The `scene.vert:86-88` minimum-size clamp *is* scale-invariant (`screenSpacePos.w` is exactly 1.0 for an affine ortho, so `1500/(resolution.y·camScale)` world units is a constant number of screen pixels) and needs nothing.
 
 **Third, and put this next to `aoRadius` specifically:** `normalMapScale` (`GlobalIlluminationSystem.kt:54`, default `4f`, uploaded as its reciprocal at `GiRadianceCascades.kt:88` and `GiInterior.kt:52`) is the **out-of-plane component of the ray direction — a unitless ratio, not a length**. It does not change meaning when a world unit goes from 1 px to 1 m and **must not be compensated the way `aoRadius` is**. It is inert today because nothing is drawn to `gi_normal_map`, and it becomes live when the art lands (§1.9). Writing that one sentence here is what stops the next person from "fixing" the neighbouring knob by symmetry.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/main/kotlin/render/DiveLighting.kt
@@ -1103,21 +1147,21 @@ git commit -m "fix: give the GI ambient occlusion radius a constant size in metr
 
 ---
 
-### Task 7: Cull with the engine's own view test
+### Task 7: Cull with the engine's own view test — ✅ DONE, commit `4b80dc2`
 
 **Files:**
 - Modify: `src/main/kotlin/render/DiveRenderer.kt`, `src/main/kotlin/render/DiveLighting.kt`
 - Modify: `src/test/kotlin/render/DiveLightingTest.kt` (drop the `isOnScreen` cases)
 
-- [ ] **Step 1: Replace every bespoke bounds check**
+- [x] **Step 1: Replace every bespoke bounds check**
 
 `cam.isInView(x - size/2, depth - size/2, size, size, padding)` (`ENG/core/graphics/api/Camera.kt:112-116`). It tests x as well as y, which none of the current checks do — today a pearl far outside the visible half-width is still submitted. Use a padding generous enough for a light's glow (its radius, not its quad).
 
-- [ ] **Step 2: Run the suite and look**
+- [x] **Step 2: Run the suite and look**
 
 Run: `./gradlew test`, then capture at 21:9 and at 4:3. Nothing may pop in or out at the frame edges; a pearl's glow must not vanish before the pearl leaves the screen.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/main/kotlin/render/DiveRenderer.kt src/main/kotlin/render/DiveLighting.kt src/test/kotlin/render/DiveLightingTest.kt
@@ -1126,32 +1170,41 @@ git commit -m "refactor: cull against the engine's view rectangle instead of scr
 
 ---
 
-### Task 8: Prepare the draw calls for real art
+### Task 8: Prepare the draw calls for real art — ✅ DONE, commit `21075f6`
+
+**What actually shipped, and one thing worth knowing about the verification:**
+
+* `Surface.fillRectCentred(x, y, w, h, angle = 0f)` in `render/Draw.kt`, plus a named `CENTRE_ORIGIN = 0.5f`. Its doc quotes `texture.vert:70`, `normal_map.vert:75` and `scene.vert:102` side by side, which is what actually establishes that the albedo, the normal map and the GI light quad take the *identical* `(x, y, w, h, angle)` + centre-origin tuple, with the angle in degrees and the rotation about that same centre in all three.
+* Call sites converted: `DiveRenderer`'s vents, pearls, anglerfish, diver and waterline; `Hud`'s air bubbles and both depth-tape markers. The zone-band strips, the column walls, the tape body and its backing, and the pause screen's scrim and progress bar keep `fillRect` — they are genuinely spans defined by a corner, and the progress bar's fill in particular *must* stay left-anchored because its width is the thing that varies.
+* `DrawTest` gained three cases, each mutation-tested: the source guard (killed by adding a `drawQuad(` call), the centre/origin assertion (killed by `CENTRE_ORIGIN = 0f`) and the angle pass-through (killed by hardcoding `0f`). The last two run against a `RecordingSurface` — `Surface` is an ordinary abstract class whose drawing API is plain floats, so implementing it is cheaper than mocking and an added abstract member breaks the build rather than going silently unrecorded. The guard also catches `drawQuadVertex`/`drawLineVertex`, which the plan did not name and which fail identically.
+* Suite: 268 → **271**.
+
+> **THE CAPTURE INSTRUMENT IS NOISIER THAN THIS CHANGE, AND THAT IS WORTH RECORDING BEFORE SOMEONE ELSE CHASES IT.** Task 8 is a pure refactor and must not move a pixel, so it was verified by capture at 16:9 (1600×900) and 21:9 (2100×900) before and after. The first before/after pair differed by **3.1 million of 5.76 million pixels**, max 232/255 — which looks catastrophic and is entirely the instrument. Two runs of the *same* build differ by the same amount: the screenshot harness pins the diver's depth and x from `onUpdate` (the render clock) while the sim advances on the fixed tick, so a single extra fixed step between the pin and the capture shifts the whole frame by a couple of pixels of camera depth. Where a before and an after run happened to land on the same sub-frame state, they were identical to within **±1 on 192 of 5,760,000 pixels** — the same dither floor two *before* runs show against each other (181 px). That is the evidence that nothing moved. **Always capture a same-build control pair before believing a before/after delta from this harness.** `EPT_DEV=1` throughout: zero camera-invariant warnings at either aspect.
 
 **Files:**
 - Modify: `src/main/kotlin/render/Draw.kt`, `src/main/kotlin/render/DiveRenderer.kt`, `src/main/kotlin/render/Hud.kt`
 - Test: `src/test/kotlin/render/DrawTest.kt`
 
-- [ ] **Step 1: Write the failing guard test**
+- [x] **Step 1: Write the failing guard test**
 
 Add to `DrawTest`: walk `src/main/kotlin` and fail on any `drawQuad(` or `drawLine(`, naming the file and line. Message: point at `render/Draw.kt`'s explanation and at `drawTexture(..., angle, xOrigin, yOrigin)` as the supported alternative.
 
-- [ ] **Step 2: Run it to verify it passes for the right reason**
+- [x] **Step 2: Run it to verify it passes for the right reason**
 
 Run: `./gradlew test --tests 'render.DrawTest'`
 Expected: PASS. Then temporarily add a `drawQuad(` call somewhere and confirm it FAILS. Remove it. A test that cannot fail is worse than no test.
 
-- [ ] **Step 3: Add a centred `fillRect` overload and use it**
+- [x] **Step 3: Add a centred `fillRect` overload and use it**
 
 `Surface.fillRectCentred(x, y, w, h, angle = 0f)` = `drawTexture(Texture.BLANK, x, y, w, h, angle, xOrigin = 0.5f, yOrigin = 0.5f)`. Replace every `- size * 0.5f` in `DiveRenderer` and `Hud`. This is what the reference does (`REF/src/main/kotlin/entities/level/Spark.kt:84`) and it is the shape every sprite call will take, with rotation available for free.
 
 **Keep the `(x, y, w, h, angle, 0.5f, 0.5f)` tuple intact and passable, not spread across seven call-site expressions.** It is the *same* tuple `NormalMapRenderer.drawNormalMap` takes (`NormalMapRenderer.kt:91-123`), and the art will be normal-mapped (§1.9): every sprite will be drawn twice from one rect — albedo on `main`, normal on `gi_normal_map`. This step is the cheapest moment to make that a one-line addition later rather than a re-derivation. No normal-map draw is added now (§8).
 
-- [ ] **Step 4: Run the suite and capture**
+- [x] **Step 4: Run the suite and capture**
 
 Run: `./gradlew test`, then capture and confirm nothing moved by half a square.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/kotlin/render src/test/kotlin/render/DrawTest.kt
@@ -1160,29 +1213,37 @@ git commit -m "refactor: centre-origin draw calls, and a guard against drawQuad 
 
 ---
 
-### Task 9: Documentation
+### Task 9: Documentation — ✅ DONE
+
+**Scope grew, deliberately: this task documents what Stage C DID, not what this plan predicted, and three of those predictions were disproven during execution.** All three corrections are written into this plan next to the claim they replace, because a plan that is read after the fact is read as a record:
+
+* **§1.7 / §4.7's `aoRadius` prediction failed.** It expected a flat full-screen darkening; the measurement is that AO contributes nothing to our frame at any radius. Box added at §1.7, and §4.7's risk rewritten.
+* **§1.5(2)'s "`positionLast` … unreachable from our code" is false**, and believing it left frame 1 drawn with an identity camera on every run. Correction added at §1.5(2), and a currency banner on §2.2's now-stale `CameraRig` sketch.
+* **Task-completion state.** Tasks 2–9's steps and headers were still unticked; they now carry their commits.
+
+Plus the three files this task always named, and one line-number drift (`scene.vert:100` → `:102`) in `Draw.kt`'s `showsSquare` doc.
 
 **Files:**
 - Modify: `CLAUDE.md`
 - Modify: `src/main/kotlin/render/DiveRenderer.kt` (the `minReflectance` correction)
 - Modify: `docs/superpowers/specs/2026-08-04-en-pust-til-design.md` (§17 amendment log)
 
-- [ ] **Step 1: `CLAUDE.md`**
+- [x] **Step 1: `CLAUDE.md`**
 
 - "Architecture / render": `DiveRenderer` draws the world in **metres** to `mainSurface`; `Hud` draws **screen pixels** to `"hud"`; `CameraRig` is the only writer of `engine.gfx.mainCamera`; `Framing` holds framing constants and no transform.
 - "Frame ordering is load-bearing": camera easing is now on the **fixed tick**, and why (§1.5). Light/geometry alignment is structural, and the remaining drift risk is the HUD anchor.
 - Platform constraints: keep the `engine.window.width/height` physical-pixels note, but say that the world no longer consumes it — sizes there are metres — and that screen-space code should prefer `surface.config.width/height`, which is what the surface's own projection was built from.
 - Add the invariant worth remembering: **exactly `Framing.VISIBLE_DEPTH_METRES` of water is visible vertically on every display, and a wider display shows more water sideways, never less water down.**
 
-- [ ] **Step 2: Correct `DiveRenderer`'s reflectance-floor doc**
+- [x] **Step 2: Correct `DiveRenderer`'s reflectance-floor doc**
 
 `GI_REFLECTANCE_FLOOR`'s comment says the floor "cannot be avoided from here (it is the engine's…)". Replace with: `minReflectance` *is* settable (`GlobalIlluminationSystem.kt:56`, a public `@Prop var`, re-pushed every frame at `:217`); we keep the engine default and hold the water above it because the colour-side solution is measured and this is not the pass in which to change lighting. State that, so the next person makes the choice knowingly.
 
-- [ ] **Step 3: Amendment log**
+- [x] **Step 3: Amendment log**
 
 Add to design spec §17: the world is rendered in metres through the engine camera; `Viewport` is gone; content generation stays procedural and seeded (§10's "authoring uses the Pulse Engine scene editor" continues to apply to the diver's visual representation, lights, particles and effects — **not** to pearl, vent or anglerfish placement); the aspect-ratio guarantee is now the engine's.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add CLAUDE.md src/main/kotlin/render/DiveRenderer.kt docs/superpowers/specs/2026-08-04-en-pust-til-design.md

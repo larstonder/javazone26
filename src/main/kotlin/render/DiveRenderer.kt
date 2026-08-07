@@ -106,8 +106,21 @@ object DiveRenderer
      * single flat fill appeared to "fix" it: that fill's colour, (0.02, 0.08, 0.15), has
      * linear length 0.02068 — barely above the floor by luck, so the guard never fired.
      *
-     * The floor cannot be avoided from here (it is the engine's, and `DiveLighting` owns the
-     * GI system), so the water must simply stay above it — see [floorBlueForReflectance].
+     * THE FLOOR *CAN* BE REMOVED, AND WE DELIBERATELY DO NOT. An earlier version of this
+     * comment said it "cannot be avoided from here (it is the engine's…)". That was simply
+     * false, and it mattered, because it presented a choice as a constraint. `minReflectance` is
+     * a public `@Prop var` on `GlobalIlluminationSystem` (`:56`, default `0.02f`), re-pushed to
+     * the effect every frame at `:217`, so `system.minReflectance = 0f` in [DiveLighting.setup]
+     * — one line, in a file we already own — would delete the guard outright.
+     *
+     * We keep the engine default and hold the water above it instead, for two reasons worth
+     * stating so the next person makes this choice knowingly rather than inheriting it:
+     * the colour-side solution is measured and working (the numbers above, and
+     * `DiveRendererTest`'s 0-200 m quantization sweep), and the floor is what stops a
+     * genuinely black albedo becoming an unlit black hole that no amount of light can rescue
+     * — which is what the shader's own comment says it is for. Turning it off would also be a
+     * lighting change, and lighting changes made in the same pass as anything else are
+     * unattributable. So: the water must stay above it — see [floorBlueForReflectance].
      */
     internal const val GI_REFLECTANCE_FLOOR = 0.02f
 

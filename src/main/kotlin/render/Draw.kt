@@ -10,7 +10,7 @@ import no.njoh.pulseengine.core.shared.primitives.Color
  *
  * Everything this game draws into the world is a centred square — a pearl, a vent, the fish,
  * the diver, and every immediate-mode light quad ([DiveLighting] passes centres too;
- * `scene.vert:100` offsets its corners by `(vertexPos - 0.5) * size`). Centre-in, top-left-out
+ * `scene.vert:102` offsets its corners by `(vertexPos - 0.5) * size`). Centre-in, top-left-out
  * is therefore the one conversion worth doing in a single place, because getting it wrong is
  * invisible except at the frame edge, which is exactly where nobody is looking.
  *
