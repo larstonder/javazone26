@@ -14,7 +14,7 @@ enum class Zone(
     KELP    (30f,  25,  2f,  1.2f),
     TWILIGHT(60f,  60,  4f,  1.6f),
     TRENCH  (90f,  150, 8f,  2.0f),
-    ABYSS   (120f, 400, 16f, 2.5f);
+    ABYSS   (120f, 400, 16f, 2.2f);
 
     companion object
     {

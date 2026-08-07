@@ -33,15 +33,43 @@ object AirPocketField
      */
     private val ZONES_WITH_VENTS = listOf(Zone.KELP, Zone.TWILIGHT, Zone.TRENCH)
 
+    /**
+     * Where in its zone a vent sits, as a fraction of the zone's span: start of the band,
+     * and how wide the band is. Away from the boundaries either way, so a vent reads as
+     * belonging to one depth band rather than straddling two.
+     */
+    private const val BAND_START = 0.25f
+    private const val BAND_WIDTH = 0.5f
+
+    /**
+     * The DEEPEST vent gets its own, lower band — it is the staging post for the plunge, not
+     * just another rung.
+     *
+     * MEASURED, not chosen for flavour. With the trench vent in the ordinary middle band a
+     * flown dive arrives at 135 m with 21.6 s of air, and the heaviest load that can climb
+     * home from there is 8 mass — less than the 16 of a single abyss pearl. Only 4 of the 14
+     * abyss pearls could be brought home at all, and the whole zone below 133 m was
+     * decoration. Pushing this one vent into the lower half of the Trench buys roughly 3
+     * seconds of arrival air, which is what turns the shallow two-thirds of the Abyss from
+     * unwinnable into a genuine gamble.
+     *
+     * Deliberately does NOT put a vent in the Abyss — see [ZONES_WITH_VENTS]. The last breath
+     * you get is still taken above the drop, and everything below it is still spent on what
+     * you carried down.
+     */
+    private const val DEEP_BAND_START = 0.55f
+    private const val DEEP_BAND_WIDTH = 0.35f
+
     fun generate(seed: Long): List<AirPocket>
     {
         // Offset the seed so vent placement does not correlate with pearl placement.
         val rng = Random(seed * 31 + 7)
+        val deepest = ZONES_WITH_VENTS.last()
         return ZONES_WITH_VENTS.map { zone ->
             val span = nextZoneDepth(zone) - zone.minDepth
-            // Sit the vent in the middle half of its zone, away from the boundaries, so it
-            // reads as belonging to that depth band.
-            val depth = zone.minDepth + span * (0.25f + rng.nextFloat() * 0.5f)
+            val start = if (zone == deepest) DEEP_BAND_START else BAND_START
+            val width = if (zone == deepest) DEEP_BAND_WIDTH else BAND_WIDTH
+            val depth = zone.minDepth + span * (start + rng.nextFloat() * width)
             val x = (rng.nextFloat() * 2f - 1f) * Tuning.COLUMN_HALF_WIDTH * 0.8f
             AirPocket(x, depth)
         }

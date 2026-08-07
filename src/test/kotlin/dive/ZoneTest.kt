@@ -2,6 +2,7 @@ package dive
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class ZoneTest {
     @Test
@@ -35,7 +36,19 @@ class ZoneTest {
 
     @Test
     fun `air burns faster deeper`() {
-        assertEquals(1.0f, Zone.SHALLOWS.airBurn)
-        assertEquals(2.5f, Zone.ABYSS.airBurn)
+        // Strict monotonicity is the property; the endpoints are pinned so the whole table
+        // cannot be flattened to a constant and still pass. The Abyss's own value is a tuning
+        // dial and is deliberately NOT pinned here — it moved from 2.5 to 2.2 when the zone
+        // was made reachable (see Ascent, AscentTest and the design spec's §17 log), and a
+        // test that has to be edited to permit a balance change is a test that will be edited
+        // without thought.
+        assertEquals(1.0f, Zone.SHALLOWS.airBurn, "the surface must be the cheapest water")
+        Zone.entries.zipWithNext().forEach { (shallower, deeper) ->
+            assertTrue(
+                deeper.airBurn > shallower.airBurn,
+                "$deeper must burn air faster than $shallower"
+            )
+        }
+        assertTrue(Zone.ABYSS.airBurn > 2f, "the deep must stay meaningfully expensive")
     }
 }

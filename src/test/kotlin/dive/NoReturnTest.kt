@@ -70,16 +70,22 @@ class NoReturnTest {
 
     @Test
     fun `max safe depth pins the exact formula, not just its direction`() {
-        // Depth 60 sits in TWILIGHT (airBurn = 1.6), which is deliberately NOT 1.0 — at
-        // airBurn 1.0, air/airBurn and air*airBurn coincide, so a divide-by-multiply
-        // mutation would slip past a same-zone test unnoticed. This value only comes out
-        // right if the formula is climbSpeed * (air / airBurn), computed exactly:
-        //   climbSpeed = -verticalSpeed(0, -1, 1) = SWIM_THRUST = 11
-        //   maxSafeDepth = 11 * (10 / 1.6) = 68.75
+        // This used to pin `climbSpeed * (air / zone.airBurn)` = 68.75, the single-rate model.
+        // That model was wrong — see Ascent — so the number it pinned is gone with it, and
+        // the replacement pins the zone-integrated one just as exactly. Spending 10 s of air
+        // at a climb speed of 11 m/s, paying each zone's own rate on the way up:
+        //   SHALLOWS  0-30m  @1.0 -> 30/11 * 1.0 = 2.727 s, leaving 7.273
+        //   KELP     30-60m  @1.2 -> 30/11 * 1.2 = 3.273 s, leaving 4.000
+        //   TWILIGHT 60-90m  @1.6 -> the remainder, less one spin-up of 1/3.5 s at 1.6:
+        //                            (4.000 - 0.457) / (1.6/11) = 24.36 m into the zone
+        //   maxSafeDepth = 60 + 24.36 = 84.36
+        //
+        // TWILIGHT is still where the answer lands on purpose: at airBurn 1.0 a
+        // divide-by-multiply mutation coincides and would slip past unnoticed.
         val sim = DiveSim(seed = 1L)
         sim.debugSetDepth(60f)
         sim.debugSetAir(10f)
         assertEquals(Zone.TWILIGHT, sim.zone, "sanity: depth 60 must be in TWILIGHT")
-        assertEquals(68.75f, sim.maxSafeDepth(), 0.01f)
+        assertEquals(84.36f, sim.maxSafeDepth(), 0.02f)
     }
 }

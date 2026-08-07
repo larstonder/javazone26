@@ -273,10 +273,14 @@ class DiveSim(seed: Long)
      * marker on the depth tape — a mercy for first-timers that teaches the economy
      * without a word of text.
      *
-     * Uses the CURRENT zone's air burn as the climb rate for the whole ascent. That is
-     * an approximation — a real climb crosses zones with different burn rates — but it
-     * is the honest one to make from where the diver is standing right now, and it is
-     * cheap enough to recompute every frame.
+     * Charges each zone the climb passes through at its OWN air burn — see [Ascent], which
+     * holds the arithmetic and the measurements behind it.
+     *
+     * This used to price the entire ascent at the CURRENT zone's burn rate, which overstated
+     * the cost of a climb out of the Abyss by about 70% and made the marker tell players to
+     * turn around a whole zone early. Of 27 sampled combinations of depth, air and mass, it
+     * claimed the diver could not get home in 20 cases where a flown dive proved they could.
+     * Do not "simplify" this back to a single `air / zone.airBurn`.
      *
      * Past roughly mass 183 (the point where [Buoyancy.sinkForce] exceeds
      * [Tuning.SWIM_THRUST]), the diver cannot climb against its own sink force at all —
@@ -289,10 +293,10 @@ class DiveSim(seed: Long)
         // force gives a NEGATIVE result while the diver can still climb at all. Negate
         // it to get a climb speed that is positive exactly when climbing is possible.
         val climbSpeed = -Buoyancy.verticalSpeed(heldMass, verticalInput = -1f, boost = 1f)
-        if (climbSpeed <= 0f) return 0f
-
-        val reachable = climbSpeed * (air / zone.airBurn)
-        return reachable.coerceIn(0f, Tuning.MAX_DEPTH)
+        // One time constant of the velocity ramp: what it costs to stop sinking and start
+        // climbing, which the constant-speed model would otherwise give away for free.
+        val startup = 1f / Buoyancy.responseRate(heldMass)
+        return Ascent.maxDepthReachableOn(air, climbSpeed, startup)
     }
 
     /** Whether the diver, right now, could still make it back to the surface. */
