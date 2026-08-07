@@ -3,6 +3,7 @@ package render
 import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.asset.types.Texture
+import no.njoh.pulseengine.core.graphics.api.Camera
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.BloomEffect
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect.ToneMapper.ACES
@@ -376,22 +377,53 @@ object DiveLighting
      * Immediate-mode light draws, IN WORLD METRES — the same coordinates `DiveRenderer` draws
      * the objects these lights sit on. Must still be called from `onRender`; see the class doc
      * for what that buys now that it is no longer alignment.
+     *
+     * [cam] is passed in, exactly as `DiveRenderer.render` takes it, and NOT fetched from
+     * `engine.gfx.mainCamera` here even though this method already holds the engine. Two
+     * reasons, and the second is the load-bearing one:
+     *
+     *  - It is provably the same camera `DiveRenderer` walked its visible rect against on this
+     *    frame, because `EnPustTil.onRender` reads the field once and hands the same reference to
+     *    both. GI's local scene surface is created with `camera = engine.gfx.mainCamera`
+     *    (GlobalIlluminationSystem.kt:78) — the same object — so a light and the square it sits
+     *    on are culled against the same rect and drawn through the same matrix.
+     *  - `MainCameraOwnershipTest` holds an exact-set allow-list of the files that may so much as
+     *    NAME `engine.gfx.mainCamera`, and this file is deliberately not on it. Reaching for the
+     *    field here would have to widen that list, which is the guard against a second writer of
+     *    the shared camera — the fault `6ea1f53` fixed — being loosened for a mere read.
      */
-    fun render(engine: PulseEngine, sim: DiveSim, dt: Float)
+    fun render(engine: PulseEngine, sim: DiveSim, cam: Camera, dt: Float)
     {
         val surface = engine.gfx.getSurface(GlobalIlluminationSystem.GI_LOCAL_SCENE) ?: return
         val renderer = surface.getRenderer<GiSceneRenderer>() ?: return
 
-        drawPearlLights(surface, renderer, sim)
-        drawAnglerfishLight(surface, renderer, sim)
-        drawDiverBeam(surface, renderer, sim, dt)
+        drawPearlLights(surface, renderer, sim, cam)
+        drawAnglerfishLight(surface, renderer, sim, cam)
+        drawDiverBeam(surface, renderer, sim, cam, dt)
     }
 
-    private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim)
+    /**
+     * How far outside the visible rect a light quad still counts as on screen, in metres.
+     *
+     * NOT a safety fudge, and deliberately not a copy of the 50-PIXEL `CULL_MARGIN` the deleted
+     * `isOnScreen` carried — that number existed because the old check compared a light's CENTRE
+     * against the screen's rows and so needed slack for the quad's own half-size, which
+     * [showsSquare] now accounts for exactly. This margin covers something the old one never
+     * did: `scene.vert:88-99` enlarges small light sources by up to 3x (`upscaleSmallSources`,
+     * with `threshold = 10 * globalWorldScale` = 40 world units, and our lights are 3 m) while
+     * dividing their intensity by the same factor, so the quad actually rasterised can reach
+     * `3 * size / 2` from its centre instead of `size / 2`. One full light size of padding
+     * covers that worst case exactly, at any resolution, in metres.
+     */
+    private const val LIGHT_CULL_MARGIN_METRES = PEARL_LIGHT_SIZE_METRES
+
+    private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
     {
         surface.setDrawColor(pearlLight)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
+            if (!cam.showsSquare(pearl.x, pearl.depth, PEARL_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES))
+                return@forEach
             renderer.drawLight(
                 texture = Texture.BLANK,
                 x = pearl.x, y = pearl.depth, w = PEARL_LIGHT_SIZE_METRES, h = PEARL_LIGHT_SIZE_METRES,
@@ -407,9 +439,10 @@ object DiveLighting
      * The anglerfish lure. Same colour AND same intensity curve as a real pearl, deliberately
      * — the tell is motion, never light (see DiveRenderer.drawAnglerfish).
      */
-    private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim)
+    private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
     {
         val fish = sim.anglerfish ?: return
+        if (!cam.showsSquare(fish.x, fish.depth, PEARL_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
         surface.setDrawColor(pearlLight)
         renderer.drawLight(
             texture = Texture.BLANK,
@@ -452,7 +485,7 @@ object DiveLighting
      * tightening this further, but it would change the focused beam too, and the focused
      * beam is known-good.
      */
-    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, dt: Float)
+    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera, dt: Float)
     {
         val speed = hypot(sim.vx, sim.vy)
         if (speed >= STATIONARY_SPEED_THRESHOLD)
@@ -468,6 +501,13 @@ object DiveLighting
             beamAngleDeg = if (beamInitialized) AimAngle.smooth(beamAngleDeg, target, dt, AIM_SMOOTHING_RATE) else target
             beamInitialized = true
         }
+
+        // Cull the DRAW ONLY, and only after the heading above has been integrated. The aim is
+        // smoothed state, not a per-frame derivation, so skipping the smoothing while the diver
+        // is off screen would freeze the heading and snap it the frame he came back. In practice
+        // the camera tracks the diver and this never fires; it is written this way so that it
+        // stays correct if it ever does.
+        if (!cam.showsSquare(sim.x, sim.depth, DIVER_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
 
         val baseIntensity = diverIntensityForDepth(sim.depth)
         surface.setDrawColor(diverLight)

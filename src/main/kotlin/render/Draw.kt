@@ -1,8 +1,43 @@
 package render
 
 import no.njoh.pulseengine.core.asset.types.Texture
+import no.njoh.pulseengine.core.graphics.api.Camera
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
+
+/**
+ * Is a square of [size] metres CENTRED on world ([centreX], [centreY]) worth submitting?
+ *
+ * Everything this game draws into the world is a centred square — a pearl, a vent, the fish,
+ * the diver, and every immediate-mode light quad ([DiveLighting] passes centres too;
+ * `scene.vert:100` offsets its corners by `(vertexPos - 0.5) * size`). Centre-in, top-left-out
+ * is therefore the one conversion worth doing in a single place, because getting it wrong is
+ * invisible except at the frame edge, which is exactly where nobody is looking.
+ *
+ * WHY THE ENGINE'S OWN TEST RATHER THAN OUR OWN BOUNDS CHECK. `Camera.isInView`
+ * (`ENG/core/graphics/api/Camera.kt:112-116`) is an inclusive AABB overlap against
+ * `topLeftWorldPosition`/`bottomRightWorldPosition`, which the engine recomputes once per frame
+ * in `GraphicsImpl.initFrame` (:112) by inverting THE VERY MATRIX THAT FRAME WILL BE DRAWN WITH
+ * — including the fixed-step interpolation `updateViewMatrix` applies (`Camera.kt:120-123`).
+ * So the rect this tests against is not an approximation of what is on screen, it IS what is on
+ * screen, and a cull can therefore never be one frame early. That is a stronger guarantee than
+ * the pixel-row checks this replaces could offer even in principle: they compared an object's
+ * CENTRE against the screen's rows, so they both popped objects out half a square early and
+ * never tested x at all — a pearl far outside the visible half-width was submitted every frame.
+ *
+ * [padding] extends the accepted rect outward in world metres. It is zero for anything drawn to
+ * `main`, where the quad's rasterised extent is exactly the rect passed here. It is NOT zero for
+ * a GI light: `scene.vert:88-99` grows small sources by up to 3x (`upscaleSmallSources`, active
+ * for us because a 3 m light is well under the `10 * globalWorldScale` = 40 threshold), which
+ * pushes the quad's half-extent from `size/2` out to `3*size/2` — so a padding of one full
+ * `size` covers the worst case exactly. See [DiveLighting.render].
+ *
+ * On a degenerate camera rect — frame one before `initFrame` has run against a written camera,
+ * or mid-resize — this culls everything and the frame draws no objects, which is the same
+ * one-frame-wrong-looking trade [DiveRenderer.stripCount] already makes deliberately.
+ */
+fun Camera.showsSquare(centreX: Float, centreY: Float, size: Float, padding: Float = 0f): Boolean =
+    isInView(centreX - size * 0.5f, centreY - size * 0.5f, size, size, padding)
 
 /**
  * Draw a solid rectangle in the surface's current draw colour.

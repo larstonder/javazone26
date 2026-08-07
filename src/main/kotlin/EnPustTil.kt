@@ -763,7 +763,12 @@ class EnPustTil : PulseEngineGame()
         // so a light and the thing it lights go through one matrix and cannot drift. Still
         // issued from onRender: GiSceneRenderer's batch must be filled before gfx.drawFrame.
         // See DiveLighting's class doc for what changed and what did not.
-        DiveLighting.render(engine, sim, engine.data.deltaTime)
+        //
+        // Handed the SAME camera reference DiveRenderer just got, deliberately, rather than
+        // letting DiveLighting fetch it: a light and the square it sits on are then culled
+        // against one visible rect, and only this file has to name engine.gfx.mainCamera at all
+        // (see MainCameraOwnershipTest, whose allow-list is exact set equality).
+        DiveLighting.render(engine, sim, worldCamera, engine.data.deltaTime)
 
         // HUD: its own surface, its own screen-pixel camera, composited on top unaffected by
         // GI — see the comment in onCreate for why it cannot share mainSurface. What it shows

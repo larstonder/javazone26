@@ -29,11 +29,13 @@ import kotlin.math.sqrt
  * is stronger than re-deriving our own rect: the strip walk and the walls cannot disagree with
  * what is on screen, because they are reading what is on screen.
  *
- * NO PER-OBJECT CULLING, deliberately, for now. The pixel-row bounds checks that used to guard
- * each draw went with the coordinates they were written in; there are at most a few dozen
- * objects and a fillRect outside the frustum is clipped by the GPU. Task 7 of
- * docs/superpowers/plans/2026-08-06-engine-world-coordinates.md restores culling properly via
- * `cam.isInView`, which tests x as well as y — which none of the old checks did.
+ * PER-OBJECT CULLING IS THE CAMERA'S OWN VIEW TEST — see [showsSquare], which is where the
+ * reasoning lives. It replaces the pixel-row bounds checks that went away with the coordinates
+ * they were written in, and it is strictly better than they were: it tests x as well as y, and
+ * it tests the object's whole rect rather than its centre. The saving is small (there are at
+ * most a few dozen objects and a fillRect outside the frustum is clipped by the GPU anyway);
+ * the point is that "is this on screen" now has exactly one answer in this codebase, and it is
+ * the engine's.
  */
 object DiveRenderer
 {
@@ -190,10 +192,10 @@ object DiveRenderer
         drawZoneBands(surface, worldLeft, worldTop, worldRight, worldBottom)
         drawColumnWalls(surface, worldLeft, worldTop, worldRight, worldBottom)
         drawSurfaceLine(surface, worldLeft, worldRight)
-        drawAirPockets(surface, sim)
-        drawPearls(surface, sim)
-        drawAnglerfish(surface, sim)
-        drawDiver(surface, sim)
+        drawAirPockets(surface, sim, cam)
+        drawPearls(surface, sim, cam)
+        drawAnglerfish(surface, sim, cam)
+        drawDiver(surface, sim, cam)
     }
 
     /**
@@ -327,21 +329,23 @@ object DiveRenderer
      * dimmed rather than hidden once spent — knowing where a used vent was is what lets a
      * player plan the next dive around it.
      */
-    private fun drawAirPockets(surface: Surface, sim: DiveSim)
+    private fun drawAirPockets(surface: Surface, sim: DiveSim, cam: Camera)
     {
         val size = Framing.AIR_POCKET_SIZE_METRES
         sim.airPockets.forEach { pocket ->
+            if (!cam.showsSquare(pocket.x, pocket.depth, size)) return@forEach
             surface.setDrawColor(if (pocket.usedThisDive) airPocketSpentColor else airPocketColor)
             surface.fillRect(pocket.x - size * 0.5f, pocket.depth - size * 0.5f, size, size)
         }
     }
 
-    private fun drawPearls(surface: Surface, sim: DiveSim)
+    private fun drawPearls(surface: Surface, sim: DiveSim, cam: Camera)
     {
         val size = Framing.PEARL_SIZE_METRES
         surface.setDrawColor(pearlColor)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
+            if (!cam.showsSquare(pearl.x, pearl.depth, size)) return@forEach
             surface.fillRect(pearl.x - size * 0.5f, pearl.depth - size * 0.5f, size, size)
         }
     }
@@ -351,18 +355,21 @@ object DiveRenderer
      * where pearls are the only light, you cannot tell treasure from predator by looking.
      * The tell is motion: a real pearl never moves, this drifts slowly toward the diver.
      */
-    private fun drawAnglerfish(surface: Surface, sim: DiveSim)
+    private fun drawAnglerfish(surface: Surface, sim: DiveSim, cam: Camera)
     {
         val fish = sim.anglerfish ?: return
         val size = Framing.PEARL_SIZE_METRES
+        if (!cam.showsSquare(fish.x, fish.depth, size)) return
         surface.setDrawColor(pearlColor)
         surface.fillRect(fish.x - size * 0.5f, fish.depth - size * 0.5f, size, size)
     }
 
-    private fun drawDiver(surface: Surface, sim: DiveSim)
+    private fun drawDiver(surface: Surface, sim: DiveSim, cam: Camera)
     {
-        // Size scales with load so weight is visible as well as felt.
+        // Size scales with load so weight is visible as well as felt — and the culled rect has
+        // to grow with it, which is the whole reason the size is computed before the test.
         val size = Framing.DIVER_SIZE_METRES + sim.heldMass * 0.03f
+        if (!cam.showsSquare(sim.x, sim.depth, size)) return
         surface.setDrawColor(diverColor)
         surface.fillRect(sim.x - size * 0.5f, sim.depth - size * 0.5f, size, size)
     }
