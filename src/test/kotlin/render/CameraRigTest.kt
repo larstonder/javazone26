@@ -1,10 +1,14 @@
 package render
 
+import no.njoh.pulseengine.core.graphics.api.DefaultCamera
+import no.njoh.pulseengine.core.shared.utils.Extensions.interpolateFrom
 import org.joml.Matrix4f
 import org.joml.Vector2f
+import org.joml.Vector3f
 import org.joml.Vector4f
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 
 /**
  * What this file proves, and — more usefully — the one thing it cannot.
@@ -123,6 +127,98 @@ class CameraRigTest
                         assertEquals(oldX, p.x, TOLERANCE, "x differs from Framing.screenX for $where")
                         assertEquals(oldY, p.y, TOLERANCE, "y differs from Framing.screenY for $where")
                     }
+    }
+
+    /**
+     * FRAME 1, WHICH IS THE ONE FRAME NO OTHER TEST HERE MODELS.
+     *
+     * `updateViewMatrix` does not read `scale`/`origin`/`position`. It reads each of them
+     * interpolated from `scaleLast`/`originLast`/`positionLast` by `data.interpolation`
+     * (Camera.kt:118-123), and the engine refreshes that snapshot only from `gfx.updateCameras()`
+     * INSIDE a fixed step (PulseEngineImpl.kt:279). The very first frame runs no fixed step — the
+     * accumulator has not filled — so it is drawn at factor 0, i.e. entirely from a snapshot
+     * still holding a freshly-constructed camera's identity.
+     *
+     * This evaluates the engine's OWN `interpolateFrom` at t = 0 against a real `DefaultCamera`,
+     * so it is frame 1 in every respect except that the matrix multiply is written out here
+     * (`updateViewMatrix()` itself defaults t to `PulseEngine.INSTANCE.data.interpolation` and
+     * `INSTANCE` is `lateinit ... internal set`, so it cannot be called).
+     *
+     * Killed by: drop `updateLastState()` from [CameraRig.snapTo] — the snapshot stays at the
+     * constructed identity and the bottom-edge pin lands at y = 60 instead of y = h, which is
+     * exactly the `1800.0 m of water is visible` warning this was found through.
+     */
+    @Test
+    fun `a snapped camera already frames the visible depth at interpolation factor zero`()
+    {
+        for ((w, h) in DISPLAYS)
+            for (camDepth in CAMERA_DEPTHS)
+            {
+                val camera = DefaultCamera.createOrthographic(w.toInt(), h.toInt())
+                CameraRig.snapTo(camera, w, h, camDepth)
+
+                val top = interpolatedScreenPos(camera, 0f, camDepth)
+                val bottom = interpolatedScreenPos(camera, 0f, camDepth + Framing.VISIBLE_DEPTH_METRES)
+
+                val where = "at ${w}x$h, camera at $camDepth m"
+                assertEquals(w * 0.5f, top.x, TOLERANCE, "the camera's world point is not centred on frame 1 $where")
+                assertEquals(0f, top.y, TOLERANCE, "the camera's world point is not at the top edge on frame 1 $where")
+                assertEquals(h, bottom.y, TOLERANCE,
+                             "frame 1 does not show ${Framing.VISIBLE_DEPTH_METRES} m of water $where — the " +
+                             "engine's fixed-step snapshot was left at the constructed identity")
+            }
+    }
+
+    /**
+     * The other half of the same decision, and the reason [CameraRig.snap] is not simply what
+     * [CameraRig.apply] does.
+     *
+     * The snapshot is the engine's memory of where the camera WAS; the interpolation between it
+     * and the current value is what renders 60 Hz camera easing smoothly above 60 fps (the plan's
+     * §1.5(2), and the reason the rig is driven from `onFixedUpdate` at all). Collapsing it every
+     * tick would leave the interpolator nothing to interpolate and silently return the camera to
+     * per-tick stepping.
+     *
+     * Killed by: add `updateLastState()` to [CameraRig.applyTo] — every mid-tick factor then
+     * yields the destination instead of a point on the way to it, and 35 m stops being on the
+     * top edge half way through.
+     */
+    @Test
+    fun `apply leaves the engine an earlier state to interpolate from`()
+    {
+        val camera = DefaultCamera.createOrthographic(1600, 900)
+        CameraRig.snapTo(camera, 1600f, 900f, 20f)
+        CameraRig.applyTo(camera, 1600f, 900f, 50f)
+
+        // Half way through the fixed step the camera must be half way between the two depths,
+        // i.e. its world point — the one pinned to the top edge — must be 35 m down.
+        val half = interpolatedScreenPos(camera, 0f, 35f, t = 0.5f)
+        assertEquals(0f, half.y, TOLERANCE, "35 m is not at the top edge half way between camera depths 20 and 50")
+
+        assertNotEquals(
+            half.y,
+            interpolatedScreenPos(camera, 0f, 35f, t = 1f).y,
+            "the interpolation factor changes nothing — the snapshot and the current state are the same"
+        )
+    }
+
+    /**
+     * Screen position of a world point under the matrix the engine would build for [camera] at
+     * interpolation factor [t], using the engine's own `interpolateFrom` and the operation order
+     * of `DefaultCamera.updateViewMatrix` (Camera.kt:118-131).
+     */
+    private fun interpolatedScreenPos(camera: DefaultCamera, worldX: Float, worldY: Float, t: Float = 0f): Vector2f
+    {
+        val scale = camera.scale.interpolateFrom(camera.scaleLast, Vector3f(), t)
+        val origin = camera.origin.interpolateFrom(camera.originLast, Vector3f(), t)
+        val position = camera.position.interpolateFrom(camera.positionLast, Vector3f(), t)
+        val m = Matrix4f()
+            .identity()
+            .translate(origin)
+            .scale(scale)
+            .translate(position.x - origin.x, position.y - origin.y, position.z - origin.z)
+        val v = Vector4f(worldX, worldY, 0f, 1f).mul(m)
+        return Vector2f(v.x, v.y)
     }
 
     private companion object

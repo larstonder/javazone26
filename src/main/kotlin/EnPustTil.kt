@@ -498,13 +498,17 @@ class EnPustTil : PulseEngineGame()
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
 
-        // Applied HERE as well as every fixed tick, so that frame 1 is drawn with a real
-        // matrix. `topLeftWorldPosition` and the view matrix behind it are computed in
-        // GraphicsImpl.initFrame at the top of each frame, before any of our callbacks run
-        // (PulseEngineImpl.kt:69-73, 216-224), so without this the first frame would be drawn —
-        // and DiveRenderer's strip walk would read its visible rect — from the identity camera
-        // the engine constructs. Cheap, and it removes a whole class of first-frame question.
-        CameraRig.apply(engine, camera.depth)
+        // SNAP, not apply, and the difference is the whole of frame 1. `topLeftWorldPosition`
+        // and the view matrix behind it are computed in GraphicsImpl.initFrame at the top of
+        // each frame, before any of our callbacks run (PulseEngineImpl.kt:69-73, 216-224) — so
+        // without a write here the first frame would be drawn, and DiveRenderer's strip walk
+        // would read its visible rect, from the identity camera the engine constructs.
+        //
+        // But a plain `apply` does not fix that, which is not obvious and was measured the hard
+        // way: `updateViewMatrix` interpolates every parameter from a snapshot the engine only
+        // refreshes inside a fixed step, frame 1 runs no fixed step, and the snapshot's initial
+        // value IS that identity. `snap` collapses the two. See CameraRig's class doc.
+        CameraRig.snap(engine, camera.depth)
 
         // Registering as a Service (rather than calling its methods directly) gives
         // ScoreRepository its own onCreate (load scores from disk) and onDestroy (final
@@ -709,9 +713,16 @@ class EnPustTil : PulseEngineGame()
             // Pushed through immediately, for the same reason as in onCreate: this runs on the
             // render clock, so without it the frame drawn right after a restart would use the
             // camera the PREVIOUS run ended at — a full-frame jump from the abyss back to the
-            // surface, one frame late. CameraRig.apply is idempotent, so the fixed tick simply
+            // surface, one frame late. CameraRig.snap is idempotent, so the fixed tick simply
             // writes the same four values again.
-            CameraRig.apply(engine, camera.depth)
+            //
+            // SNAP rather than apply because this is a teleport: DiveCamera.snapTo just moved
+            // the camera from wherever the last run ended to the surface, and the engine would
+            // otherwise interpolate across that jump from a snapshot taken in the abyss —
+            // smearing the first frame of a fresh run through 150 m of water. It only bites on a
+            // frame that ran no fixed step, which is exactly the kind of intermittent that never
+            // reproduces on demand. See CameraRig.snap.
+            CameraRig.snap(engine, camera.depth)
             DiveLighting.resetAim()
         }
 
