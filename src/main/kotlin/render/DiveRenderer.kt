@@ -4,6 +4,7 @@ import dive.DiveSim
 import dive.Tuning
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
+import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
@@ -30,8 +31,22 @@ object DiveRenderer
     private val zoneBlue  = floatArrayOf(0.52f, 0.36f, 0.22f, 0.12f,  0.035f)
 
     /** Strip height for the zone-band gradient, in metres (resolution-independent). Small
-     *  enough that DepthBlend's smoothstep easing reads as continuous rather than banded. */
-    private const val BAND_STRIP_METRES = 0.5f
+     *  enough that DepthBlend's smoothstep easing reads as continuous rather than banded.
+     *  Internal so [DiveRendererTest] can assert the walk's pitch against it rather than
+     *  against a second copy of the number. */
+    internal const val BAND_STRIP_METRES = 0.5f
+
+    /**
+     * Hard ceiling on how many strips one frame may draw — see [stripCount].
+     *
+     * A normal frame draws exactly 120 (60 m of water at half a metre a strip). The visible
+     * world rect is computed by the engine before any of our code runs that frame, so on the
+     * very first frame, or in the middle of a window resize, it can be empty, inverted or
+     * enormous. Drawing too few strips is a frame that looks wrong for one sixtieth of a
+     * second; drawing an unbounded number is a frame that never ends. Four times the nominal
+     * count is far more headroom than any real camera state needs and still bounds the loop.
+     */
+    internal const val MAX_BAND_STRIPS = (4f * Viewport.VISIBLE_DEPTH_METRES / BAND_STRIP_METRES).toInt()
 
     /**
      * THE REFLECTANCE FLOOR — the single most load-bearing number in this file. Nothing
@@ -153,20 +168,67 @@ object DiveRenderer
      *
      * Every strip colour here must clear [GI_REFLECTANCE_FLOOR] — read that constant's doc
      * before changing the zone tables, [BAND_STRIP_METRES], or anything else in this loop.
+     *
+     * THE WALK ITSELF IS IN WORLD DEPTHS, not screen rows — [stripCount], [stripTopDepth] and
+     * [stripCentreDepth], all pure and asserted in `DiveRendererTest`. Only the two lines that
+     * derive the visible depth range, and the `fillRect`, are still in pixels. That is
+     * deliberate: which depth each strip is coloured by is the thing that decides where the
+     * reflectance floor bites, so it is the one part of this file that must be provable
+     * without a GL context.
      */
     private fun drawZoneBands(surface: Surface, cam: Float, w: Float, h: Float)
     {
+        val worldTop = Viewport.depthAt(0f, cam, h)
+        val worldBottom = Viewport.depthAt(h, cam, h)
         val ppm = Viewport.pixelsPerMetre(h)
-        val stripHeight = BAND_STRIP_METRES * ppm
-        var y = 0f
-        while (y < h)
+        val count = stripCount(worldTop, worldBottom)
+        for (i in 0 until count)
         {
-            val stripBottom = min(y + stripHeight, h)
-            val centreDepth = Viewport.depthAt((y + stripBottom) * 0.5f, cam, h)
+            val centreDepth = stripCentreDepth(worldTop, worldBottom, i)
+            val top = (stripTopDepth(worldTop, i) - worldTop) * ppm
+            val bottom = (min(stripTopDepth(worldTop, i + 1), worldBottom) - worldTop) * ppm
             surface.setDrawColor(zoneRedAt(centreDepth), zoneGreenAt(centreDepth), zoneBlueAt(centreDepth), 1f)
-            surface.fillRect(0f, y, w, stripBottom - y)
-            y = stripBottom
+            surface.fillRect(0f, top, w, bottom - top)
         }
+    }
+
+    // --- The zone-band strip walk, in world depths ---------------------------------------
+    //
+    // Pure and exposed for testing, for the reason [GI_REFLECTANCE_FLOOR] spells out at
+    // length: a single strip taking its colour from the wrong depth is a razor-sharp hairline
+    // across the whole play column, and nothing about that is visible in a passing test of the
+    // colour curve alone. Expressed in metres rather than in screen rows so that the walk is
+    // resolution-independent by construction — the same rect gives the same strips whatever
+    // the booth's framebuffer turns out to be.
+
+    /**
+     * How many strips cover the visible depth range `[worldTop, worldBottom]`, rounded up so
+     * the last one reaches the bottom of the rect (clipped there — see [stripCentreDepth]).
+     *
+     * Returns 0 for an empty, inverted or NaN rect and never more than [MAX_BAND_STRIPS], so a
+     * world rect that has not been computed yet costs a wrong-looking frame rather than a hung
+     * one.
+     */
+    internal fun stripCount(worldTop: Float, worldBottom: Float): Int
+    {
+        val span = worldBottom - worldTop
+        if (!(span > 0f)) return 0 // written this way round so NaN falls out here too
+        return ceil(span / BAND_STRIP_METRES).toInt().coerceAtMost(MAX_BAND_STRIPS)
+    }
+
+    /** The depth the top edge of strip [index] sits at. */
+    internal fun stripTopDepth(worldTop: Float, index: Int) = worldTop + index * BAND_STRIP_METRES
+
+    /**
+     * The depth strip [index] takes its colour from: the middle of the strip, not its top
+     * edge, so the sampled curve is centred on the band that is actually painted. The last
+     * strip is clipped to [worldBottom], which pulls its centre up accordingly.
+     */
+    internal fun stripCentreDepth(worldTop: Float, worldBottom: Float, index: Int): Float
+    {
+        val top = stripTopDepth(worldTop, index)
+        val bottom = min(stripTopDepth(worldTop, index + 1), worldBottom)
+        return (top + bottom) * 0.5f
     }
 
     /**
