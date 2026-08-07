@@ -116,12 +116,16 @@ def test_choose_grid_picks_14x3_for_the_real_bake():
     assert g.unused_cells == 1
 
 
-def test_choose_grid_minimises_bucket_before_area():
-    # 7x6 has a smaller area (2_032_128 vs 2_128_896 for 11x4) but lands in
-    # the 4096 bucket. Bucket must dominate.
+def test_choose_grid_prefers_a_smaller_bucket_over_an_equal_area_layout():
+    # 7x6 and 14x3 both hold 42 cells and have IDENTICAL area (2_032_128) - same
+    # cell count, same cell size. But 7x6's 2304 px edge lands in the 4096 bucket
+    # while 14x3's 1764 fits 2048. Only the bucket term separates them, so this
+    # fails if the ranking key is ever reordered to (area, bucket).
+    assert (7 * 126) * (6 * 384) == (14 * 126) * (3 * 384)
+    assert bucket_for(max(7 * 126, 6 * 384)) == 4096
+    assert bucket_for(max(14 * 126, 3 * 384)) == 2048
     g = choose_grid(41, 126, 384)
-    assert g.bucket == 2048
-    assert g.cols * g.frame_w == g.sheet_w
+    assert (g.cols, g.rows) == (14, 3)
 
 
 def test_choose_grid_always_has_enough_cells():
@@ -428,7 +432,7 @@ import numpy as np
 from spritesheet.resample import (
     resample_diffuse, resample_normal, decode_normals, mean_normal_length,
 )
-from spritesheet.colour import srgb_to_linear
+from spritesheet.colour import linear_to_srgb
 
 
 def _flat_normal_field(h, w):
@@ -438,7 +442,6 @@ def _flat_normal_field(h, w):
     linear[..., 1] = 0.5   # y = 0
     linear[..., 2] = 1.0   # z = 1
     # Encode to sRGB so decode_normals has to undo it.
-    from spritesheet.colour import linear_to_srgb
     return np.clip(linear_to_srgb(linear) * 255 + 0.5, 0, 255).astype(np.uint8)
 
 
@@ -1022,9 +1025,9 @@ def check_normal_encoding(rgb, alpha, index: int) -> None:
     length = mean_normal_length(rgb, alpha)
     if not np.isfinite(length) or abs(length - 1.0) > UNIT_LENGTH_TOLERANCE:
         raise SourceError(
-            f"frame {index}: decoded normals have mean length {length:.4f}, expected "
-            f"1.0 +/- {UNIT_LENGTH_TOLERANCE}. The source is probably no longer "
-            f"sRGB-encoded - re-check the decode in resample.decode_normals"
+            f"frame {index}: decoded normals are not unit length (mean {length:.4f}, "
+            f"expected 1.0 +/- {UNIT_LENGTH_TOLERANCE}). The source is probably no "
+            f"longer sRGB-encoded - re-check resample.decode_normals"
         )
 
 
