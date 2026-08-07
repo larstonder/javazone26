@@ -119,3 +119,13 @@ gradle-app.setting
 /.gradle/
 /build/
 .kotlin/
+
+### Én Pust Til ###
+# Source art frames (~183 MB) and the packaged Windows build (~41 MB). Both are
+# deliberately OUT of the repo: what ships is the baked sprite sheets under
+# src/main/resources/sprites/ (1-2 MB), which the .exe embeds. See
+# docs/superpowers/specs/2026-08-07-diver-spritesheet-bake-design.md for the
+# tradeoff — a clean clone can build and run the game, but cannot re-bake the
+# sheets without obtaining the source frames separately.
+assets/
+release/
