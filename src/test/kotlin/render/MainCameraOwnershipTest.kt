@@ -47,13 +47,15 @@ import kotlin.test.assertTrue
  *   - `EnPustTil.kt` — READS ONLY, `topLeftWorldPosition` / `bottomRightWorldPosition`, to feed
  *     [CameraInvariants]. A read cannot cause the bug above, which is a WRITE from a second
  *     place; the read-only clause is enforced below rather than trusted.
+ *   - `render/CameraRig.kt` — the ONE legitimate writer. Not yet called by anything; Task 5 of
+ *     docs/superpowers/plans/2026-08-06-engine-world-coordinates.md wires it in and narrows this
+ *     list again, at which point the read-only clause on `EnPustTil.kt` is the whole guard.
  *
- * `render/CameraRig.kt` joins the list in Task 3 as the one legitimate WRITER, and Task 5 of
- * docs/superpowers/plans/2026-08-06-engine-world-coordinates.md narrows the list again once the
- * flip lands. The plan asked for CameraRig's entry to be added here in Task 2, before the file
- * exists, so that Task 3 need not touch a test file; that was not done, because exact set
- * equality against a file that does not exist yet means committing Task 2 red, and a red commit
- * is how work gets lost. Adding it in Task 3 costs one line and keeps both commits green.
+ * The plan asked for CameraRig's entry to be added here in Task 2, before the file existed, so
+ * that Task 3 need not touch a test file. It was added in Task 3 instead: exact set equality
+ * against a file that does not exist yet means committing Task 2 red, and a red commit is how
+ * work gets lost. The cost is one line, and the benefit is that the guard was watched going red
+ * on CameraRig.kt specifically before being told to expect it.
  */
 class MainCameraOwnershipTest
 {
@@ -113,7 +115,10 @@ class MainCameraOwnershipTest
          * see the class doc for why this is set equality and not a skip list, and for what
          * each entry is allowed to do with the camera.
          */
-        val CAMERA_ALLOW_LIST = setOf("src/main/kotlin/EnPustTil.kt")
+        val CAMERA_ALLOW_LIST = setOf(
+            "src/main/kotlin/EnPustTil.kt",
+            "src/main/kotlin/render/CameraRig.kt"
+        )
 
         /** What EnPustTil.kt is allowed to touch on it: reads of the engine-computed world rect. */
         val ALLOWED_READS = listOf("topLeftWorldPosition", "bottomRightWorldPosition")
