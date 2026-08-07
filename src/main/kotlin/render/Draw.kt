@@ -92,6 +92,69 @@ fun Surface.fillRect(x: Float, y: Float, width: Float, height: Float) =
     drawTexture(Texture.BLANK, x, y, width, height)
 
 /**
+ * The origin that makes a draw call's `(x, y)` mean the MIDDLE of the rect rather than its
+ * top-left corner. Named, and public, because it is a convention shared with two engine
+ * renderers we do not own — see [fillRectCentred].
+ */
+const val CENTRE_ORIGIN = 0.5f
+
+/**
+ * Draw a solid rectangle CENTRED on ([centreX], [centreY]), optionally rotated [angle] degrees
+ * about that centre.
+ *
+ * ## Why this exists rather than `fillRect(x - w * 0.5f, y - h * 0.5f, w, h)`
+ *
+ * Every object this game draws into the world is authored as a centre and a size: a pearl, a
+ * vent, the fish, the diver. Every one of them used to be converted to a top-left corner at its
+ * own call site, which meant the same `- size * 0.5f` written out seven times — and the diver's
+ * conversion, in particular, had to be kept in step with a size that varies with held mass.
+ * [showsSquare] already made the culling side of that conversion single-sourced; this is the
+ * drawing side.
+ *
+ * ## The part that matters for the art, and the reason this is a named tuple and not seven
+ * ## expressions
+ *
+ * The art is 2D sprite sheets WITH NORMAL MAPS, and a normal-mapped sprite is not one draw call
+ * — it is **the same world rect submitted to two surfaces**: the albedo to `main` through
+ * `drawTexture`, and the normal to `gi_normal_map` through
+ * `NormalMapRenderer.drawNormalMap(texture, x, y, w, h, rot, xOrigin, yOrigin, ...)`
+ * (`ENG/modules/lighting/shared/NormalMapRenderer.kt:91-123`). If the two disagree by so much as
+ * half a sprite, the lighting slides off the thing it is lighting — and the two draws are issued
+ * from different places, so a per-call-site `- w * 0.5f` is exactly the kind of duplicated
+ * derivation that produced the shipped world-offset-from-HUD bug (`6ea1f53`). Passing
+ * `(x, y, w, h, angle)` plus [CENTRE_ORIGIN] as ONE tuple is what makes the second draw a copied
+ * argument list instead of a re-derivation.
+ *
+ * **The three renderers agree exactly, and this was read off the shaders rather than assumed:**
+ *
+ * ```
+ * texture.vert:70     offset = (vertexPos - origin)     * size         * rotate(radians(angle))
+ * normal_map.vert:75  offset = (vertexPos - origin)     * size         * rotMatrix(radians(rotation))
+ * scene.vert:102      offset = (vertexPos - vec2(0.5))  * adjustedSize * rotate(radians(angle))
+ * ```
+ *
+ * all followed by `worldPos + offset`, with `vertexPos` in 0..1. So with `origin = (0.5, 0.5)`:
+ * `(x, y)` is the centre, `angle` is in DEGREES, and the rotation is about that same centre — in
+ * all three. `scene.vert` has the 0.5 hardcoded, which is why [DiveLighting]'s `drawLight` calls
+ * already pass centres and why they are the shape the rest of the drawing is being brought into
+ * line with, not the other way round.
+ *
+ * ## What this deliberately does NOT do
+ *
+ * There is no normal-map draw here, and no sprite helper. There is no art yet, and adding a
+ * second per-object draw call in the same pass as this one would make any regression
+ * unattributable. What is bought now is the origin and angle convention, once, while there are
+ * seven call sites instead of dozens.
+ *
+ * Still `drawTexture(Texture.BLANK, ...)` and never `drawQuad` — `drawQuad` takes no origin at
+ * all (`Surface.kt:42` is `(x, y, width, height)`, top-left only) and renders nothing in the
+ * shipped Windows jar besides. See [fillRect] for the full mechanism, and `DrawTest` for the
+ * guard that fails the build if a call to either returns.
+ */
+fun Surface.fillRectCentred(centreX: Float, centreY: Float, width: Float, height: Float, angle: Float = 0f) =
+    drawTexture(Texture.BLANK, centreX, centreY, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN)
+
+/**
  * The reference (`caesars-salads/utils/Extensions.kt:52-58`) offsets its outline by a flat
  * 2 pixels at its target resolution (1920x1080 — see its README). `engine.window.width/height`
  * here are PHYSICAL framebuffer pixels (2400x1800 on a Retina Mac, not the 1200x900 in

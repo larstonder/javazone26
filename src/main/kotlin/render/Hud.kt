@@ -45,8 +45,12 @@ import kotlin.math.sqrt
  * a fraction of that height, never its width. World-anchored elements (the air ring, HELD) are
  * sized in metres times [pixelsPerMetre] so they stay the same size relative to the diver.
  *
- * Uses [Surface.fillRect] ONLY. `Surface.drawQuad`/`drawLine` render nothing at all on
- * macOS/Apple Silicon — silently, no GL error. See render/Draw.kt.
+ * Uses [Surface.fillRect] / [Surface.fillRectCentred] ONLY. `Surface.drawQuad`/`drawLine` render
+ * nothing at all on macOS/Apple Silicon — silently, no GL error, and still nothing in the shipped
+ * Windows jar. See render/Draw.kt, and `DrawTest` for the guard that fails the build if either
+ * returns. Anything whose position means a MIDDLE — a bubble in the ring, a marker on the depth
+ * tape — is drawn with [Surface.fillRectCentred] rather than a corner worked out here; anything
+ * whose position means a top-left corner (the tape body and its backing) keeps [Surface.fillRect].
  */
 object Hud
 {
@@ -296,7 +300,7 @@ object Hud
             val angle = airBubbleSlotAngle(slot)
             val bx = diverX + cos(angle) * radius
             val by = diverY + sin(angle) * radius
-            surface.fillRect(bx - bubbleSize * 0.5f, by - bubbleSize * 0.5f, bubbleSize, bubbleSize)
+            surface.fillRectCentred(bx, by, bubbleSize, bubbleSize)
         }
     }
 
@@ -344,19 +348,25 @@ object Hud
         surface.setDrawColor(tapeBg)
         surface.fillRect(x, top, tapeWidth, span)
 
+        // Both markers straddle the tape's own centre line, which is what `tapeCentreX` names.
+        // Written as a centre and a size ([fillRectCentred]) rather than as a corner: a marker's
+        // meaning is "the tape, at THIS depth", and the two corner expressions this replaces
+        // ("x - (markWidth - tapeWidth) * 0.5f" and "x - tapeWidth") were two different-looking
+        // ways of saying the same thing, which is how one of them comes to be edited alone.
+        val tapeCentreX = x + tapeWidth * 0.5f
+
         // Point of no return: the mercy that teaches the economy without a word of text.
         val safeFraction = (sim.maxSafeDepth() / Tuning.MAX_DEPTH).coerceIn(0f, 1f)
         val safeY = top + safeFraction * span
-        val markWidth = tapeWidth * 6f
         surface.setDrawColor(noReturnMark)
-        surface.fillRect(x - (markWidth - tapeWidth) * 0.5f, safeY - tapeWidth * 0.5f, markWidth, tapeWidth)
+        surface.fillRectCentred(tapeCentreX, safeY, tapeWidth * 6f, tapeWidth)
 
         // Current depth marker.
         val depthFraction = (sim.depth / Tuning.MAX_DEPTH).coerceIn(0f, 1f)
         val depthY = top + depthFraction * span
-        val markerHeight = tapeWidth * 3f
+        val markerSize = tapeWidth * 3f
         surface.setDrawColor(if (sim.canStillReturn()) cold else danger)
-        surface.fillRect(x - tapeWidth, depthY - markerHeight * 0.5f, tapeWidth * 3f, markerHeight)
+        surface.fillRectCentred(tapeCentreX, depthY, markerSize, markerSize)
 
         // The marker travels the whole tape as depth increases — the same bright-to-black
         // span everything else on this surface crosses — so this label needs the outline

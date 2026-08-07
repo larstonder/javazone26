@@ -36,6 +36,13 @@ import kotlin.math.sqrt
  * most a few dozen objects and a fillRect outside the frustum is clipped by the GPU anyway);
  * the point is that "is this on screen" now has exactly one answer in this codebase, and it is
  * the engine's.
+ *
+ * OBJECTS ARE DRAWN FROM THEIR CENTRES — [fillRectCentred], which is where that reasoning lives.
+ * A pearl, a vent, the fish and the diver are each authored as a centre and a size, which is also
+ * exactly what the GI light quads on the same objects already were (`scene.vert:102` hardcodes a
+ * 0.5 origin) and what the normal-map pass will be when the art lands. Only the things that are
+ * genuinely spans — the zone-band strips and the column walls, which are defined by the edges of
+ * the visible rect rather than by a middle — still take a corner.
  */
 object DiveRenderer
 {
@@ -317,11 +324,19 @@ object DiveRenderer
      *
      * Spans the visible rect horizontally rather than the column, exactly as before: the water's
      * surface does not stop at the rock.
+     *
+     * Centred rather than corner-anchored ([fillRectCentred]) because the line's defining
+     * quantity is the depth it sits ON — [Tuning.SURFACE_DEPTH] — not the depth its top edge
+     * starts at. That is the same reason the objects below are centred, and it leaves no stray
+     * half-offset in this file for a later reader to copy.
      */
     private fun drawSurfaceLine(surface: Surface, worldLeft: Float, worldRight: Float)
     {
         surface.setDrawColor(surfaceColor)
-        surface.fillRect(worldLeft, Tuning.SURFACE_DEPTH - SURFACE_LINE_METRES * 0.5f, worldRight - worldLeft, SURFACE_LINE_METRES)
+        surface.fillRectCentred(
+            (worldLeft + worldRight) * 0.5f, Tuning.SURFACE_DEPTH,
+            worldRight - worldLeft, SURFACE_LINE_METRES
+        )
     }
 
     /**
@@ -335,7 +350,7 @@ object DiveRenderer
         sim.airPockets.forEach { pocket ->
             if (!cam.showsSquare(pocket.x, pocket.depth, size)) return@forEach
             surface.setDrawColor(if (pocket.usedThisDive) airPocketSpentColor else airPocketColor)
-            surface.fillRect(pocket.x - size * 0.5f, pocket.depth - size * 0.5f, size, size)
+            surface.fillRectCentred(pocket.x, pocket.depth, size, size)
         }
     }
 
@@ -346,7 +361,7 @@ object DiveRenderer
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
             if (!cam.showsSquare(pearl.x, pearl.depth, size)) return@forEach
-            surface.fillRect(pearl.x - size * 0.5f, pearl.depth - size * 0.5f, size, size)
+            surface.fillRectCentred(pearl.x, pearl.depth, size, size)
         }
     }
 
@@ -361,7 +376,7 @@ object DiveRenderer
         val size = Framing.PEARL_SIZE_METRES
         if (!cam.showsSquare(fish.x, fish.depth, size)) return
         surface.setDrawColor(pearlColor)
-        surface.fillRect(fish.x - size * 0.5f, fish.depth - size * 0.5f, size, size)
+        surface.fillRectCentred(fish.x, fish.depth, size, size)
     }
 
     private fun drawDiver(surface: Surface, sim: DiveSim, cam: Camera)
@@ -371,7 +386,7 @@ object DiveRenderer
         val size = Framing.DIVER_SIZE_METRES + sim.heldMass * 0.03f
         if (!cam.showsSquare(sim.x, sim.depth, size)) return
         surface.setDrawColor(diverColor)
-        surface.fillRect(sim.x - size * 0.5f, sim.depth - size * 0.5f, size, size)
+        surface.fillRectCentred(sim.x, sim.depth, size, size)
     }
 
     // --- Continuous zone-band colour, exposed for testing (see DiveRendererTest) ---------
