@@ -67,6 +67,14 @@ object DiveLighting
     private const val PEARL_LIGHT_SIZE_METRES = 3f
     private const val DIVER_LIGHT_SIZE_METRES = 3f
 
+    /**
+     * How many metres of water around an occluder GI's ambient occlusion darkens. A plain
+     * artistic quantity in world units — see [setup], where it is converted into the engine's
+     * `aoRadius`, why it is a metre value and must never become a pixel count, and what it was
+     * measured to actually do (which, at this value, is nothing: the scene has no occluders).
+     */
+    private const val AO_RADIUS_METRES = 4f
+
     // Continuous ambient (see DepthBlend) replaces the old flat per-zone Color lookup — a
     // hard-edged mapOf(Zone, Color) is exactly the "sharp jump" the zone bands also had.
     // Same anchor values as before (SHALLOWS reads without a lamp nearby, ABYSS ambient is
@@ -247,6 +255,87 @@ object DiveLighting
         // GI's own documented remedy for exactly this "upscaled low-res light map over a
         // smooth gradient" scenario, tuned by the reference for the same lighting system.
         system.dithering = 0.6f
+
+        // AO RADIUS, IN METRES. Set AFTER localSceneTexScale above, because it is expressed
+        // against it and the two must not be able to silently disagree.
+        //
+        // `ao.frag:36` is `radius = aoRadius * camScale`, which reads like a zoom knob and is
+        // not one. `ray` marches in SDF TEXELS (ao.frag:53-64 divides the step by
+        // localSdfTexRes, and the SDF is fragCoord-based — sdf.frag:14,20), while camScale is
+        // screen pixels per world unit. Texels per world unit is camScale * localSceneTexScale,
+        // so camScale cancels and what is left is
+        //
+        //     radius_world = aoRadius / localSceneTexScale
+        //
+        // — no camera scale in it at all. The AO radius is therefore ALREADY scale-invariant in
+        // world units. Do NOT "fix" that multiply, and do NOT divide by the camera scale here:
+        // that would pin AO to a constant number of SCREEN PIXELS, which CLAUDE.md forbids
+        // outright, and which would make the world radius depend on the booth panel's height
+        // (4 m at h=1800, 8 m at h=900) for a display whose size we do not know in advance.
+        //
+        // What the world-coordinate migration changed is what a world unit MEANS: one pixel
+        // before, one metre after. Left at the engine's default of 30
+        // (GlobalIlluminationSystem.kt:57) the radius would have gone from 30/0.25 = 120 pixels
+        // — a halo nobody chose — to 120 METRES, twice Framing.VISIBLE_DEPTH_METRES. So the
+        // value is stated in metres and converted here, once.
+        //
+        // WHAT THIS MEASURABLY DOES, WHICH IS ALMOST NOTHING, AND WHY THAT IS THE RIGHT
+        // OUTCOME RATHER THAN A REASON TO SKIP IT. Captured at 16:9 (3200x1800 framebuffer) in
+        // the abyss with pearls in frame, four runs of the same pinned scene:
+        //
+        //     aoRadius default (120 m)   frame mean 14.866 / 14.864 over two runs
+        //     AO_RADIUS_METRES = 4 m     frame mean 14.913
+        //     aoRadius 0 (AO disabled)   frame mean 14.913
+        //
+        // Two runs of the SAME build differ by a mean |delta| of 0.012/255 (the run-to-run
+        // floor: GI accumulates temporally and ao.frag jitters its ray directions by `time`).
+        // The 4 m build differs from AO-DISABLED by 0.005/255 — BELOW that floor, i.e. at this
+        // radius ambient occlusion contributes nothing to our frame at all. The 120 m default
+        // differed from both by 0.088/255, peaking at 57/255, and every one of those pixels sat
+        // in the glow around a single pearl near the left wall. Side-by-side crops of that pearl
+        // are indistinguishable by eye. NO VISUAL JUSTIFICATION IS BEING CLAIMED FOR 4 m; the
+        // justification is the unit, and the measurement is recorded so nobody re-tunes this
+        // hunting for an effect that is not there yet.
+        //
+        // The reason it is inert is in ao.frag: the loop only accumulates occlusion where a ray
+        // hits SDF geometry that is NOT a light source (`hitLightSource` breaks without
+        // occluding, ao.frag:57-60). GI_LOCAL_SCENE is fed by exactly two things — GiOccluder
+        // entities through GlobalIlluminationSystem's localOccluderPass, and our three
+        // immediate-mode drawLight calls in [render]. We have no scene entities at all (see the
+        // comment above engine.scene.createEmptyAndSetActive), so the only geometry in the local
+        // SDF is the light quads themselves. What the 120 m default was producing, then, was a
+        // faint darkening around the lights — an artefact of a radius twice the height of the
+        // visible column, over geometry that is not supposed to occlude anything.
+        //
+        // It goes live the moment something is drawn as an OCCLUDER — the rock walls are the
+        // obvious candidate when the art lands. That is when to tune AO_RADIUS_METRES by eye,
+        // anywhere between roughly 1 m and 10 m, and it is exactly then that a wrong unit would
+        // have been expensive to find. Do not reintroduce a screen-relative expression while
+        // tuning: if a value looks right at one resolution and wrong at another, something else
+        // is wrong and a pixel count will hide it rather than fix it.
+        system.aoRadius = AO_RADIUS_METRES * system.localSceneTexScale
+
+        // THE THREE NEIGHBOURING KNOBS THAT LOOK LIKE THEY NEED THE SAME TREATMENT AND DO NOT.
+        //
+        // 1. A light's `radius` (radiance_cascades.frag:120-127, `radius * camScale / dist^2`)
+        //    genuinely is NOT scale-invariant — it has dimension 1/length — but we pass
+        //    `radius = 0f` on every drawLight in [render], which skips the falloff branch
+        //    entirely, so it does not reach us. Anyone who later sets a non-zero radius is
+        //    tuning a number whose meaning depends on the display's height, and will have to
+        //    derive it the way this one is derived.
+        // 2. The minimum light quad size (scene.vert:86-88,
+        //    `max(size, pixelSizeInWorld * 1500 / camScale)`) IS scale-invariant already:
+        //    screenSpacePos.w is exactly 1.0 for an affine orthographic camera, so the floor is
+        //    1500/(resolution.y * camScale) world units, i.e. a constant number of screen
+        //    pixels. Nothing to do.
+        // 3. `normalMapScale` (GlobalIlluminationSystem.kt:54, default 4f, uploaded as its
+        //    RECIPROCAL at GiRadianceCascades.kt:88 and GiInterior.kt:52) is the out-of-plane
+        //    component of the ray direction — A UNITLESS RATIO, NOT A LENGTH. It does not
+        //    change meaning when a world unit goes from a pixel to a metre and MUST NOT be
+        //    compensated the way aoRadius is above. It is inert today because nothing is drawn
+        //    to GI_NORMAL_MAP; it goes live when the normal-mapped sprite art lands. Left at
+        //    its default deliberately, not by omission.
+
         engine.scene.addSystem(system)
         gi = system
 
