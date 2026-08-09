@@ -1534,4 +1534,12 @@ git commit -m "docs: record the sprite sheet bake and two silent SpriteSheet tra
 
 **Type consistency:** `Grid` fields are used identically in Tasks 1, 4, 7. `content_box` returns `(w, h)` and is passed straight to `resample_*` as `size`, matching Pillow's `(width, height)` convention throughout. `resample_diffuse`/`resample_normal` share one signature, which is what lets Task 3's final test loop over both.
 
+**Erratum found during execution (Task 3):** the plan's
+`test_resampled_normals_stay_unit_length` used the spatially *uniform* `_flat_normal_field`,
+which cannot exercise renormalization — averaging identical unit vectors never shortens them,
+so deleting the renormalize entirely still passed at |v| = 1.0000154. Fixed in `6a8a98e` with a
+striped fixture of genuinely unit vectors (0.6, 0, 0.8) / (-0.6, 0, 0.8); the pre-renormalize
+average measures 0.793 and the test now fails at |v| = 0.796 if the step is removed. Anyone
+re-running this plan should take the test from the repo, not from this document.
+
 **One gap found and closed:** the plan originally had no consumer for `check_normal_encoding` — it is now called per-frame in Task 6's validation loop.
