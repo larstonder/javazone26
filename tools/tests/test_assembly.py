@@ -79,3 +79,72 @@ def test_assemble_rejects_wrongly_sized_cells():
     bad = np.zeros((10, 10, 4), dtype=np.uint8)
     with pytest.raises(ValueError):
         assemble(grid, [bad])
+
+
+def _indexed_fill(grid, index):
+    """A cell filled with a value unique to `index`, for identity checks."""
+    w, h = content_box(grid)
+    cell = np.zeros((h, w, 4), dtype=np.uint8)
+    cell[..., :3] = (17 + index) % 256
+    cell[..., 3] = 255
+    return cell
+
+
+def _pattern_cell(grid):
+    """
+    Content that varies along both axes, unlike `_solid_cell`. A uniform fill
+    would round-trip correctly even under a transposed width/height slice or an
+    offset write, since every pixel in it is identical; this catches those too.
+    """
+    w, h = content_box(grid)
+    cell = np.zeros((h, w, 4), dtype=np.uint8)
+    cell[..., 0] = (np.arange(w) % 256)[None, :]
+    cell[..., 1] = (np.arange(h) % 256)[:, None]
+    cell[..., 2] = 91
+    cell[..., 3] = 255
+    return cell
+
+
+def test_cell_interior_round_trips_the_exact_content_pixels():
+    # assemble's whole job is to place content, not just leave a transparent
+    # guard around an unwritten cell - a stub that allocates the right-shaped
+    # zero sheet and never writes into it would still pass every test above,
+    # since a sheet of all zeros is trivially "opaque nowhere" and "transparent
+    # in the tail". This pins the actual pixel values, not just their absence.
+    grid = _grid()
+    box_w, box_h = content_box(grid)
+    index = 5
+    content = _pattern_cell(grid)
+    cells = [_solid_cell(grid, value=0)] * 41
+    cells[index] = content
+    sheet = assemble(grid, cells)
+    x, y = cell_origin(grid, index)
+    region = sheet[y + GUARD_PX:y + GUARD_PX + box_h, x + GUARD_PX:x + GUARD_PX + box_w]
+    assert np.array_equal(region, content)
+
+
+def test_distinct_cells_land_at_distinct_row_major_positions():
+    """
+    14 cols: index 13 is the last cell of row 0, 14 the first cell of row 1, and
+    15 the second cell of row 1 - a column-major or transposed index mapping
+    would misplace exactly these three. Expected pixel coordinates are computed
+    here directly from the row-major formula, NOT via `cell_origin` - assemble
+    calls `cell_origin` internally, so if that function itself were the buggy
+    one, reading back through it too would just agree with the bug instead of
+    catching it.
+    """
+    grid = _grid()
+    box_w, box_h = content_box(grid)
+    indices = (13, 14, 15)
+    cells = [_solid_cell(grid, value=0)] * 41
+    for i in indices:
+        cells[i] = _indexed_fill(grid, i)
+    sheet = assemble(grid, cells)
+    for i in indices:
+        expected_x = (i % grid.cols) * grid.frame_w
+        expected_y = (i // grid.cols) * grid.frame_h
+        region = sheet[
+            expected_y + GUARD_PX:expected_y + GUARD_PX + box_h,
+            expected_x + GUARD_PX:expected_x + GUARD_PX + box_w,
+        ]
+        assert np.array_equal(region, _indexed_fill(grid, i))
