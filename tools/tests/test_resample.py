@@ -1,6 +1,7 @@
 import numpy as np
 from spritesheet.resample import (
     resample_diffuse, resample_normal, decode_normals, mean_normal_length,
+    _alpha_weighted_resize,
 )
 from spritesheet.colour import linear_to_srgb
 
@@ -11,6 +12,32 @@ def _flat_normal_field(h, w):
     linear[..., 0] = 0.5   # x = 0
     linear[..., 1] = 0.5   # y = 0
     linear[..., 2] = 1.0   # z = 1
+    # Encode to sRGB so decode_normals has to undo it.
+    return np.clip(linear_to_srgb(linear) * 255 + 0.5, 0, 255).astype(np.uint8)
+
+
+def _striped_normal_field(h, w):
+    """
+    A spatially-VARYING sRGB-ENCODED normal map: alternating columns point in two
+    directions ~74 degrees apart.
+
+    `_flat_normal_field` is uniform, so every input texel is identical and LANCZOS-
+    resizing it produces the same vector at every output texel - averaging identical
+    unit vectors never shortens them. That means a test built on it cannot tell a
+    correct renormalize from a deleted one (proven empirically: removing the
+    renormalize in resample_normal still passes such a test with |v| ~ 1.0000154).
+    Alternating direction every column means every output texel's LANCZOS support
+    spans both directions, so the pre-renormalization average is genuinely short
+    (measured ~0.79, see test) and only actually renormalizing brings it back to
+    unit length.
+    """
+    linear = np.zeros((h, w, 3), dtype=np.float64)
+    odd = np.arange(w) % 2 == 1
+    # Both encoded vectors are already unit length: 0.6^2 + 0.8^2 = 1.
+    linear[:, ~odd, 0] = 0.8   # x = +0.6
+    linear[:, odd, 0] = 0.2    # x = -0.6
+    linear[..., 1] = 0.5       # y = 0
+    linear[..., 2] = 0.9       # z = 0.8
     # Encode to sRGB so decode_normals has to undo it.
     return np.clip(linear_to_srgb(linear) * 255 + 0.5, 0, 255).astype(np.uint8)
 
@@ -47,11 +74,22 @@ def test_mean_normal_length_ignores_transparent_texels():
 
 
 def test_resampled_normals_stay_unit_length():
-    rgb = _flat_normal_field(64, 64)
+    rgb = _striped_normal_field(64, 64)
     alpha = np.full((64, 64), 255, dtype=np.uint8)
+
+    # Prove the fixture can actually detect a missing renormalize: the alpha-weighted
+    # average of the two directions, BEFORE renormalization, is measurably short
+    # (measured ~0.79). If this assertion failed, the fixture would be as blind as
+    # the flat one it replaces.
+    v = decode_normals(rgb)
+    pre, _, _ = _alpha_weighted_resize(v, alpha.astype(np.float64) / 255.0, (16, 16))
+    assert np.linalg.norm(pre, axis=-1).mean() < 0.9
+
+    # The function's actual output must still be unit length - this is what proves
+    # resample_normal renormalizes rather than just returning the shortened average.
     out_rgb, _ = resample_normal(rgb, alpha, (16, 16))
-    v = out_rgb / 255.0 * 2.0 - 1.0          # output is LINEAR, decode directly
-    assert np.allclose(np.linalg.norm(v, axis=-1), 1.0, atol=0.02)
+    v_out = out_rgb / 255.0 * 2.0 - 1.0      # output is LINEAR, decode directly
+    assert np.allclose(np.linalg.norm(v_out, axis=-1), 1.0, atol=0.02)
 
 
 def test_normal_zero_alpha_falls_back_to_flat_and_never_nans():
