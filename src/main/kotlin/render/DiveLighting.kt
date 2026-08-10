@@ -323,12 +323,26 @@ object DiveLighting
      * [TORCH_FORWARD_FRACTION] is one: the height has already been changed three times (3 -> 6 ->
      * 9) and a hand-typed metre value stops meaning "behind him" at the next change.
      *
-     * 0.30 rather than the torch's 0.40 because the two ends of the sheet are not symmetric. The
-     * trailing end is a pair of SPLAYED FINS with open water between the blades (read off frame 0
-     * of the committed sheet), and an emitter sitting between them would rasterise into that gap
-     * and read as a lamp clipped to his feet. 0.30 is back at his knees, where the silhouette is
-     * still solid, and it is still 0.70 of the body away from the torch — the separation is what
-     * makes the two read as different lights rather than one big one.
+     * 0.30 RATHER THAN THE TORCH'S 0.40, AND THE NUMBER IS A MEASURED OPTIMUM RATHER THAN A
+     * JUDGEMENT. The two ends of the sheet are not symmetric: the leading end is a head, and the
+     * trailing end is a pair of legs that separate into SPLAYED FINS. Sweeping the emitter disc
+     * down the trailing half of frame 0 and asking what fraction of it the silhouette covers
+     * (alpha > 16, the same threshold the torch's bounds use) gives
+     *
+     *     0.22   25%   the calf gap — the legs are at their narrowest and furthest apart
+     *     0.30   42%   the knees — a clear local maximum
+     *     0.38   21%   the fin fork — the blades splay wide but the water between them is wider
+     *     0.42    9%   between the blades
+     *
+     * so 0.30 is the best-hidden position there is behind him. IT IS NOT WHOLLY HIDDEN — 58% of
+     * the quad still sits over open water, because a free-diver's legs are simply not as wide as
+     * a 0.9 m disc, and the capture shows a faint blue halo at his knees because of it. That is
+     * the honest cost of this approach and it is why [RIM_SIZE_FRACTION] is not larger. The
+     * torch's own bound (its leading edge at or behind the crown) has no equivalent here: there
+     * is no trailing position that hides the quad, only a least-bad one.
+     *
+     * `DiveLightingTest` re-derives that local maximum from the committed sheet rather than
+     * asserting 0.30, so a re-bake at a different pose moves the test with the art.
      */
     internal const val RIM_BACK_FRACTION = 0.30f
 
@@ -340,11 +354,18 @@ object DiveLighting
      * not an inconsistency. The torch's size is a statement about a torch — a flame is the size a
      * flame is, whoever carries it — and tying it to the body is the specific bug `fd036f7`
      * introduced. The rim's emitter is not an object in the world at all: it is a construction
-     * that has to stay hidden inside the silhouette, so its size is a property OF THE SILHOUETTE
-     * and has to scale with it. At 0.10 the quad's trailing edge sits at 0.30 + 0.05 = 0.35 of
-     * the height behind his centre, against fins that reach ~0.5 — inside him at every diver
-     * height, which is what `DiveLightingTest` asserts against the sheet rather than against this
-     * number.
+     * that has to stay behind the silhouette, so its size is a property OF THE SILHOUETTE and has
+     * to scale with it. At 0.10 the quad's trailing edge sits at 0.30 + 0.05 = 0.35 of the height
+     * behind his centre, against fins that reach 0.482 — so the quad ends inside his outline at
+     * every diver height, which is what `DiveLightingTest` asserts against the sheet rather than
+     * against this number.
+     *
+     * Small for two reasons that pull the same way. The bigger it is the more of it hangs outside
+     * his legs as visible halo (see [RIM_BACK_FRACTION]'s coverage table); and the further its
+     * near edge reaches toward his knees, where the `size / distance` falloff is already steepest.
+     * It cannot be made much smaller either — `scene.vert:87` floors a light quad at
+     * `pixelSizeInWorld * 1500 / camScale`, about 0.11 m for our camera, and a quad near that
+     * floor is a couple of texels in the quarter-scale local SDF.
      */
     internal const val RIM_SIZE_FRACTION = 0.10f
 
@@ -404,7 +425,7 @@ object DiveLighting
      * cast; wider is not available (360 is GI's distinct omnidirectional case, which bypasses the
      * mask entirely and would spray light out behind him).
      */
-    private const val RIM_CONE_ANGLE = 180f
+    internal const val RIM_CONE_ANGLE = 180f
 
     /** How far behind the diver's centre the rim emits from, in metres. */
     internal fun rimOffsetMetres(): Float = Framing.DIVER_HEIGHT_METRES * RIM_BACK_FRACTION

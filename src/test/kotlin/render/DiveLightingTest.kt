@@ -389,6 +389,205 @@ class DiveLightingTest
         )
     }
 
+    // --- The rim ------------------------------------------------------------------------------
+    //
+    // What is testable here is the GEOMETRY and the BUDGET, both of which are relationships
+    // between numbers. What the rim LOOKS like is not testable at all and was settled by capture
+    // (see the task report): whether 5 is the right cast, whether the blue is the right blue, and
+    // whether the halo at his knees is acceptable are all judgements a still had to answer.
+
+    /**
+     * THE RIM IS BEHIND HIM, AND "BEHIND" IS CHECKED AGAINST THE SPRITE'S OWN ROTATION RATHER
+     * THAN AGAINST THE FORMULA THAT PRODUCED IT.
+     *
+     * Same construction as `the torch emits from the sprite's head`, mirrored: it pushes the
+     * quad's BOTTOM-centre — the fins end, local `(0, +1)` because world y runs DOWN — through a
+     * transcription of `texture.vert`'s own rotation matrix and requires the rim to land there.
+     * Restating `(-cos h, +sin h)` would pass for any sign convention someone happened to type;
+     * this cannot, because the matrix comes from the shader and the same transcription is what
+     * `DiverSpriteTest` poses the BODY from.
+     *
+     * The second assertion is the one that catches a sign slip specifically in the rim: the
+     * torch's displacement and the rim's must point in OPPOSITE directions. A rim that landed on
+     * the same side as the torch would be a backlight shining from his mask, which is exactly
+     * what a lost minus sign in `alongHeadingX` would produce, and which is invisible in a still
+     * of a diver swimming straight down where both offsets are vertical.
+     */
+    @Test
+    fun `the rim emits from behind the sprite's fins, on the opposite side from the torch`()
+    {
+        val offset = DiveLighting.rimOffsetMetres()
+
+        for (heading in listOf(0f, 45f, 90f, -90f, 180f, -180f, 137.5f, -170f, 359f, DiverSprite.REST_HEADING_DEGREES))
+        {
+            // texture.vert:68  offset = (vertexPos - origin) * size * rotate(radians(angle))
+            // texture.vert:50  rotate(a) = mat2(c, s, -s, c)          (GLSL, column-major)
+            // A row-vector product is transpose(M) * p, so local p = (px, py) lands at
+            // (c*px + s*py, -s*px + c*py). The fins are the quad's bottom-centre, (0, +1).
+            val a = Math.toRadians(DiverSprite.bodyAngleFor(heading).toDouble())
+            val finX = (cos(a) * 0.0 + sin(a) * 1.0).toFloat()
+            val finY = (-sin(a) * 0.0 + cos(a) * 1.0).toFloat()
+
+            val diverX = -17.5f
+            val diverDepth = 132f
+
+            assertEquals(
+                diverX + offset * finX, DiveLighting.rimX(diverX, heading), 1e-3f,
+                "at heading $heading the rim is not behind the sprite's fins horizontally"
+            )
+            assertEquals(
+                diverDepth + offset * finY, DiveLighting.rimDepth(diverDepth, heading), 1e-3f,
+                "at heading $heading the rim is not behind the sprite's fins in depth"
+            )
+
+            val torchDx = DiveLighting.torchX(diverX, heading) - diverX
+            val torchDy = DiveLighting.torchDepth(diverDepth, heading) - diverDepth
+            val rimDx = DiveLighting.rimX(diverX, heading) - diverX
+            val rimDy = DiveLighting.rimDepth(diverDepth, heading) - diverDepth
+            assertTrue(
+                torchDx * rimDx + torchDy * rimDy < 0f,
+                "at heading $heading the rim and the torch are displaced in the same direction " +
+                "(torch $torchDx,$torchDy against rim $rimDx,$rimDy) — the rim would be backlighting him from his own mask"
+            )
+        }
+    }
+
+    /**
+     * WHERE BEHIND HIM, CHECKED AGAINST THE ART. [DiveLighting.RIM_BACK_FRACTION] is chosen to
+     * hide as much of the emitter quad inside the silhouette as the trailing half of this diver
+     * allows, and that optimum is a property of the committed sheet, so it is re-derived here
+     * rather than restated. Three things, all in fractions of the body height so a fourth resize
+     * of `Framing.DIVER_HEIGHT_METRES` cannot invalidate them:
+     *
+     *  - the quad lies WHOLLY BEHIND his centre, or it is not a backlight at all;
+     *  - its trailing edge is at or inside the fins, or it rasterises past his outline into open
+     *    water and reads as a lamp trailing him;
+     *  - it sits on the LOCAL MAXIMUM of silhouette coverage — better hidden than positions a
+     *    twelfth of a body either side of it, which are the calf gap and the fin fork. That is the
+     *    assertion that fires if the constant is nudged without re-measuring, and the one that
+     *    moves on its own if the diver is ever re-baked in a different pose.
+     *
+     * It says nothing about whether the visible halo is acceptable, which is not testable and was
+     * answered by capture.
+     */
+    @Test
+    fun `the rim's emitter is behind him, inside his outline, and as hidden as the art allows`()
+    {
+        val back = DiveLighting.RIM_BACK_FRACTION
+        val half = DiveLighting.RIM_SIZE_FRACTION / 2f
+
+        assertTrue(back - half > 0f, "the rim's emitter overlaps the diver's centre at $back +- $half — it is not behind him")
+
+        val fin = finFractionFromSheet()
+        assertTrue(
+            back + half <= fin,
+            "the rim's emitter reaches $${back + half} of the body behind his centre against fins that end at $fin — " +
+            "the quad would rasterise outside his outline and read as a lamp trailing him"
+        )
+
+        val here = emitterCoverageFromSheet(back)
+        val step = 1f / 12f
+        for (other in listOf(back - step, back + step))
+        {
+            assertTrue(
+                here > emitterCoverageFromSheet(other),
+                "the emitter is better hidden at $other (${emitterCoverageFromSheet(other)}) than at $back ($here) — " +
+                "RIM_BACK_FRACTION is no longer the local maximum it was measured to be"
+            )
+        }
+    }
+
+    /**
+     * THE RIM'S BUDGET IS A RATIO OF THE TORCH'S, AND THE RATIO IS WHAT IS ASSERTED.
+     *
+     * `size * intensity` is the conserved quantity — `radius = 0` disables the distance term, so
+     * a probe's irradiance from a light goes as its angular size, i.e. as `size / distance`. The
+     * same physics `the torch's cast is conserved when its emitter is resized` rests on. What
+     * this fixes in place is that the rim's cast is exactly
+     * [DiveLighting.rimCastFractionForDepth] of the TORCH's, at every depth: the failure it
+     * exists to catch is someone re-tuning `RIM_SIZE_FRACTION` and leaving the intensity behind,
+     * which would change how much light is in the frame while every constant still read as
+     * before.
+     */
+    @Test
+    fun `the rim's cast is a stated fraction of the torch's, whatever the emitter's size`()
+    {
+        for (depth in listOf(0f, 15f, 45f, 75f, 105f, 135f, 160f, 400f))
+        {
+            val torchCast = DiveLighting.DIVER_LIGHT_SIZE_METRES * DiveLighting.diverIntensityForDepth(depth)
+            val rimCast = DiveLighting.rimSizeMetres() * DiveLighting.rimIntensityForDepth(depth)
+            assertEquals(
+                torchCast * DiveLighting.rimCastFractionForDepth(depth), rimCast, 1e-3f,
+                "at $depth m the rim casts $rimCast against a torch's $torchCast — that is not " +
+                "${DiveLighting.rimCastFractionForDepth(depth)} of it, so the emitter's size and its intensity have come apart"
+            )
+        }
+    }
+
+    /**
+     * THE CAST FRACTION IS A PEAK RADIANCE, AND IT IS ONLY A PEAK RADIANCE BECAUSE THE CONE IS
+     * EXACTLY A HEMISPHERE.
+     *
+     * [DiveLighting.RIM_CAST_FRACTION] is documented as being in the same unit as
+     * [DiveLighting.beamIntensity]'s two ends, which holds only where [DiveLighting.coneMaskPeak]
+     * is 1 — see its "landmark" note. Narrow the rim's cone without dividing the mask peak back
+     * out and the rim silently dims by up to 10x while the constant still reads 5. Nothing else
+     * in the file would notice.
+     */
+    @Test
+    fun `the rim's cone is the exact hemisphere its budget is stated against`()
+    {
+        assertEquals(
+            1f, DiveLighting.coneMaskPeak(DiveLighting.RIM_CONE_ANGLE), 1e-6f,
+            "a ${DiveLighting.RIM_CONE_ANGLE}-degree rim cone peaks at ${DiveLighting.coneMaskPeak(DiveLighting.RIM_CONE_ANGLE)} of nominal, " +
+            "so RIM_CAST_FRACTION is no longer the peak radiance it is documented as"
+        )
+    }
+
+    /**
+     * THE RIM REPLACES LOST DAYLIGHT, SO IT MUST BE ABSENT WHERE NONE HAS BEEN LOST.
+     *
+     * The Shallows case is the one that matters and it is an EXACT zero, not a small number: the
+     * rim's cost is paid in the water it also lights, and at 10 m submitting it at full strength
+     * moved the frame mean by 0.238/255 and the water immediately around the diver by 5.4/255
+     * (measured — see [DiveLighting.RIM_CAST_FRACTION] and the ramp's own doc). Zero is also what
+     * lets `drawDiverRim` skip the submission entirely, which matters for a second reason: a
+     * light quad occludes even when it emits nothing, and left in it measurably DARKENED the
+     * diver in the shallows.
+     *
+     * Monotonic and continuous are asserted over a fine sweep rather than at the anchors, because
+     * a diver descending crosses every value in between and a step anywhere in there is the
+     * "sharp jump between depth levels" this whole file blends to avoid.
+     */
+    @Test
+    fun `the rim is absent in the shallows and rises smoothly to full strength in the abyss`()
+    {
+        assertEquals(
+            0f, DiveLighting.rimCastFractionForDepth(0f), 0f,
+            "the rim is not exactly off at the surface, so it lights water that the sun is already lighting"
+        )
+        assertEquals(
+            DiveLighting.RIM_CAST_FRACTION, DiveLighting.rimCastFractionForDepth(200f), 1e-6f,
+            "the rim does not reach full strength in the abyss, which is the depth it exists for"
+        )
+
+        var previous = -1f
+        var biggestStep = 0f
+        var depth = 0f
+        while (depth <= 200f)
+        {
+            val here = DiveLighting.rimCastFractionForDepth(depth)
+            assertTrue(here >= previous, "the rim gets weaker between ${depth - 0.5f} m and $depth m")
+            if (previous >= 0f) biggestStep = maxOf(biggestStep, here - previous)
+            previous = here
+            depth += 0.5f
+        }
+        assertTrue(
+            biggestStep < DiveLighting.RIM_CAST_FRACTION * 0.05f,
+            "the rim jumps by $biggestStep in half a metre of descent — that is a visible step, not a ramp"
+        )
+    }
+
     private companion object
     {
         private const val SHEET = "src/main/resources/sprites/diver-diffuse.png"
@@ -416,6 +615,49 @@ class DiveLightingTest
             val crown = rows.indexOfFirst { it > 0 }
             assertTrue(crown >= 0, "no opaque texels at all in frame 0 of $SHEET")
             return (rows.size / 2f - crown) / rows.size
+        }
+
+        /** Distance from the body's CENTRE to the trailing tip of his fins, as a fraction of the height. */
+        fun finFractionFromSheet(): Float
+        {
+            val rows = frameZeroRowCoverage()
+            val fin = rows.indexOfLast { it > 0 }
+            assertTrue(fin >= 0, "no opaque texels at all in frame 0 of $SHEET")
+            return (fin - rows.size / 2f) / rows.size
+        }
+
+        /**
+         * What fraction of the rim's emitter disc the silhouette covers, with the disc centred
+         * [backFraction] of the body height behind his centre.
+         *
+         * A DISC and not a row, because the emitter is round ([LightEmitter]) and the thing being
+         * measured is how much of the quad rasterises into open water. In cell texels a metre is
+         * the same number of texels in both axes — the cell's 126x384 has exactly the sprite's
+         * aspect — so the disc is a circle here and needs no anisotropic correction.
+         */
+        fun emitterCoverageFromSheet(backFraction: Float): Float
+        {
+            val sheet = ImageIO.read(File(SHEET))
+            val w = DiverSprite.FRAME_TEXELS_WIDE
+            val h = DiverSprite.FRAME_TEXELS_TALL
+            val radius = DiveLighting.RIM_SIZE_FRACTION * h / 2f
+            val centreY = (0.5f + backFraction) * h
+            val centreX = w / 2f
+            var inside = 0
+            var covered = 0
+            for (y in 0 until h)
+            {
+                for (x in 0 until w)
+                {
+                    val dx = x - centreX
+                    val dy = y - centreY
+                    if (dx * dx + dy * dy > radius * radius) continue
+                    inside++
+                    if ((sheet.getRGB(x, y) ushr 24 and 0xFF) > 16) covered++
+                }
+            }
+            assertTrue(inside > 0, "the rim's emitter disc falls entirely outside the cell at $backFraction")
+            return covered / inside.toFloat()
         }
 
         /** Same, to the shoulder line — the first row reaching 60% of the silhouette's widest. */
