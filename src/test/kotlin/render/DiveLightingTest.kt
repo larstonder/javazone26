@@ -347,6 +347,77 @@ class DiveLightingTest
     }
 
     /**
+     * ONE TORCH, TWO SPACES — the property that makes the iridescence shader's light source
+     * single-sourced rather than merely consistent-looking.
+     *
+     * The torch is now needed in world METRES (the emitter itself, and the light position handed
+     * to `IridescenceRenderer` on the world surface) and in screen PIXELS (the same light
+     * position on the HUD surface, where the air ring's bubbles are drawn). Two spaces, one
+     * point. Deriving it twice — a `cos`/`sin` here and another one in `Hud` — is the exact shape
+     * of the shipped world-offset-from-HUD bug (`6ea1f53`), and here it would surface as the
+     * pearls' interference bands and the ring's shimmer disagreeing about which way the diver
+     * faces: subtle, plausible-looking, and invisible in any test that checked only one of them.
+     *
+     * So [DiveLighting.torchOffsetX]/[DiveLighting.torchOffsetY] take the scale as a PARAMETER,
+     * and this asserts the two consequences that buys:
+     *
+     *  - the offset is exactly LINEAR in that scale, so the HUD's `pixelsPerMetre` cannot
+     *    introduce a second convention; and
+     *  - `torchX`/`torchDepth` — the world-space pair the emitter and every existing test use —
+     *    are those same functions at scale 1, so the world and the HUD provably share one
+     *    derivation rather than two that agree today.
+     *
+     * The headings deliberately include the rest heading and both signs of vertical, because a
+     * flipped `sin` in one space and not the other is what this is guarding against; screen y
+     * and world y BOTH run downward, so the identical negation must be right in both.
+     */
+    @Test
+    fun `the torch's offset is one derivation, scaled - the world and the HUD cannot disagree`()
+    {
+        val diverX = -17.5f
+        val diverDepth = 132f
+
+        for (heading in listOf(0f, 45f, 90f, -90f, 180f, 137.5f, DiverSprite.REST_HEADING_DEGREES))
+        {
+            // The world pair is the scaled pair at 1 metre per unit, not a parallel formula.
+            assertEquals(
+                diverX + DiveLighting.torchOffsetX(heading, 1f),
+                DiveLighting.torchX(diverX, heading), 1e-4f,
+                "at heading $heading torchX has stopped being torchOffsetX at unit scale"
+            )
+            assertEquals(
+                diverDepth + DiveLighting.torchOffsetY(heading, 1f),
+                DiveLighting.torchDepth(diverDepth, heading), 1e-4f,
+                "at heading $heading torchDepth has stopped being torchOffsetY at unit scale"
+            )
+
+            // ...and the HUD's scale is a pure multiplier. 23.7 stands in for a pixels-per-metre
+            // that is deliberately not round and not a power of two: the booth display's
+            // resolution is unknown in advance, so nothing may depend on the scale's value.
+            val ppm = 23.7f
+            assertEquals(
+                DiveLighting.torchOffsetX(heading, 1f) * ppm,
+                DiveLighting.torchOffsetX(heading, ppm), 1e-3f,
+                "at heading $heading the horizontal offset is not linear in the scale"
+            )
+            assertEquals(
+                DiveLighting.torchOffsetY(heading, 1f) * ppm,
+                DiveLighting.torchOffsetY(heading, ppm), 1e-3f,
+                "at heading $heading the vertical offset is not linear in the scale"
+            )
+        }
+
+        // A non-degenerate witness: at the rest heading the offset must actually be somewhere,
+        // or every assertion above holds trivially for a pair of functions that return zero.
+        val restX = DiveLighting.torchOffsetX(DiverSprite.REST_HEADING_DEGREES, 1f)
+        val restY = DiveLighting.torchOffsetY(DiverSprite.REST_HEADING_DEGREES, 1f)
+        assertEquals(
+            DiveLighting.torchOffsetMetres(), hypot(restX, restY), 1e-3f,
+            "the offset must have the length torchOffsetMetres promises, in whichever direction"
+        )
+    }
+
+    /**
      * HOW FAR FORWARD, CHECKED AGAINST THE ART RATHER THAN AGAINST ITSELF.
      *
      * [DiveLighting.TORCH_FORWARD_FRACTION] is a judgement call, so asserting its value would
