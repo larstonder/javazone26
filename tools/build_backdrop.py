@@ -97,6 +97,22 @@ AMBIENT_FRACTION = 0.5
 # enough that a botched period (the next-best candidate scores 5.5x) fails loudly.
 MAX_SEAM_RATIO = 1.5
 
+# The rock's mean relative luminance, as a multiple of DiveRenderer.wallColor's 0.034.
+#
+# 1.0 - "be exactly as bright as the flat slab you replace" - is the obvious anchor and it was
+# measured to be wrong. wallColor was tuned in 0f07303 against the lighting of the time, and the
+# light reaching the frame EDGE has fallen a long way since (god rays and the pearl-emitter rework
+# both moved it): at 12 m, with the wall at that luminance, the rock renders at mean RGB
+# (0.08, 0.88, 2.21) out of 255 against water at (1.9, 7.9, 46.5) beside it - 1/20th of its
+# neighbour, i.e. the same "hard black bars that read as letterboxing" the earlier commit set out
+# to fix, arrived at from the other direction.
+#
+# 2.0 doubles the albedo and still leaves the mean at 0.068, under lit shallow water's 0.085, so
+# the wall is still a subordinate dark border rather than a bright frame - and unlike a flat slab
+# it has a distribution, so its darkest texels stay well below the water while its lit faces
+# read. Re-measure this if the lighting is reworked again; it is a relationship, not a constant.
+LUMINANCE_FACTOR = 2.0
+
 
 class SourceError(RuntimeError):
     pass
@@ -122,7 +138,7 @@ def write_png(path: pathlib.Path, rgba: np.ndarray, meta: dict) -> None:
     )
 
 
-def bake_rock(height: int, period_override) -> dict:
+def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
     diffuse = load_rgba(ROCK_DIR / "diffuse.png")
     normal = load_rgba(ROCK_DIR / "normal.png")
     if diffuse.shape != normal.shape:
@@ -159,13 +175,22 @@ def bake_rock(height: int, period_override) -> dict:
     linear = srgb_to_linear(diffuse_tile[..., :3] / 255.0)
     resized, resized_alpha, _ = _alpha_weighted_resize(linear, alpha, (out_w, out_h))
 
+    # Clip the ringing before the lift, not after. LANCZOS undershoots, and dividing a small
+    # negative premultiplied value by an alpha that is itself near zero magnifies it: without
+    # this, twenty texels along the ragged edge come out at exactly RGB 0 with an alpha of 1-3,
+    # because `ambient + gain * (a big negative)` lands back on zero. A negative albedo is
+    # meaningless in its own right, and a zero one is precisely what the GI reflectance floor
+    # exists to catch - so clearing the floor "everywhere" has to mean everywhere.
+    resized = np.clip(resized, 0.0, None)
+
     wall_linear = srgb_to_linear(np.array(reflectance.WALL_COLOR_SRGB))
     ambient = AMBIENT_FRACTION * wall_linear
     opaque = resized_alpha > 0.5
+    target_luminance = luminance_factor * float(reflectance.luminance(wall_linear))
     gain = reflectance.solve_gain(
         float(reflectance.luminance(resized[opaque]).mean()),
         float(reflectance.luminance(ambient)),
-        float(reflectance.luminance(wall_linear)),
+        target_luminance,
     )
     lifted = reflectance.lift(resized, ambient, gain)
     diffuse_out = np.dstack([to_u8(linear_to_srgb(lifted)), to_u8(resized_alpha)])
@@ -178,7 +203,8 @@ def bake_rock(height: int, period_override) -> dict:
     source_lengths = reflectance.linear_length(srgb_to_linear(diffuse_tile[..., :3] / 255.0))
     source_opaque = source_lengths[diffuse_tile[..., 3] > 127]
     print(f"         reflectance: ambient {AMBIENT_FRACTION:.2f}*wallColor "
-          f"(|.| {reflectance.linear_length(ambient):.5f}), gain {gain:.3f}")
+          f"(|.| {reflectance.linear_length(ambient):.5f}), gain {gain:.3f}, "
+          f"target luminance {luminance_factor:.2f}*wallColor")
     print(f"         source  linear length min {source_opaque.min():.5f} "
           f"median {np.median(source_opaque):.5f} max {source_opaque.max():.5f}; "
           f"{(source_opaque < reflectance.GI_REFLECTANCE_FLOOR).sum()} of "
@@ -267,8 +293,8 @@ with no coerceAtLeast(1) and passes it to glTexStorage3D as `levels`. levels = 0
 GL_INVALID_VALUE - no storage allocated, no error logged."""
 
 
-def bake(rock_height: int, silhouette_max: int, period_override) -> int:
-    rock = bake_rock(rock_height, period_override)
+def bake(rock_height: int, silhouette_max: int, period_override, luminance_factor: float) -> int:
+    rock = bake_rock(rock_height, period_override, luminance_factor)
     layers = bake_silhouettes(silhouette_max)
 
     fingerprint = hashlib.sha256()
@@ -296,9 +322,11 @@ def main(argv=None) -> int:
     parser.add_argument("--silhouette-max", type=int, default=DEFAULT_SILHOUETTE_MAX)
     parser.add_argument("--period", type=int, default=None,
                         help="override the searched wrap period")
+    parser.add_argument("--luminance-factor", type=float, default=LUMINANCE_FACTOR,
+                        help="mean rock luminance as a multiple of wallColor's")
     args = parser.parse_args(argv)
     try:
-        return bake(args.rock_height, args.silhouette_max, args.period)
+        return bake(args.rock_height, args.silhouette_max, args.period, args.luminance_factor)
     except SourceError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
