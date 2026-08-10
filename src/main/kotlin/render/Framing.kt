@@ -53,17 +53,20 @@ object Framing
      * The art is 1:3.05, so the width follows from it ([DiverSprite.widthForHeight]) rather than
      * being a second number that could drift.
      *
-     * DOUBLED FROM 3 m BY DESIGN DECISION, not by measurement — the 3 m diver read as too small on
-     * screen. 3 m was inherited from the placeholder square and is what the sprite bake assumed
-     * (`2026-08-07-diver-spritesheet-bake-design` §3 reasons from ~5% of screen height); 6 m is
-     * 10% of it, and `VISIBLE_DEPTH_METRES` is unchanged, so the amount of water a player can see
-     * and plan against is exactly as before.
+     * 3 m -> 6 m -> 9 m, EACH TIME BY DESIGN DECISION AND NOT BY MEASUREMENT. 3 m was inherited
+     * from the placeholder square and is what the sprite bake assumed
+     * (`2026-08-07-diver-spritesheet-bake-design` §3 reasons from ~5% of screen height); it read
+     * as too small, was doubled to 6 m, and the owner then asked for another 50%. 9 m is 15% of
+     * the visible column, which is a lot of diver — it is the deliberate answer to "he reads as
+     * too small", not an accident, and `VISIBLE_DEPTH_METRES` is unchanged either way, so the
+     * amount of water a player can see and plan against has never moved.
      *
-     * The bake does not need redoing, and the change moves the sampling the right way. A 384-texel
+     * The bake does not need redoing, and each step moves the sampling the right way. A 384-texel
      * cell drawn at 5% of an 1800 px framebuffer is a 4.3x minification, and the sheets carry
      * `maxMipLevels = 1` — deliberately, so mip generation cannot average across cell boundaries
      * and smear adjacent frames together — so there is no mip chain to absorb it and the high
-     * frequencies in the normal map in particular would alias. At 10% it is 2.1x.
+     * frequencies in the normal map in particular would alias. At 10% it is 2.1x; at 15% it is
+     * 1.4x, which is the closest to native the art has ever been drawn at.
      *
      * THINGS SIT AT A FIXED DISTANCE FROM THE DIVER AND NONE OF THEM SCALES WITH THIS.
      * Changing it means re-checking each: `Hud.AIR_RING_RADIUS_METRES` (the bubble ring orbits
@@ -78,7 +81,7 @@ object Framing
      * is what put a hard-edged rectangle around the diver. It is a torch head now, at its own
      * 1.2 m, and `DiveLightingTest` fails the build if it ever grows back toward this constant.
      */
-    const val DIVER_HEIGHT_METRES = 6f
+    const val DIVER_HEIGHT_METRES = 9f
     const val PEARL_SIZE_METRES = 1.2f
     const val AIR_POCKET_SIZE_METRES = 2.4f
 

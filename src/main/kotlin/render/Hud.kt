@@ -60,25 +60,35 @@ object Hud
     /**
      * How far from the diver the bubbles orbit, in metres.
      *
-     * RE-CHECKED, AND DELIBERATELY LEFT ALONE, WHEN THE DIVER DOUBLED to 6 m for the sprite art.
-     * The ring is the game's only air warning, so it losing contrast against the body would be a
-     * real regression rather than a cosmetic one — but the numbers say it does not:
+     * 5.5 -> 6.0 WHEN THE DIVER WENT FROM 6 m TO 9 m. It was re-checked and deliberately left at
+     * 5.5 for the 3 -> 6 change; at 9 m it no longer holds, and
+     * `DiverSpriteTest.the diver is a tall figure that stays inside the air ring` said so as a
+     * build failure rather than letting it reach the booth. The ring is the game's ONLY air
+     * warning, so it losing contrast against the body is a real regression, not a cosmetic one.
      *
-     *   full ring, 12 o'clock   bubble inner edge 5.5 - 0.45 = 5.05 m  vs head at 3.0 m
-     *   worst case in principle 4.675 - 1.449 = 3.23 m                 vs head at 3.0 m
+     *   full ring, 12 o'clock   bubble inner edge 6.0 - 0.45 = 5.55 m   vs head at 4.5 m
      *
-     * The second line is the last red bubble at the low point of the heartbeat — 2.8x oversized
-     * ([AIR_LOW_SIZE_GAIN]) and pulsed — and it still clears, but only just. It also cannot happen
-     * where it would show: the ring empties CLOCKWISE FROM 12 O'CLOCK ([firstOccupiedSlot]), so
-     * slot 0, the one directly above the diver's head, is the FIRST to go. By the time a bubble is
-     * 2.8x oversized the only slot left is 13, which sits up and to the LEFT, and the diver is only
-     * 2 m wide. Growing the ring to keep the old ratio would have meant an 11 m radius, i.e. a
-     * 22 m disc in a 60 m view — the ring would have become the picture.
+     * 6.0 is very nearly the minimum that keeps a full bubble's worth of gap above the head
+     * (5.85 would be exact), because every metre here is expensive: the ring is a 12 m disc in a
+     * 60 m view already, i.e. a fifth of the screen height, and it must not become the picture.
      *
-     * `DiverSpriteTest.the diver is a tall figure that stays inside the air ring` holds the first
-     * line of that table as a build-time assertion.
+     * ## THE LOW-AIR WORST CASE IS REACHABLE AT 9 m, AND IS ACCEPTED RATHER THAN DESIGNED OUT
+     *
+     * The previous version of this comment argued that the tightest case "cannot happen where it
+     * would show", because the ring empties CLOCKWISE FROM 12 O'CLOCK ([firstOccupiedSlot]) so
+     * slot 0 — directly above the head — is the first to go. That is true and it is not enough.
+     * With one bubble left the survivor is slot 13, at 11 o'clock, 2.8x oversized
+     * ([AIR_LOW_SIZE_GAIN]) and pulsing; at the heartbeat's trough its bounding box overlaps the
+     * diver's by 0.34 m horizontally and 0.98 m vertically. Its CENTRE stays outside the figure
+     * (2.21 m out against a 1.48 m half-width), so what is drawn over the diver is the corner of
+     * the bubble and not the bubble, and it is drawn on the HUD surface — on top, unlit, fully
+     * opaque red. What is occluded is the diver's shoulder; the warning itself is never the thing
+     * that is hidden, which is the requirement that actually matters.
+     *
+     * Designing it out costs a 6.91 m ring, a 13.8 m disc, 23% of the visible column. That is a
+     * worse trade than a red bubble clipping a shoulder in the last 1.5 s of a run.
      */
-    internal const val AIR_RING_RADIUS_METRES = 5.5f
+    internal const val AIR_RING_RADIUS_METRES = 6.0f
 
     internal const val AIR_BUBBLE_SIZE_METRES = 0.9f
     private const val HEARTBEAT_HZ = 8f
@@ -137,10 +147,12 @@ object Hud
     private fun slotStep() = TAU / AIR_BUBBLE_COUNT
 
     // --- HELD: enormous, amber, attached to the diver --------------------------------
-    // Below the diver, clear of the air ring. Re-checked when the diver doubled to 6 m and left
-    // alone: the numerals are top-anchored at 8 m below the diver's CENTRE, so they start 5 m
-    // below his fins (half-height 3 m) and 1.2 m below the lowest point the ring's largest bubble
-    // can reach (5.5 + 1.45). Nothing to move.
+    // Below the diver, clear of the air ring. Re-checked at 6 m and again at 9 m, and left alone
+    // both times: the numerals are top-anchored at 8 m below the diver's CENTRE, so at 9 m they
+    // start 3.5 m below his fins (half-height 4.5 m) and 1.55 m below the bottom of the ring's
+    // 6 o'clock bubble (6.0 + 0.45). That slot can only be occupied while at least half the ring
+    // remains — firstOccupiedSlot(7) is 7 — and at seven bubbles the size gain has not started, so
+    // the bubble there is never the oversized one. Nothing to move.
     private const val HELD_OFFSET_METRES = 8f
     private const val HELD_HEAT_SCALE = 3000f         // held value at which colour/size maxes out
     private const val HELD_MIN_FONT_FRACTION = 0.045f

@@ -249,6 +249,10 @@ class DiverSpriteTest
      * the head, and it must sit clear of it. Asserted rather than eyeballed because the diver's
      * height is now a number someone may well raise again — see `Framing.DIVER_HEIGHT_METRES`,
      * where the rest of this reasoning lives.
+     *
+     * IT HAS EARNED ITS KEEP TWICE. It passed the 3 -> 6 m change untouched and FAILED the 6 -> 9
+     * one, at 0.55 m of headroom against a 0.9 m bubble, which is what took `Hud
+     * .AIR_RING_RADIUS_METRES` from 5.5 to 6.0.
      */
     @Test
     fun `the diver is a tall figure that stays inside the air ring`()
@@ -268,6 +272,56 @@ class DiverSpriteTest
 
         // Doubling the world height doubles the world width: the aspect is a ratio, not an offset.
         assertEquals(width * 2f, DiverSprite.widthForHeight(height * 2f), 1e-4f)
+    }
+
+    /**
+     * THE END OF THE RUN, WHICH IS THE ONE MOMENT THE RING HAS TO WIN.
+     *
+     * The case above covers a FULL ring. The tight one is the empty ring: below
+     * `Hud.AIR_LOW_THRESHOLD` each surviving bubble is drawn up to 2.8x oversized
+     * (`Hud.airBubbleSizeScale`) and pulsed by the heartbeat, so the last bubble is a big red
+     * throbbing dot at 1.5 s of air remaining.
+     *
+     * At 9 m that bubble's bounding box genuinely does clip the diver's — by 0.34 m — and the
+     * ring radius that would prevent it is 6.91 m, a 13.8 m disc in a 60 m view. So the accepted
+     * property is the weaker and more meaningful one: **no bubble is ever CENTRED on the diver.**
+     * A bubble whose centre lands inside the figure is drawn over the middle of him and reads as
+     * part of the art; one whose corner overlaps reads as a bubble in front of a shoulder, which
+     * is what the HUD surface is for. The distinction is the whole of why the ring works at all
+     * once it is nearly empty.
+     *
+     * Swept over every state that can actually occur — every low-air count, every slot
+     * `Hud.firstOccupiedSlot` leaves occupied in it, and both ends of the heartbeat — rather than
+     * against a hand-picked worst case, because which slot is worst depends on the ring radius
+     * and would silently stop being the one someone checked.
+     */
+    @Test
+    fun `no air bubble is ever drawn centred on the diver, however empty the ring gets`()
+    {
+        val halfHeight = Framing.DIVER_HEIGHT_METRES * 0.5f
+        val halfWidth = DiverSprite.widthForHeight(Framing.DIVER_HEIGHT_METRES) * 0.5f
+
+        for (remaining in 1..Hud.AIR_LOW_THRESHOLD)
+        {
+            for (slot in Hud.firstOccupiedSlot(remaining) until Hud.AIR_BUBBLE_COUNT)
+            {
+                val angle = Hud.airBubbleSlotAngle(slot)
+                // The heartbeat scales the orbit and the bubble together; its trough pulls the
+                // bubble furthest in, which is the direction that matters here.
+                for (pulse in listOf(0.85f, 1f, 1.15f))
+                {
+                    val radius = Hud.AIR_RING_RADIUS_METRES * pulse
+                    val bx = cos(angle) * radius
+                    val by = sin(angle) * radius
+                    assertTrue(
+                        abs(bx) > halfWidth || abs(by) > halfHeight,
+                        "with $remaining bubbles left, slot $slot at pulse $pulse puts a bubble's CENTRE at " +
+                        "(${bx}, ${by}) — inside the diver's ${halfWidth * 2}m x ${halfHeight * 2}m rect, so the " +
+                        "game's only air warning is drawn on top of the figure instead of beside it"
+                    )
+                }
+            }
+        }
     }
 
     /**
