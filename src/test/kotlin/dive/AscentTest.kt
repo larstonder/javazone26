@@ -137,6 +137,38 @@ class AscentTest
         )
     }
 
+    /**
+     * THE OTHER END OF THE SHARP EDGE, and the half that was never pinned.
+     *
+     * `one abyss pearl can be carried home from 135 metres` pins the YES. Nothing pinned the NO,
+     * so every lever that makes the dive easier could creep the Abyss open a metre at a time
+     * with the whole suite staying green — and `d343886` already moved two of them on purpose.
+     *
+     * The lever that prompted this one is [Tuning.PEARL_PICKUP_RADIUS], raised 2.5 -> 4 so the
+     * hitbox would agree with the drawn diver. It reaches into the balance because collecting a
+     * pearl grants its mass from `r` metres away, so a bigger `r` means you never swim the last
+     * few metres to the deepest water at all: the flown max survivable load at 140 m went from
+     * 9 to 12. Both are under the 16 of an abyss pearl, which is the property, and 140 m is
+     * still a place you can reach and not come back from carrying anything.
+     *
+     * Asserted by flying it rather than by re-deriving it — `Autopilot`'s whole reason for
+     * existing — and against `Zone.ABYSS.pearlMass` rather than a literal 16, so re-pricing the
+     * zone re-prices this too instead of leaving it stale.
+     */
+    @Test
+    fun `no abyss pearl can be carried home from 140 metres`() {
+        val sim = Autopilot.clearColumn(DiveSim(20260902L))
+        val route = Autopilot.ventRoute(sim) +
+            Waypoint(0f, 140f, onArrive = { it.debugSetHeld(1, Zone.ABYSS.pearlMass) })
+
+        val log = Autopilot.fly(sim, route)
+        assertTrue(
+            !log.survived,
+            "a ${Zone.ABYSS.pearlMass}-mass pearl came home from 140 m — the Abyss has stopped " +
+            "being a gamble below 135 m (arrived with ${"%.1f".format(log.airAtDeepest)} s of air)"
+        )
+    }
+
     @Test
     fun `the abyss still refuses its deepest water`() {
         // The other half of the bargain. If everything came home the zone would be a farm

@@ -56,11 +56,12 @@ object Tuning
      * 2.95 x 9 m RECTANGLE about that same point. Measured off the committed diffuse sheet
      * (alpha > 16, all 41 frames, one texel = 9/384 = 0.0234 m) the silhouette reaches:
      *
-     *     crown / snorkel tip     4.45 m above centre   (0.4948 of the height, every frame)
-     *     mask                    3.75 .. 4.31 m
-     *     shoulders begin         3.16 m
+     *     crown / snorkel tip     4.45 m above centre   (row 2, identical in all 41 frames)
+     *     top of the head         4.31 m                (row 8)
+     *     chin                    3.56 m                (row 40; `DiveLighting` measured 3.60)
+     *     shoulders begin         3.00 m                (row 64, where the width steps 38 -> 73)
      *     fin tips                4.29 .. 4.45 m below centre
-     *     widest half-extent      1.43 m
+     *     widest half-extent      1.43 m                (61 texels of a 63-texel half-cell)
      *
      * At 2.5 m that left a 1.95 m DEAD BAND at his head and at his fins — and it sits along the
      * swim axis, which is exactly where the player aims. A pearl visibly touching his mask did
@@ -68,10 +69,11 @@ object Tuning
      *
      * ## Why 4 and not 3.5
      *
-     * 3.5 was the first suggestion and the measurement disproved it: the mask's NEAR edge is at
-     * 3.75 m, so 3.5 leaves the reported case untouched — the pearl still lands on his face and
-     * still does not collect. 4 puts the boundary inside the mask. What is left is 0.45 m of
-     * crown, snorkel and fin tip, i.e. the last 5% of the figure.
+     * 3.5 was the first suggestion and the measurement disproved it: his CHIN is at 3.56 m, so
+     * 3.5 puts the boundary on his neck and leaves the reported case untouched — the pearl still
+     * lands on his face and still does not collect. 4 puts the boundary on the face, between
+     * chin and crown. What is left is 0.45 m of crown, snorkel and fin tip, the last 5% of the
+     * figure.
      *
      * ## Why not 4.5
      *
