@@ -7,17 +7,20 @@ import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.lighting.shared.NormalMapRenderer
 import kotlin.math.ceil
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
- * Mostly placeholder rendering still:
- *   diver  = the baked sprite sheets ([DiverSprite]) — albedo on `main`, normal on GI's
- *            `gi_normal_map`, one rect submitted twice
- *   pearl  = small amber square
- *   zones  = flat horizontal bands
- * Everything but the diver is an untextured quad and waits for its own art.
+ * What is art and what is still a placeholder:
+ *   diver     = the baked sprite sheets ([DiverSprite]) — albedo on `main`, normal on GI's
+ *               `gi_normal_map`, one rect submitted twice
+ *   walls     = [RockFace]'s tiling cliff, the same two-surface arrangement as the diver
+ *   backdrop  = [Backdrop]'s parallax silhouettes, albedo only (they are flat masks)
+ *   pearl     = the iridescence shader over a small quad
+ *   zones     = flat horizontal bands
+ *   air vents = untextured quads, still waiting for their own art
  *
  * EVERYTHING HERE IS IN WORLD METRES, +x right, +y down, and world y IS depth. There is no
  * coordinate maths left in this file at all: [CameraRig] writes `engine.gfx.mainCamera` once
@@ -146,8 +149,16 @@ object DiveRenderer
     private val surfaceColor = Color(0.55f, 0.80f, 0.95f)
 
     /**
-     * Rock walls bounding the playable column — see [drawColumnWalls]. Warm, so they read as
-     * stone rather than as more (blue) water or a UI border.
+     * What the rock face is drawn ON, and what shows where the rock's own texture has not
+     * arrived — see [drawColumnWalls]. Warm, so it reads as stone rather than as more (blue)
+     * water or a UI border.
+     *
+     * IT IS NO LONGER THE WALL, IT IS THE WALL'S BACKING. [RockFace]'s cliff has a ragged alpha
+     * edge and covers only [RockFace.TILE_WIDTH_METRES] per tile, so something opaque and
+     * stone-coloured has to sit behind it: the transparent notches in the cliff show this, and on
+     * a display wide enough to see past the tiles so does the far side of the frame. Keeping the
+     * tuned value rather than picking a new one also means the loading frames, and any display
+     * where the texture fails to upload, look exactly like the wall that shipped.
      *
      * The previous value, `Color(0.05, 0.045, 0.045)`, did not read as stone at all: its linear
      * length is 0.00599, well under [GI_REFLECTANCE_FLOOR], so the GI blend threw the warmth
@@ -167,22 +178,31 @@ object DiveRenderer
      */
     internal val wallColor = Color(0.22f, 0.20f, 0.18f)
 
-    /**
-     * The inner face of each wall, lighter than [wallColor]. A flat slab of a single colour
-     * still reads as a bar wherever the light map falls to nothing, which in the deep zones is
-     * most of it; what says "the column ends HERE" is the boundary itself carrying a value of
-     * its own, so the edge stays legible even once the wall body behind it has gone black.
-     * Physically it is also the face that catches grazing light, so it being the brighter part
-     * is the right way round.
-     *
-     * Luminance 0.086 — about the same as fully lit shallow water and still ~7x under a pearl,
-     * over a strip [WALL_EDGE_METRES] wide at the very edge of frame. Bright enough to define
-     * the boundary, nowhere near enough to compete for attention.
-     */
-    internal val wallEdgeColor = Color(0.36f, 0.32f, 0.28f)
+    // THE INNER FACE IS GONE, AND IT SHOULD NOT COME BACK. `0f07303` painted a 0.7 m wide
+    // lighter strip (`wallEdgeColor`, `WALL_EDGE_METRES`) down the inside of each slab, because a
+    // flat slab of one colour still read as a bar wherever the light map fell to nothing — the
+    // boundary needed a value of its own to stay legible. That was compensation for the wall
+    // having no art, and the compensation is what made it look like UI chrome: a perfectly
+    // straight, perfectly uniform vertical line is not a thing rock does. RockFace's ragged alpha
+    // edge carries the boundary now, and carries it with a silhouette that varies with depth, so
+    // a second painted edge would only fight it. See drawColumnWalls for the cue that edge has to
+    // keep carrying, art or no art.
 
-    /** Width of that inner face, in metres so it is resolution-independent like everything else. */
-    private const val WALL_EDGE_METRES = 0.7f
+    /**
+     * The colour of every [Backdrop] silhouette. The layers themselves are white alpha masks —
+     * their sources are one flat colour plus dither, with no internal detail at all — so this
+     * and [Backdrop.Layer.alpha] are their entire appearance.
+     *
+     * Cool and dark: distant terrain seen through a hundred metres of water is the water's own
+     * hue, darker. Linear length 0.0311, so even a fully opaque silhouette clears
+     * [GI_REFLECTANCE_FLOOR] on its own and the shader never substitutes grey for it — and every
+     * layer is drawn at well under full alpha over water that already clears the floor, so the
+     * composite cannot fall under it either.
+     *
+     * Relative luminance 0.0146: under [wallColor]'s 0.034 and far under lit shallow water's
+     * 0.085, so a ridge always reads as something BEHIND the water rather than as an object in it.
+     */
+    internal val silhouetteColor = Color(0.10f, 0.13f, 0.17f)
 
     /**
      * Thickness of the waterline, in metres. Was `pixelsPerMetre(h) * 0.4f` — i.e. 0.4 m, in a
@@ -225,7 +245,12 @@ object DiveRenderer
         )
 
         drawZoneBands(surface, worldLeft, worldTop, worldRight, worldBottom)
-        drawColumnWalls(surface, worldLeft, worldTop, worldRight, worldBottom)
+        // Between the bands and the walls, and it has to be exactly there. The bands are opaque
+        // and cover the whole visible rect, so a backdrop drawn BEFORE them is not behind them,
+        // it is invisible; and the walls are opaque too, which is what confines the silhouettes
+        // to the column without a single clip test.
+        drawBackdrop(surface, cam, worldTop, worldBottom)
+        drawColumnWalls(surface, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
         drawSurfaceLine(surface, worldLeft, worldRight)
         drawAirPockets(surface, sim, cam)
         drawPearls(surface, sim, cam, iridescence)
@@ -321,29 +346,172 @@ object DiveRenderer
      * the screen, and it is the same statement: the slab exists only where there is frame left
      * over outside the column.
      */
-    private fun drawColumnWalls(surface: Surface, worldLeft: Float, worldTop: Float, worldRight: Float, worldBottom: Float)
+    private fun drawColumnWalls(
+        surface: Surface,
+        normalMaps: NormalMapRenderer?,
+        worldLeft: Float,
+        worldTop: Float,
+        worldRight: Float,
+        worldBottom: Float
+    )
     {
         val height = worldBottom - worldTop
         val leftSlab = -Tuning.COLUMN_HALF_WIDTH - worldLeft
         val rightSlab = worldRight - Tuning.COLUMN_HALF_WIDTH
 
+        // The backing, first and opaque. It is what shows through the cliff's transparent
+        // notches, what covers any frame left over outside the tiles on a very wide panel, and
+        // what the wall degrades to for the frames before the texture has uploaded.
         surface.setDrawColor(wallColor)
         if (leftSlab > 0f) surface.fillRect(worldLeft, worldTop, leftSlab, height)
         if (rightSlab > 0f) surface.fillRect(Tuning.COLUMN_HALF_WIDTH, worldTop, rightSlab, height)
 
-        // The inner faces, drawn over the slabs above rather than beside them, so they can
-        // never intrude on the water — and so the narrow-aspect case still needs no special
-        // handling: where the slab is off-screen its face is too. Clamped to the slab's own
-        // width for the same reason, so a face never overhangs a sliver of rock.
-        surface.setDrawColor(wallEdgeColor)
-        if (leftSlab > 0f)
-        {
-            val face = min(WALL_EDGE_METRES, leftSlab)
-            surface.fillRect(-Tuning.COLUMN_HALF_WIDTH - face, worldTop, face, height)
-        }
-        if (rightSlab > 0f)
-        {
-            surface.fillRect(Tuning.COLUMN_HALF_WIDTH, worldTop, min(WALL_EDGE_METRES, rightSlab), height)
+        if (!RockFace.ready()) return
+
+        // White and opaque: drawTexture MODULATES by the surface's current draw colour, which is
+        // still wallColor from the fills above.
+        surface.setDrawColor(1f, 1f, 1f, 1f)
+        if (leftSlab > 0f) drawRockWall(surface, normalMaps, leftSlab, worldTop, worldBottom, LEFT_WALL)
+        if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldTop, worldBottom, RIGHT_WALL)
+    }
+
+    /**
+     * The right-hand wall is the same cliff turned through half a turn, and that is the only
+     * difference between the two calls.
+     *
+     * [RockFace]'s art is a LEFT wall: solid stone on its u = 0 side, ragged alpha edge on its
+     * u = 1 side. The left wall can use it as it stands, with u = 1 landing on the column
+     * boundary. The right wall needs that edge on its own inner side, i.e. mirrored — and 180
+     * degrees is the way to get it, not a negative width and not flipped uv arguments:
+     *
+     *  - `NormalMapRenderer.drawNormalMap` takes no uv arguments at all, so a `uMin`/`uMax` swap
+     *    would mirror the albedo and leave the normals unmirrored. The lighting would then be lit
+     *    from the wrong side of every bump on one wall only.
+     *  - A negative width flips the quad geometrically but leaves `normalRotation` alone, with
+     *    the same result, and additionally reverses the triangles' winding.
+     *  - `normal_map.vert` builds `normalRotation = rotMatrix(rotation + cameraAngle)`, so a
+     *    rotation is the ONE transform the engine applies to the geometry and to the normal
+     *    vectors together.
+     *
+     * Half a turn also flips v, so the right wall shows the cliff upside down as well as
+     * mirrored. That is a bonus rather than a cost: an exact mirror of a 40 m tile down both
+     * sides of the frame is conspicuous, and this breaks it for free. It does not disturb the
+     * tiling, because the quad still spans a whole number of tiles between two world-space tile
+     * boundaries, so the world-depth to v mapping stays a function of depth alone.
+     */
+    private const val LEFT_WALL = 0f
+    private const val RIGHT_WALL = 180f
+
+    /**
+     * One wall: a whole number of tiles across, a whole number down, anchored on the world's tile
+     * lattice and NOT on the visible rect.
+     *
+     * ## The cue this has to keep carrying
+     *
+     * The reason a wall is drawn at all has not changed since `0f07303`. [CameraRig] derives
+     * pixels-per-metre from screen HEIGHT, so a 16:9 booth panel shows about 53 m of half-width
+     * against the column's 40 m, and without a visible boundary the diver stops dead in open
+     * water with no visual reason — the stick reads as broken rather than as blocked. What has
+     * changed is that the art carries it now instead of a painted strip.
+     *
+     * SO THE ROCK MUST STAY WHERE THE DIVER STOPS. The walls are symmetric at
+     * +-[Tuning.COLUMN_HALF_WIDTH] because that is where the simulation actually halts him, and
+     * the two must not drift apart: the cliff's ragged edge is the promise, and `dive/` is what
+     * keeps it. Moving the rock inward or outward for looks — or putting a cliff down one side
+     * only, as the mockup does — silently breaks the cue, and the failure is a player wrestling
+     * with a stick they now believe is faulty.
+     *
+     * ## Everything else here is width and rounding
+     *
+     * [wallWidth] is how much frame is left outside the column on this side, which is zero at 4:3
+     * (the visible half-width is exactly 40 m there) and grows with the panel's aspect ratio. The
+     * quad is a whole number of [RockFace.TILE_WIDTH_METRES] wide, anchored on the boundary and
+     * running OUTWARD, so the surplus spills off the side of the frame where nothing can see the
+     * join. See [RockFace.tileColumns] for why a fractional count is not an option.
+     *
+     * Vertically it spans [RockFace.tileRows] whole tiles from the tile boundary at or above the
+     * visible top, for the reason [RockFace.tileTopDepth] gives: that is what nails the rock to
+     * the water instead of to the camera.
+     *
+     * The two draws are ONE argument list written twice, exactly as [drawDiver]'s are. If you
+     * change one of these numbers, change it in both.
+     */
+    private fun drawRockWall(
+        surface: Surface,
+        normalMaps: NormalMapRenderer?,
+        wallWidth: Float,
+        worldTop: Float,
+        worldBottom: Float,
+        angle: Float
+    )
+    {
+        val phase = if (angle == RIGHT_WALL) RockFace.TILE_HEIGHT_METRES * 0.5f else 0f
+        val columns = RockFace.tileColumns(wallWidth)
+        val rows = RockFace.tileRows(worldTop, worldBottom, phase)
+        val width = columns * RockFace.TILE_WIDTH_METRES
+        val height = rows * RockFace.TILE_HEIGHT_METRES
+
+        // Centres, because a rotated quad's (x, y) has to mean its middle for the rotation to be
+        // about that middle — the same CENTRE_ORIGIN convention every other object here uses.
+        // The quad grows OUTWARD from the column boundary, hence the sign.
+        val outward = if (angle == RIGHT_WALL) 1f else -1f
+        val centreX = outward * (Tuning.COLUMN_HALF_WIDTH + width * 0.5f)
+        val centreY = RockFace.tileTopDepth(worldTop, phase) + height * 0.5f
+
+        surface.drawTexture(
+            RockFace.diffuse,
+            centreX, centreY, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            0f, 0f, 0f, 1f, 1f, columns.toFloat(), rows.toFloat()
+        )
+
+        // The copied argument list. Same rect, same angle, same origin, same tiling.
+        normalMaps?.drawNormalMap(
+            RockFace.normal,
+            centreX, centreY, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            columns.toFloat(), rows.toFloat()
+        )
+    }
+
+    /**
+     * The parallax silhouettes — see [Backdrop], which owns the layer table and the arithmetic.
+     *
+     * Each layer is one quad the width of the play column, plus a flat skirt continuing its solid
+     * body down to the bottom of the frame ([Backdrop.skirtDepth]). Painted far to near, so a
+     * near ridge occludes a far one.
+     *
+     * The skirt is drawn FIRST and the art over it, rather than the other way round: they are the
+     * same colour at the same alpha, but alpha compositing is not idempotent, and a skirt painted
+     * over the bottom of the silhouette would double the layer's alpha along the overlap and
+     * leave a darker band exactly where the join is meant to be invisible. Drawing the skirt
+     * strictly below the quad's bottom edge is what keeps them disjoint.
+     */
+    private fun drawBackdrop(surface: Surface, cam: Camera, worldTop: Float, worldBottom: Float)
+    {
+        if (!Backdrop.ready()) return
+
+        val width = Backdrop.widthMetres
+        Backdrop.layers.forEach { layer ->
+            val height = layer.heightMetres(width)
+            val top = Backdrop.parallaxTopDepth(worldTop, layer.restTopDepth, layer.rate)
+            val centreY = top + height * 0.5f
+
+            // The engine's own view test, padded by nothing: this is a quad on `main`, so its
+            // rasterised extent is exactly the rect below. A square of the LARGER side strictly
+            // contains the layer, so the test can only ever be conservative.
+            val skirtTop = Backdrop.skirtDepth(top, height, worldBottom)
+            if (skirtTop < worldBottom)
+            {
+                surface.setDrawColor(silhouetteColor.red, silhouetteColor.green, silhouetteColor.blue, layer.alpha)
+                surface.fillRect(-width * 0.5f, skirtTop, width, worldBottom - skirtTop)
+            }
+
+            if (!cam.showsSquare(0f, centreY, max(width, height))) return@forEach
+
+            surface.setDrawColor(silhouetteColor.red, silhouetteColor.green, silhouetteColor.blue, layer.alpha)
+            surface.drawTexture(
+                layer.texture,
+                0f, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN
+            )
         }
     }
 

@@ -15,6 +15,7 @@ import no.njoh.pulseengine.modules.lighting.global.GlobalIlluminationSystem
 import no.njoh.pulseengine.modules.lighting.shared.NormalMapRenderer
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import org.lwjgl.glfw.GLFW
+import render.Backdrop
 import render.CameraInvariants
 import render.CameraRig
 import render.DiveCamera
@@ -24,6 +25,7 @@ import render.DiverSprite
 import render.Hud
 import render.IridescenceRenderer
 import render.LightEmitter
+import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
 import render.anyLifecycleActionPressed
@@ -535,6 +537,13 @@ class EnPustTil : PulseEngineGame()
         // fallback rectangle until DiverSprite.sheetsReady() turns true, and complains in the log
         // if it never does.
         DiverSprite.load(engine)
+
+        // The column's own art: the tiling cliff face on both walls, and the parallax
+        // silhouettes behind the water. Same queue and the same asynchronous upload, so both
+        // degrade to what shipped before them — a flat stone slab, and no backdrop at all —
+        // until their textures land, and both complain in the log if they never do.
+        RockFace.load(engine)
+        Backdrop.load(engine)
 
         // The GENERATED assets: the round emitter every point light in DiveLighting shapes its
         // light from, and the long tapered one the god rays emit from. Same queue, same

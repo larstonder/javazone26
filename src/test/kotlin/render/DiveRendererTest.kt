@@ -130,7 +130,7 @@ class DiveRendererTest
     @Test
     fun `the column walls clear the GI reflectance floor once quantized`()
     {
-        for ((name, color) in listOf("wall body" to DiveRenderer.wallColor, "wall inner face" to DiveRenderer.wallEdgeColor))
+        for ((name, color) in listOf("wall backing" to DiveRenderer.wallColor, "backdrop silhouette" to DiveRenderer.silhouetteColor))
         {
             val length = DiveRenderer.reflectanceLength(quantize(color.red), quantize(color.green), quantize(color.blue))
             assertTrue(
