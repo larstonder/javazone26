@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
  *   2. `a world point maps to the same screen fraction on every display` — MEASURED tautology:
  *      `f(x)·h/h == f(x)·h/h` on both sides, true for any `f`, including a wrong one.
  *   3. `the diver occupies the same screen fraction on every display` — MEASURED tautology:
- *      `DIVER_SIZE_METRES·(h/60)/h` is `DIVER_SIZE_METRES/60` written out twice.
+ *      `DIVER_HEIGHT_METRES·(h/60)/h` is `DIVER_HEIGHT_METRES/60` written out twice.
  *   4. `the diver is large enough to see` — KEPT, below, re-expressed without `pixelsPerMetre`.
  *   5. `only part of the water column is visible so descending scrolls` — KEPT, verbatim.
  *   6. `x is centred and scales with the display` — real (dropping the `* 0.5f` centring term
@@ -48,16 +48,16 @@ import kotlin.test.assertTrue
  */
 class FramingTest
 {
-    // Killed by: DIVER_SIZE_METRES 3 -> 0.3. Same mutation that killed it in ViewportTest,
+    // Killed by: DIVER_HEIGHT_METRES 3 -> 0.3. Same mutation that killed it in ViewportTest,
     // verified red in this file before ViewportTest was deleted.
     @Test
     fun `the diver is large enough to see`() {
         // The bug shipped a 14px diver into an 1800px-tall framebuffer: 0.8% of screen height.
         // Stated as a fraction of the visible column rather than of a screen height, which is
         // numerically the same number and no longer needs a resolution to say it:
-        // DIVER_SIZE_METRES * (h / VISIBLE_DEPTH_METRES) / h is DIVER_SIZE_METRES /
+        // DIVER_HEIGHT_METRES * (h / VISIBLE_DEPTH_METRES) / h is DIVER_HEIGHT_METRES /
         // VISIBLE_DEPTH_METRES for every h.
-        val fraction = Framing.DIVER_SIZE_METRES / Framing.VISIBLE_DEPTH_METRES
+        val fraction = Framing.DIVER_HEIGHT_METRES / Framing.VISIBLE_DEPTH_METRES
         assertTrue(fraction > 0.02f, "diver covers only ${fraction * 100}% of screen height")
     }
 

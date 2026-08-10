@@ -57,8 +57,30 @@ object Hud
     // --- Bubble ring: air is never a number -----------------------------------------
     const val AIR_BUBBLE_COUNT = 14
     const val AIR_LOW_THRESHOLD = 3
-    private const val AIR_RING_RADIUS_METRES = 5.5f
-    private const val AIR_BUBBLE_SIZE_METRES = 0.9f
+    /**
+     * How far from the diver the bubbles orbit, in metres.
+     *
+     * RE-CHECKED, AND DELIBERATELY LEFT ALONE, WHEN THE DIVER DOUBLED to 6 m for the sprite art.
+     * The ring is the game's only air warning, so it losing contrast against the body would be a
+     * real regression rather than a cosmetic one — but the numbers say it does not:
+     *
+     *   full ring, 12 o'clock   bubble inner edge 5.5 - 0.45 = 5.05 m  vs head at 3.0 m
+     *   worst case in principle 4.675 - 1.449 = 3.23 m                 vs head at 3.0 m
+     *
+     * The second line is the last red bubble at the low point of the heartbeat — 2.8x oversized
+     * ([AIR_LOW_SIZE_GAIN]) and pulsed — and it still clears, but only just. It also cannot happen
+     * where it would show: the ring empties CLOCKWISE FROM 12 O'CLOCK ([firstOccupiedSlot]), so
+     * slot 0, the one directly above the diver's head, is the FIRST to go. By the time a bubble is
+     * 2.8x oversized the only slot left is 13, which sits up and to the LEFT, and the diver is only
+     * 2 m wide. Growing the ring to keep the old ratio would have meant an 11 m radius, i.e. a
+     * 22 m disc in a 60 m view — the ring would have become the picture.
+     *
+     * `DiverSpriteTest.the diver is a tall figure that stays inside the air ring` holds the first
+     * line of that table as a build-time assertion.
+     */
+    internal const val AIR_RING_RADIUS_METRES = 5.5f
+
+    internal const val AIR_BUBBLE_SIZE_METRES = 0.9f
     private const val HEARTBEAT_HZ = 8f
     private const val HEARTBEAT_AMPLITUDE = 0.15f
 
@@ -115,7 +137,11 @@ object Hud
     private fun slotStep() = TAU / AIR_BUBBLE_COUNT
 
     // --- HELD: enormous, amber, attached to the diver --------------------------------
-    private const val HELD_OFFSET_METRES = 8f        // below the diver, clear of the air ring
+    // Below the diver, clear of the air ring. Re-checked when the diver doubled to 6 m and left
+    // alone: the numerals are top-anchored at 8 m below the diver's CENTRE, so they start 5 m
+    // below his fins (half-height 3 m) and 1.2 m below the lowest point the ring's largest bubble
+    // can reach (5.5 + 1.45). Nothing to move.
+    private const val HELD_OFFSET_METRES = 8f
     private const val HELD_HEAT_SCALE = 3000f         // held value at which colour/size maxes out
     private const val HELD_MIN_FONT_FRACTION = 0.045f
     private const val HELD_MAX_FONT_BONUS_FRACTION = 0.05f

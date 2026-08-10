@@ -11,6 +11,8 @@ import no.njoh.pulseengine.core.input.Key
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.core.shared.utils.LogLevel
 import no.njoh.pulseengine.core.shared.utils.Logger
+import no.njoh.pulseengine.modules.lighting.global.GlobalIlluminationSystem
+import no.njoh.pulseengine.modules.lighting.shared.NormalMapRenderer
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import org.lwjgl.glfw.GLFW
 import render.CameraInvariants
@@ -18,6 +20,7 @@ import render.CameraRig
 import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
+import render.DiverSprite
 import render.Hud
 import render.RunLifecycle
 import render.RunLifecycleState
@@ -240,11 +243,13 @@ object AttractLayout
     /**
      * Half-height of the screen band the diver and its glow occupy, centred on
      * [render.Framing.DIVER_SCREEN_FRACTION]. The diver itself is only
-     * `DIVER_SIZE_METRES / VISIBLE_DEPTH_METRES` = 0.05 of screen height, so this is
-     * almost entirely the light: measured off `idle-view.png`, the blue halo is still
-     * clearly reading 0.14h above and below the diver before it fades into the ambient
-     * gradient. Attract text must stay outside this band, which is the whole point of the
-     * anchors below.
+     * `DIVER_HEIGHT_METRES / VISIBLE_DEPTH_METRES` = 0.10 of screen height (0.05 when this
+     * was measured, before the diver was doubled), so this is mostly the light: measured off
+     * `idle-view.png`, the blue halo is still clearly reading 0.14h above and below the diver
+     * before it fades into the ambient gradient. Attract text must stay outside this band,
+     * which is the whole point of the anchors below. Note the diver's own half-height is now
+     * 0.05h against this 0.14h band, so the band is still the binding constraint — but by a
+     * smaller margin than it was, and a third doubling would invert them.
      */
     const val DIVER_HALO_HALF_HEIGHT = 0.14f
 
@@ -433,6 +438,10 @@ class EnPustTil : PulseEngineGame()
     // (see onRender), so at the booth it stays at zero and costs one float compare per frame.
     private var secondsSinceCameraCheck = 0f
 
+    // One-shot latch for the missing-normal-map-renderer warning in onRender. Presentation-only
+    // and deliberately not reset: the point is one log line per process, not one per frame.
+    private var warnedAboutNormalMaps = false
+
     override fun onCreate()
     {
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
@@ -518,6 +527,13 @@ class EnPustTil : PulseEngineGame()
 
         logGamepadDiagnostics()
 
+        // The game's only loaded asset. Queued here rather than at field-init time for the same
+        // reason `sim` is: `engine` is not usable before onCreate. `AssetManager.load` only
+        // appends to a queue — the GL upload happens some frames later — so DiveRenderer draws a
+        // fallback rectangle until DiverSprite.sheetsReady() turns true, and complains in the log
+        // if it never does.
+        DiverSprite.load(engine)
+
         DiveLighting.setup(engine)
 
         // The HUD is drawn to its OWN transparent surface, composited on top of mainSurface
@@ -588,7 +604,23 @@ class EnPustTil : PulseEngineGame()
         // unattended) and for PAUSED, and true for the rest — RUN_OVER and ENTER_INITIALS
         // included, unchanged, since DiveSim.tick already no-ops once runOver is set.
         if (lifecycle.simulationAdvances)
+        {
             sim.tick(engine.data.fixedDeltaTime, readInput())
+
+            // The diver's animation phase, advanced INSIDE the simulation gate and from the same
+            // dt — so a pause freezes the loop with everything else, by construction rather than
+            // by a second copy of the condition. See DiverSprite.loopPhase for the full argument
+            // and for what is deliberately given up (a still diver on the attract screen).
+            DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
+
+            // The diver's aim, integrated here for the same reason and in the same gate. It used
+            // to be integrated inside DiveLighting's beam DRAW, from onRender's delta time — which
+            // stopped working the moment the diver's BODY had to be drawn to the same heading:
+            // DiveRenderer runs before DiveLighting in onRender, so the body would have been
+            // rotated to the previous frame's aim while the beam used this one. One write on the
+            // fixed tick, strictly before both reads. See DiveLighting.updateAim.
+            DiveLighting.updateAim(sim, engine.data.fixedDeltaTime)
+        }
 
         // CAMERA EASING RUNS ON THE FIXED TICK, NOT THE RENDER CLOCK. It used to be the other
         // way round, and CLAUDE.md used to describe that as deliberate presentation-side
@@ -724,6 +756,14 @@ class EnPustTil : PulseEngineGame()
             // reproduces on demand. See CameraRig.snap.
             CameraRig.snap(engine, camera.depth)
             DiveLighting.resetAim()
+
+            // Every run opens on the loop's authored first frame rather than wherever the last
+            // player left it, which is the same argument as resetAim above and as the fresh
+            // DiveSim: nothing about a new run should depend on the previous one. Reset from HERE
+            // and not from onFixedUpdate even though the phase is ADVANCED there — `justStarted`
+            // is a one-tick flag cleared at the top of the next `lifecycle.update`, i.e. on the
+            // render clock, and a frame that happens to run no fixed step would miss it.
+            DiverSprite.restartLoop()
         }
 
         // The tick initials entry finishes (confirmed or auto-submitted on timeout —
@@ -756,7 +796,37 @@ class EnPustTil : PulseEngineGame()
         // through engine.gfx.mainCamera, which CameraRig wrote on the last fixed tick; the
         // renderer takes that camera so the rect it walks is the rect the frame is drawn with.
         val worldCamera = engine.gfx.mainCamera
-        DiveRenderer.render(engine.gfx.mainSurface, sim, worldCamera)
+
+        // The diver's normal map goes to GI's own normal-map surface, so its renderer is fetched
+        // here and handed down rather than reached for inside DiveRenderer — which deliberately
+        // holds no engine handle of its own (see its class doc), exactly as the world camera and
+        // DiveLighting's surfaces already work.
+        //
+        // NormalMapRenderer is attached to that surface by GlobalIlluminationSystem itself
+        // (:128-138), BEFORE the `EntityRenderer` early-out at :184 — so it exists even though
+        // this game authors no scene entities at all. Null-safe anyway: a diver drawn flat is a
+        // far better failure than no diver.
+        val normalMaps = engine.gfx
+            .getSurface(GlobalIlluminationSystem.GI_NORMAL_MAP)
+            ?.getRenderer<NormalMapRenderer>()
+
+        // A diver drawn flat is a perfectly good frame and an entirely silent one, which is this
+        // project's recurring failure mode — so say it once if the renderer is ever missing.
+        // Looked up per frame rather than cached in onCreate because the engine rebuilds surfaces
+        // on a window change, and a cached renderer would then be a handle to a dead surface.
+        if (normalMaps == null && !warnedAboutNormalMaps)
+        {
+            warnedAboutNormalMaps = true
+            Logger.warn { "No ${GlobalIlluminationSystem.GI_NORMAL_MAP} NormalMapRenderer — the diver will be drawn without normals" }
+        }
+
+        // ONE heading, read once, handed to both draws. DiveLighting owns it (it is the torch's
+        // smoothed aim, holding its last value when the diver coasts to a stop); the body is drawn
+        // rotated to the same number so the diver faces where his light points. Deriving it twice
+        // from sim.vx/vy is the shape of the bug 6ea1f53 fixed — see DiveLighting.beamHeadingDegrees.
+        val aimDegrees = DiveLighting.beamHeadingDegrees
+
+        DiveRenderer.render(engine.gfx.mainSurface, sim, worldCamera, normalMaps, aimDegrees)
 
         // Lights: immediate-mode drawLight calls, also in metres, onto GI's local scene
         // surface — which is created with `camera = engine.gfx.mainCamera`, the SAME object,
@@ -768,7 +838,7 @@ class EnPustTil : PulseEngineGame()
         // letting DiveLighting fetch it: a light and the square it sits on are then culled
         // against one visible rect, and only this file has to name engine.gfx.mainCamera at all
         // (see MainCameraOwnershipTest, whose allow-list is exact set equality).
-        DiveLighting.render(engine, sim, worldCamera, engine.data.deltaTime)
+        DiveLighting.render(engine, sim, worldCamera)
 
         // HUD: its own surface, its own screen-pixel camera, composited on top unaffected by
         // GI — see the comment in onCreate for why it cannot share mainSurface. What it shows

@@ -5,17 +5,19 @@ import dive.Tuning
 import no.njoh.pulseengine.core.graphics.api.Camera
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
+import no.njoh.pulseengine.modules.lighting.shared.NormalMapRenderer
 import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
- * Placeholder rendering. Everything is an untextured quad:
- *   diver  = white square, grows with held mass
+ * Mostly placeholder rendering still:
+ *   diver  = the baked sprite sheets ([DiverSprite]) — albedo on `main`, normal on GI's
+ *            `gi_normal_map`, one rect submitted twice
  *   pearl  = small amber square
  *   zones  = flat horizontal bands
- * Real art replaces this after the loop is locked.
+ * Everything but the diver is an untextured quad and waits for its own art.
  *
  * EVERYTHING HERE IS IN WORLD METRES, +x right, +y down, and world y IS depth. There is no
  * coordinate maths left in this file at all: [CameraRig] writes `engine.gfx.mainCamera` once
@@ -195,7 +197,7 @@ object DiveRenderer
      * reached for so this object keeps no engine handle of its own, and so the visible rect the
      * bands walk is provably the rect the frame is drawn with.
      */
-    fun render(surface: Surface, sim: DiveSim, cam: Camera)
+    fun render(surface: Surface, sim: DiveSim, cam: Camera, normalMaps: NormalMapRenderer?, aimDegrees: Float)
     {
         // Read once. These are two DISTINCT Vector2f fields on Camera (Camera.kt:32-33), not
         // the single shared return buffer worldPosToScreenPos hands back, so reading one does
@@ -215,7 +217,7 @@ object DiveRenderer
         drawAirPockets(surface, sim, cam)
         drawPearls(surface, sim, cam)
         drawAnglerfish(surface, sim, cam)
-        drawDiver(surface, sim, cam)
+        drawDiver(surface, sim, cam, normalMaps, aimDegrees)
     }
 
     /**
@@ -392,14 +394,73 @@ object DiveRenderer
         surface.fillRectCentred(fish.x, fish.depth, size, size)
     }
 
-    private fun drawDiver(surface: Surface, sim: DiveSim, cam: Camera)
+    /**
+     * The one textured thing in the game, and the only place two surfaces are handed the same
+     * rect.
+     *
+     * ## The albedo and the normal are ONE argument list, written once
+     *
+     * A normal-mapped sprite is not one draw call: it is the same world rect submitted twice —
+     * the albedo to `main` through `drawTexture`, the normal to GI's `gi_normal_map` through
+     * [NormalMapRenderer.drawNormalMap]. `texture.vert:70` and `normal_map.vert:75` compute the
+     * identical `(vertexPos - origin) * size * rotate(radians(angle))`, so the two calls take the
+     * identical `(x, y, w, h, angle)` + [CENTRE_ORIGIN] tuple. Below, the second call's arguments
+     * are a literal copy of the first's — NOT a second derivation of the same numbers. Deriving
+     * them twice is precisely the shape of the shipped world-offset-from-HUD bug `6ea1f53` fixed,
+     * and here it would be worse than a visible offset: the lighting would slide off the body by
+     * a fraction of a sprite and read as bad art rather than as a bug.
+     *
+     * ## Why not the `NormalMapped` interface
+     *
+     * The engine offers one, and it is wrong for a sprite sheet: `NormalMapped.kt:32` passes the
+     * whole asset to the renderer, which for a `SpriteSheet` means stretching all 42 cells across
+     * the quad with no way to say which frame. `NormalMapRenderer` is a plain public
+     * `BatchRenderer` method, callable immediate-mode exactly like `GiSceneRenderer.drawLight`
+     * already is (see [DiveLighting]), so the frame's own sub-UV `Texture` goes straight in.
+     *
+     * ## Culling
+     *
+     * The figure is taller than it is wide, so a square of its HEIGHT strictly contains it and
+     * [showsSquare] against that height can only ever be conservative — it can keep a diver that
+     * is a fraction of a metre off frame, never drop one that is on it.
+     *
+     * [normalMaps] is null when GI has not created its normal-map surface (nothing does that
+     * today, but a null renderer must degrade to an unlit-but-present diver rather than to no
+     * diver). The albedo does not depend on it.
+     */
+    private fun drawDiver(surface: Surface, sim: DiveSim, cam: Camera, normalMaps: NormalMapRenderer?, aimDegrees: Float)
     {
-        // Size scales with load so weight is visible as well as felt — and the culled rect has
-        // to grow with it, which is the whole reason the size is computed before the test.
-        val size = Framing.DIVER_SIZE_METRES + sim.heldMass * 0.03f
-        if (!cam.showsSquare(sim.x, sim.depth, size)) return
-        surface.setDrawColor(diverColor)
-        surface.fillRectCentred(sim.x, sim.depth, size, size)
+        val height = Framing.DIVER_HEIGHT_METRES
+        val width = DiverSprite.widthForHeight(height)
+        val angle = DiverSprite.bodyAngleFor(aimDegrees)
+        if (!cam.showsSquare(sim.x, sim.depth, height)) return
+
+        // Not ready yet (the upload is asynchronous — see DiverSprite.sheetsReady), or missing
+        // entirely. Fall back to the placeholder rectangle at the same world footprint so the
+        // diver is never simply absent, and let sheetsReady do the complaining.
+        if (!DiverSprite.sheetsReady())
+        {
+            surface.setDrawColor(diverColor)
+            surface.fillRectCentred(sim.x, sim.depth, width, height, angle)
+            return
+        }
+
+        val frame = DiverSprite.currentFrame
+
+        // White, fully opaque: drawTexture MODULATES the sprite by the surface's current draw
+        // colour, and the previous call in this frame left it set to the anglerfish's amber.
+        // Without this the diver would be tinted by whatever was drawn before him.
+        surface.setDrawColor(1f, 1f, 1f, 1f)
+        surface.drawTexture(
+            DiverSprite.diffuseFrame(frame),
+            sim.x, sim.depth, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN
+        )
+
+        // The copied argument list. If you change one of these five numbers, change it above.
+        normalMaps?.drawNormalMap(
+            DiverSprite.normalFrame(frame),
+            sim.x, sim.depth, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN
+        )
     }
 
     // --- Continuous zone-band colour, exposed for testing (see DiveRendererTest) ---------

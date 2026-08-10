@@ -1,6 +1,9 @@
 package render
 
+import dive.DiveInput
+import dive.DiveSim
 import dive.Zone
+import kotlin.math.hypot
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -181,5 +184,57 @@ class DiveLightingTest
         val justAbove = 1.5f + 0.001f
         assertEquals(DiveLighting.beamConeAngle(justBelow), DiveLighting.beamConeAngle(justAbove), 0.5f)
         assertEquals(DiveLighting.beamIntensity(base, justBelow), DiveLighting.beamIntensity(base, justAbove), 0.5f)
+    }
+
+    /**
+     * THE STATIONARY HOLD, WHICH IS NOW ALSO THE DIVER'S POSE.
+     *
+     * `updateAim` stops tracking below `STATIONARY_SPEED_THRESHOLD`, because `atan2` on a
+     * near-zero velocity is noise rather than intent. That was already true of the torch; since
+     * the sprite art landed, the diver's BODY is drawn rotated to the same heading
+     * (`DiverSprite.bodyAngleFor`), so the hold is what stops him snapping to a new pose every
+     * time the player lets go of the stick and the residual drift decides where he "faces".
+     *
+     * The fixture makes that observable rather than trivially true: the diver swims RIGHT while
+     * carrying 20 units of ballast, then releases. The lateral velocity decays to nothing but the
+     * load keeps him sinking at ~1.1 m/s forever — under the threshold, so a heading that kept
+     * tracking would swing round from "right" to "straight down" and sit there. Held, it does not
+     * move at all.
+     */
+    @Test
+    fun `a diver who coasts to a stop keeps the heading he was last swimming at`()
+    {
+        val dt = 1f / 60f
+        val sim = DiveSim(seed = 7L)
+        sim.debugSetHeld(4, 20f)
+        DiveLighting.resetAim()
+
+        // Swim right until the aim has locked on.
+        val right = DiveInput(horizontal = 1f, vertical = 0f, kick = false, bleed = false)
+        repeat(180) { sim.tick(dt, right); DiveLighting.updateAim(sim, dt) }
+        assertTrue(hypot(sim.vx, sim.vy) > 1.5f, "fixture: the diver must actually be swimming")
+
+        // Let go, and keep going until the residual speed is under the threshold.
+        var held = DiveLighting.beamHeadingDegrees
+        repeat(600)
+        {
+            sim.tick(dt, DiveInput.NONE)
+            DiveLighting.updateAim(sim, dt)
+            if (hypot(sim.vx, sim.vy) >= 1.5f) held = DiveLighting.beamHeadingDegrees
+        }
+
+        assertTrue(hypot(sim.vx, sim.vy) < 1.5f, "fixture: the diver must have dropped under the threshold")
+        assertTrue(sim.vy > 0.5f, "fixture: the ballast must still be pulling him DOWN, so a tracking heading would swing to -90")
+        assertTrue(
+            AimAngle.wrap(AimAngle.shortestDifference(-90f, held) + 360f) > 20f,
+            "fixture: the held heading ($held) must be meaningfully different from straight down"
+        )
+
+        assertEquals(
+            held, DiveLighting.beamHeadingDegrees, 1e-3f,
+            "the aim must freeze once the diver is below the stationary threshold, not creep round toward his drift"
+        )
+
+        DiveLighting.resetAim()
     }
 }

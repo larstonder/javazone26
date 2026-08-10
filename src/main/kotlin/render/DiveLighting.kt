@@ -66,7 +66,24 @@ object DiveLighting
     private val diverLight = Color(0.6f, 0.85f, 1f)
 
     private const val PEARL_LIGHT_SIZE_METRES = 3f
-    private const val DIVER_LIGHT_SIZE_METRES = 3f
+
+    /**
+     * The diver's torch: the size of the QUAD that emits it, in metres.
+     *
+     * TIED TO THE DIVER'S OWN SIZE RATHER THAN BEING A SECOND 3. It was a literal `3f` — the same
+     * number `Framing.DIVER_SIZE_METRES` happened to hold — and the two silently parted company
+     * the moment the diver was doubled to 6 m for the sprite art, leaving the torch emitting from
+     * a quad half the body's height, i.e. from inside the chest. Expressed as the diver's height
+     * so a future resize cannot separate them again.
+     *
+     * Below GI's `upscaleSmallSources` threshold either way (`10 * globalWorldScale` = 40 world
+     * units, and 6 is well under it), so the shader still enlarges the quad up to 3x and divides
+     * the intensity by the same factor — the peak radiance the beam reaches the screen at is
+     * therefore unchanged by the resize, only its origin is broader. That is also why
+     * [drawDiverBeam] pads its cull by one full light size and not by [LIGHT_CULL_MARGIN_METRES],
+     * which is a PEARL's size and would now be too small by half.
+     */
+    private const val DIVER_LIGHT_SIZE_METRES = Framing.DIVER_HEIGHT_METRES
 
     /**
      * How many metres of water around an occluder GI's ambient occlusion darkens. A plain
@@ -147,10 +164,77 @@ object DiveLighting
     private var gi: GlobalIlluminationSystem? = null
     private val ambientColor = Color(0f, 0f, 0f, 1f)
 
-    // -90 degrees is "facing down" in GiSceneRenderer's Y-flipped cone-direction convention
-    // (see AimAngle's class doc) — a sensible default before the diver first moves.
-    private var beamAngleDeg = -90f
+    /**
+     * THE RESTING HEADING, CHANGED FROM -90 WHEN THE DIVER'S BODY STARTED SHARING IT.
+     *
+     * It used to be -90 — "facing down" in GiSceneRenderer's Y-flipped cone-direction convention
+     * (see AimAngle's class doc) — chosen as a sensible default for a TORCH before the diver first
+     * moves. That stopped being a free choice the moment `DiverSprite.bodyAngleFor` started posing
+     * the sprite from the same number: -90 draws the diver UPSIDE DOWN, and the state it shows in
+     * is the attract screen and the first instant of a run, i.e. a diver hovering at the surface
+     * standing on his head. [DiverSprite.REST_HEADING_DEGREES] is by definition the heading at
+     * which the sheet's own art is upright, so it is the only value that can be right here.
+     *
+     * The cost is that an untouched torch points UP rather than down. It is paid only until the
+     * first stick input, which snaps rather than eases (`beamInitialized` below), and at depth 0
+     * in the lit Shallows where the beam contributes least. A diver standing on his head is a much
+     * louder wrong than a torch shining at the sky.
+     */
+    private var beamAngleDeg = DiverSprite.REST_HEADING_DEGREES
     private var beamInitialized = false
+
+    /**
+     * WHERE THE DIVER IS POINTING — one value, owned here, read by two renderers.
+     *
+     * The diver's BODY is drawn rotated to this heading as well ([DiverSprite.bodyAngleFor], via
+     * `DiveRenderer.drawDiver`), so a diver swimming down-right is drawn facing down-right instead
+     * of staying bolt upright while only his torch turns. Exposed rather than re-derived because
+     * two renderers computing `atan2(sim.vy, sim.vx)` independently is exactly the shape of the
+     * shipped world-offset-from-HUD bug (`6ea1f53`), and here the two would part company in every
+     * frame the smoothing is mid-turn — the body would lag or lead the beam by a visible amount.
+     *
+     * There is nothing to keep in step, because there is only one number: [updateAim] integrates
+     * it once per fixed tick and both draws read it in the same frame.
+     *
+     * It is also why the smoothing and the stationary hold below are inherited rather than
+     * re-implemented: the body eases at the same [AIM_SMOOTHING_RATE], and it holds its last
+     * heading below [STATIONARY_SPEED_THRESHOLD] instead of flicking back to a neutral pose every
+     * time the player lets go of the stick.
+     */
+    val beamHeadingDegrees: Float get() = beamAngleDeg
+
+    /**
+     * Integrate the aim. Called once per fixed tick from `EnPustTil.onFixedUpdate`, inside the
+     * same `RunLifecycle.simulationAdvances` gate as `DiveSim.tick`.
+     *
+     * MOVED OUT OF [drawDiverBeam], WHICH IS WHAT MAKES ONE HEADING POSSIBLE. It used to be
+     * integrated inside the beam's own draw, from `onRender`'s delta time — and `DiveRenderer`
+     * runs BEFORE `DiveLighting` in `onRender`, so a body reading the heading there would have
+     * been reading the PREVIOUS frame's value while the beam used this one. Integrating on the
+     * fixed tick puts the single write strictly before both reads, every frame, by construction.
+     *
+     * Nothing else changes: the easing is `1 - e^(-k*dt)`, which is frame-rate independent, so
+     * sampling it at 60 Hz produces the same motion the render clock did — the same argument
+     * `CameraRig` records for camera easing. And it still runs regardless of culling: the aim is
+     * smoothed STATE, not a per-frame derivation, so freezing it while the diver is off screen
+     * would snap the heading the frame he came back.
+     */
+    fun updateAim(sim: DiveSim, dt: Float)
+    {
+        val speed = hypot(sim.vx, sim.vy)
+        if (speed < STATIONARY_SPEED_THRESHOLD) return  // hold the last heading — see drawDiverBeam
+
+        // GiSceneRenderer's cone direction is Y-flipped relative to the world's y-DOWN
+        // convention. Originally found empirically; now confirmed from the shader source —
+        // scene.frag builds the cone direction as `vec2(cos(a), sin(a))` in a framebuffer
+        // whose +y runs UP the screen, while world y (which IS depth) runs DOWN. Unchanged
+        // by the migration to metres: the flip is between world-y-down and the framebuffer's
+        // y-up, and a uniform positive scale plus a translation cannot alter it. See
+        // AimAngle's class doc.
+        val target = AimAngle.headingDegrees(sim.vx, -sim.vy)
+        beamAngleDeg = if (beamInitialized) AimAngle.smooth(beamAngleDeg, target, dt, AIM_SMOOTHING_RATE) else target
+        beamInitialized = true
+    }
 
     fun setup(engine: PulseEngine)
     {
@@ -353,7 +437,7 @@ object DiveLighting
     /** Call once per restart so a stale beam heading from the previous run does not carry over. */
     fun resetAim()
     {
-        beamAngleDeg = -90f
+        beamAngleDeg = DiverSprite.REST_HEADING_DEGREES
         beamInitialized = false
     }
 
@@ -392,14 +476,14 @@ object DiveLighting
      *    field here would have to widen that list, which is the guard against a second writer of
      *    the shared camera — the fault `6ea1f53` fixed — being loosened for a mere read.
      */
-    fun render(engine: PulseEngine, sim: DiveSim, cam: Camera, dt: Float)
+    fun render(engine: PulseEngine, sim: DiveSim, cam: Camera)
     {
         val surface = engine.gfx.getSurface(GlobalIlluminationSystem.GI_LOCAL_SCENE) ?: return
         val renderer = surface.getRenderer<GiSceneRenderer>() ?: return
 
         drawPearlLights(surface, renderer, sim, cam)
         drawAnglerfishLight(surface, renderer, sim, cam)
-        drawDiverBeam(surface, renderer, sim, cam, dt)
+        drawDiverBeam(surface, renderer, sim, cam)
     }
 
     /**
@@ -485,29 +569,19 @@ object DiveLighting
      * tightening this further, but it would change the focused beam too, and the focused
      * beam is known-good.
      */
-    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera, dt: Float)
+    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
     {
         val speed = hypot(sim.vx, sim.vy)
-        if (speed >= STATIONARY_SPEED_THRESHOLD)
-        {
-            // GiSceneRenderer's cone direction is Y-flipped relative to the world's y-DOWN
-            // convention. Originally found empirically; now confirmed from the shader source —
-            // scene.frag builds the cone direction as `vec2(cos(a), sin(a))` in a framebuffer
-            // whose +y runs UP the screen, while world y (which IS depth) runs DOWN. Unchanged
-            // by the migration to metres: the flip is between world-y-down and the
-            // framebuffer's y-up, and a uniform positive scale plus a translation cannot alter
-            // it. See AimAngle's class doc.
-            val target = AimAngle.headingDegrees(sim.vx, -sim.vy)
-            beamAngleDeg = if (beamInitialized) AimAngle.smooth(beamAngleDeg, target, dt, AIM_SMOOTHING_RATE) else target
-            beamInitialized = true
-        }
 
-        // Cull the DRAW ONLY, and only after the heading above has been integrated. The aim is
-        // smoothed state, not a per-frame derivation, so skipping the smoothing while the diver
-        // is off screen would freeze the heading and snap it the frame he came back. In practice
-        // the camera tracks the diver and this never fires; it is written this way so that it
-        // stays correct if it ever does.
-        if (!cam.showsSquare(sim.x, sim.depth, DIVER_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
+        // THE HEADING IS NO LONGER INTEGRATED HERE — see [updateAim], which runs on the fixed tick
+        // so that the diver's BODY can be drawn to the same number in the same frame. Everything
+        // left in this method is a per-frame derivation from state, so culling it costs nothing
+        // and can lose nothing.
+        //
+        // Padded by one full DIVER light size, not by LIGHT_CULL_MARGIN_METRES, which is a pearl's
+        // size: the margin exists to cover `upscaleSmallSources` growing the quad to 3x, so it has
+        // to be this light's own size. The two were the same number until the diver was doubled.
+        if (!cam.showsSquare(sim.x, sim.depth, DIVER_LIGHT_SIZE_METRES, DIVER_LIGHT_SIZE_METRES)) return
 
         val baseIntensity = diverIntensityForDepth(sim.depth)
         surface.setDrawColor(diverLight)

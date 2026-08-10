@@ -47,7 +47,33 @@ object Framing
      */
     const val CAMERA_SMOOTHING = 4f
 
-    const val DIVER_SIZE_METRES = 3f
+    /**
+     * The diver's HEIGHT, in metres — renamed from `DIVER_SIZE_METRES` when the white square gave
+     * way to the sprite, because the diver is no longer square and "size" no longer names anything.
+     * The art is 1:3.05, so the width follows from it ([DiverSprite.widthForHeight]) rather than
+     * being a second number that could drift.
+     *
+     * DOUBLED FROM 3 m BY DESIGN DECISION, not by measurement — the 3 m diver read as too small on
+     * screen. 3 m was inherited from the placeholder square and is what the sprite bake assumed
+     * (`2026-08-07-diver-spritesheet-bake-design` §3 reasons from ~5% of screen height); 6 m is
+     * 10% of it, and `VISIBLE_DEPTH_METRES` is unchanged, so the amount of water a player can see
+     * and plan against is exactly as before.
+     *
+     * The bake does not need redoing, and the change moves the sampling the right way. A 384-texel
+     * cell drawn at 5% of an 1800 px framebuffer is a 4.3x minification, and the sheets carry
+     * `maxMipLevels = 1` — deliberately, so mip generation cannot average across cell boundaries
+     * and smear adjacent frames together — so there is no mip chain to absorb it and the high
+     * frequencies in the normal map in particular would alias. At 10% it is 2.1x.
+     *
+     * FOUR THINGS SIT AT A FIXED DISTANCE FROM THE DIVER AND NONE OF THEM SCALES WITH THIS.
+     * Changing it means re-checking each: `Hud.AIR_RING_RADIUS_METRES` (the bubble ring orbits
+     * him), `Hud.HELD_OFFSET_METRES` (the held count hangs below him),
+     * `DiveLighting.DIVER_LIGHT_SIZE_METRES` (his torch's emitting quad — tied to this constant,
+     * so that one does follow), and `Tuning.PEARL_PICKUP_RADIUS` / `AIR_POCKET_PICKUP_RADIUS`,
+     * which are GAMEPLAY and must not be touched from here. See `DiverSpriteTest`'s ring-clearance
+     * case for the first, and this task's report for the pickup-radius consequence.
+     */
+    const val DIVER_HEIGHT_METRES = 6f
     const val PEARL_SIZE_METRES = 1.2f
     const val AIR_POCKET_SIZE_METRES = 2.4f
 
