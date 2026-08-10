@@ -29,7 +29,7 @@ from PIL import Image, PngImagePlugin
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from spritesheet.assembly import assemble, content_box
-from spritesheet.geometry import choose_grid, frame_width
+from spritesheet.geometry import Grid, choose_grid, frame_width
 from spritesheet.qa import write_qa_bundle
 from spritesheet.resample import resample_diffuse, resample_normal
 from spritesheet.validate import (
@@ -72,6 +72,37 @@ def write_png(path: pathlib.Path, rgba: np.ndarray, meta: dict) -> None:
     Image.fromarray(rgba, mode="RGBA").save(
         path, format="PNG", optimize=False, compress_level=9, pnginfo=info,
     )
+
+
+def kotlin_snippet(grid: Grid, frame_count: int) -> str:
+    """
+    The Kotlin call site to copy verbatim into the render-wiring branch.
+
+    This is the one artifact in the whole bake that a human copies by hand, so the
+    two facts that are silently fatal if wrong are hard-coded as literals rather than
+    derived: argument order is (format, maxMipLevels, hCells, vCells) - NOT the field
+    order, see the module docstring and design spec S4 - and maxMipLevels is always
+    `1`, never `0` (glTexStorage3D with levels=0 is GL_INVALID_VALUE: no storage
+    allocated, no error logged). `grid.cols`/`grid.rows` and `frame_count` are the
+    only interpolated numbers; the template around them is what needs covering.
+    """
+    return f"""
+Kotlin - copy verbatim, the argument order is NOT the field order:
+
+    SpriteSheet("/sprites/diver-diffuse.png", "diver_diffuse",
+        TextureFilter.LINEAR, TextureWrapping.CLAMP_TO_EDGE, TextureFormat.SRGBA8,
+        1, {grid.cols}, {grid.rows})
+    SpriteSheet("/sprites/diver-normal.png", "diver_normal",
+        TextureFilter.LINEAR, TextureWrapping.CLAMP_TO_EDGE, TextureFormat.RGBA8,
+        1, {grid.cols}, {grid.rows})
+
+    const val DIVER_FRAME_COUNT = {frame_count}   // NOT {grid.cols}*{grid.rows} - \
+the last {grid.unused_cells} cell(s) are unused
+
+maxMipLevels is 1, never 0: TextureArray computes
+min(maxMipLevels, floor(log2(size))+1) with no coerceAtLeast(1), and passes it to
+glTexStorage3D as `levels`. levels=0 is GL_INVALID_VALUE - no storage allocated, no
+error logged."""
 
 
 def bake(frame_height: int, keep_last: bool) -> int:
@@ -145,23 +176,7 @@ def bake(frame_height: int, keep_last: bool) -> int:
     write_qa_bundle(QA_DIR, grid, len(diffuse), diffuse_sheet, normal_sheet)
     print(f"wrote QA bundle to {QA_DIR}")
 
-    print(f"""
-Kotlin - copy verbatim, the argument order is NOT the field order:
-
-    SpriteSheet("/sprites/diver-diffuse.png", "diver_diffuse",
-        TextureFilter.LINEAR, TextureWrapping.CLAMP_TO_EDGE, TextureFormat.SRGBA8,
-        1, {grid.cols}, {grid.rows})
-    SpriteSheet("/sprites/diver-normal.png", "diver_normal",
-        TextureFilter.LINEAR, TextureWrapping.CLAMP_TO_EDGE, TextureFormat.RGBA8,
-        1, {grid.cols}, {grid.rows})
-
-    const val DIVER_FRAME_COUNT = {len(diffuse)}   // NOT {grid.cols}*{grid.rows} - \
-the last {grid.unused_cells} cell(s) are unused
-
-maxMipLevels is 1, never 0: TextureArray computes
-min(maxMipLevels, floor(log2(size))+1) with no coerceAtLeast(1), and passes it to
-glTexStorage3D as `levels`. levels=0 is GL_INVALID_VALUE - no storage allocated, no
-error logged.""")
+    print(kotlin_snippet(grid, len(diffuse)))
     return 0
 
 

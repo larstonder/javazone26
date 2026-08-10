@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from spritesheet.resample import (
     resample_diffuse, resample_normal, decode_normals, mean_normal_length,
@@ -95,10 +97,20 @@ def test_resampled_normals_stay_unit_length():
 def test_normal_zero_alpha_falls_back_to_flat_and_never_nans():
     rgb = _flat_normal_field(16, 16)
     alpha = np.zeros((16, 16), dtype=np.uint8)
-    out_rgb, out_a = resample_normal(rgb, alpha, (4, 4))
-    assert np.isfinite(out_rgb).all()
-    v = out_rgb / 255.0 * 2.0 - 1.0
-    assert np.allclose(v[..., 2], 1.0, atol=0.02)
+
+    # A real 0/0 divide raises RuntimeWarning: invalid value encountered in divide -
+    # promote it to an error so this test actually fails if any of the three NaN
+    # defences in resample.py is removed, rather than silently swallowing it.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out_rgb, out_a = resample_normal(rgb, alpha, (4, 4))
+
+    # out_rgb is uint8 (from to_u8's .astype(np.uint8)), so np.isfinite(out_rgb) is
+    # unconditionally True regardless of input - that was a tautology, not a check.
+    # The real assertion is that a fully-uncovered footprint produces exactly the
+    # flat-normal fallback byte triple, not an unspecified value that happened to
+    # survive the astype cast.
+    assert (out_rgb == np.array([128, 128, 255], dtype=np.uint8)).all()
     assert (out_a == 0).all()
 
 
