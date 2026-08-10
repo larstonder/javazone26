@@ -256,8 +256,12 @@ files. The workaround needs neither:
 that, permanently.
 
 - `assets/` and `release/` are gitignored (`.gitignore:130-131`, done in `32f7e65`).
-- The two sheets (~1–2 MB) are committed under `src/main/resources/sprites/`, which ships inside
-  the release `.exe`.
+- The two sheets are committed under `src/main/resources/sprites/`, which ships inside the
+  release `.exe`. Measured after the first real bake: **1.4 MB diffuse + 1.9 MB normal =
+  3.4 MB**, above the 1–2 MB this section originally estimated. Verified as genuine content
+  cost rather than a wrong encoder setting — `compress_level` is already zlib's maximum 9,
+  and re-saving with `optimize=True` moves the size by under 0.01%. The normal map is the
+  larger of the two because its high-frequency shading noise compresses poorly.
 - The script header records the source frames' provenance and the re-bake command.
 
 Because the sheets are committed artifacts, the bake must be **byte-reproducible**: pin Pillow's
