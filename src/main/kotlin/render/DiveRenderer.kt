@@ -433,7 +433,13 @@ object DiveRenderer
     private fun drawPearlSurface(surface: Surface, iridescence: IridescenceRenderer?, centreX: Float, depth: Float)
     {
         val size = Framing.PEARL_SIZE_METRES
-        surface.setDrawColor(pearlColor)
+        val exposure = pearlAlbedoExposure(depth)
+        surface.setDrawColor(
+            exposed(pearlColor.red, exposure),
+            exposed(pearlColor.green, exposure),
+            exposed(pearlColor.blue, exposure),
+            1f
+        )
         if (iridescence != null)
         {
             // The shader inscribes a DISC in the quad, so the quad is grown to keep the drawn
@@ -513,6 +519,113 @@ object DiveRenderer
             sim.x, sim.depth, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN
         )
     }
+
+    /**
+     * THE PEARL'S ALBEDO EXPOSURE — how far the pearl's own colour is stopped down before the GI
+     * multiply, so that its material survives its own light.
+     *
+     * ## The problem, measured
+     *
+     * A pearl sits at the centre of its own light source, and `GlobalIlluminationSystem`
+     * multiplies `mainSurface` by the light map. Over the brightest 0.05% of pixels in a pinned
+     * frame — the pearl cores — the shipped build read:
+     *
+     *      10 m Shallows   mean RGB (182, 141,  63)   chroma 0.667    0.0% at >= 250
+     *      70 m Twilight   mean RGB (234, 210,  85)   chroma 0.638    0.0%
+     *     140 m Abyss      mean RGB (246, 241, 187)   chroma 0.240   27.0%
+     *
+     * The pearl does not merely brighten with depth, it goes WHITE, because
+     * [DiveLighting.pearlIntensityForDepth] runs 0.6 in the Shallows to 4.0 in the Abyss and the
+     * product leaves the ACES shoulder with no hue left. An iridescent surface authored under
+     * those conditions is invisible on exactly the objects it is for.
+     *
+     * ## Why this and not an emitter shape
+     *
+     * An annulus emitter was built and measured and does not work AT ANY HOLE RADIUS — see
+     * [LightEmitter]'s class doc, which has the numbers and the `radiance_cascades.frag` reading
+     * behind them. In short: `radius = 0` means there is no distance term, so a probe inside a
+     * ring receives exactly what a probe inside a disc does. No shape can spare the body.
+     *
+     * ## What this does instead, and why it is depth-STABLE rather than merely darker
+     *
+     * The light a pearl's own body receives is dominated by its own emitter, whose intensity is
+     * an existing, pure, already-tested function of depth. So the albedo is stopped down by the
+     * inverse of that intensity, normalised to the deepest zone at which the material was
+     * measured to still read (Twilight, 1.8 — 70 m above reads at chroma 0.638 with nothing
+     * clipped). `exposure x intensity` is then constant with depth, and the material reads the
+     * same in the Kelp as in the Abyss instead of 6.7x differently.
+     *
+     * Clamped at 1 so it can only ever REMOVE albedo. The Shallows and the Kelp already read;
+     * brightening them would be a change nobody asked for, and it would push them toward the same
+     * shoulder this exists to get off.
+     *
+     * ## What it does NOT touch
+     *
+     * The emitter. `DiveLighting.drawPearlLights` is character-identical to what it was: what a
+     * pearl EMITS — and therefore what lights the water, the diver and every neighbouring pearl,
+     * and therefore the Abyss's readability that `d343886` and `ad2bc35` established — is
+     * unchanged. This is the albedo of the pearl's own 1.2 m disc and nothing else.
+     *
+     * The anglerfish's lure gets it too, necessarily and by construction: both go through
+     * [drawPearlSurface], and its depth is the fish's depth exactly as a pearl's is its own.
+     */
+    internal fun pearlAlbedoExposure(depth: Float): Float
+    {
+        val here = DiveLighting.pearlIntensityForDepth(depth)
+        if (!(here > 0f)) return 1f // NaN or a degenerate table: draw the pearl unmodified
+        val full = (PEARL_EXPOSURE_REFERENCE_INTENSITY / here).coerceAtMost(1f)
+        return full.pow(PEARL_EXPOSURE_STRENGTH)
+    }
+
+    /**
+     * The pearl-light intensity the exposure above is normalised to: the value at the midpoint of
+     * the deepest zone whose pearls were measured to keep their hue (Twilight — 70 m reads at
+     * chroma 0.638 with nothing clipped, against the Abyss's 0.240 with 27% clipped).
+     *
+     * Asked of [DepthBlend] and [DiveLighting] rather than typed as 1.8, so that re-tuning the
+     * pearl-light table moves this with it instead of silently leaving the reference pointing at
+     * an intensity no zone has any more.
+     */
+    /**
+     * How much of the full compensation to apply, as an exponent: 0 is the old behaviour, 1 is
+     * "make `exposure x intensity` exactly constant with depth". THIS IS THE ONE KNOB, and it is
+     * a trade with a measured curve rather than a value with a right answer.
+     *
+     * Full compensation makes the material read perfectly and costs too much: the pearls' bloom
+     * halos were carrying most of the Abyss's visible light, and removing them takes the water
+     * and the diver down with them. Captured at 140 m, 16:9, pinned stationary diver, against a
+     * same-build control pair that was BIT-IDENTICAL (0 differing pixels of 5.76 M):
+     *
+     *     strength   frame mean   pearl core RGB        >= 250    chroma
+     *        0.0       9.675      (246, 241, 187)       27.0%      0.240   white, no material
+     *        0.5       3.904      (244, 231, 137)        3.3%      0.438   gold, material reads
+     *        1.0       1.395      (234, 209,  71)        0.0%      0.696   full material, dark water
+     *
+     * (chroma = mean `(max - min) / max` over the brightest 0.05% of pixels, i.e. the pearl
+     * cores. For scale, an uncompensated pearl at 70 m — which nobody has complained about —
+     * reads 0.638, and at 10 m 0.667.)
+     *
+     * 0.5 is chosen as the point where the material is unambiguously visible and the Abyss still
+     * has a glow to read the water and the diver by. It is a judgement, the numbers either side
+     * of it are above, and moving it is a one-line change with no other consequence — which is
+     * the whole reason it is expressed as a strength rather than baked into the reference.
+     */
+    internal const val PEARL_EXPOSURE_STRENGTH = 0.5f
+
+    internal val PEARL_EXPOSURE_REFERENCE_INTENSITY =
+        DiveLighting.pearlIntensityForDepth(DepthBlend.zoneMidpoint(dive.Zone.TWILIGHT))
+
+    /**
+     * One channel of a draw colour, stopped down by [exposure] IN LINEAR SPACE.
+     *
+     * The round trip through [srgbToLinear]/[linearToSrgb] is not ceremony. `setDrawColor` packs
+     * an sRGB byte which `iridescence.vert` (and `texture.vert`) then decode with the ~2.4 power
+     * curve, so multiplying the sRGB value by 0.45 would scale the LINEAR value by 0.45^2.4 =
+     * 0.147 — three times more light removed than asked for, and wrong by a different factor at
+     * every exposure. The multiply has to happen on the side the GI blend measures.
+     */
+    internal fun exposed(channel: Float, exposure: Float): Float =
+        linearToSrgb(srgbToLinear(channel) * exposure)
 
     // --- Continuous zone-band colour, exposed for testing (see DiveRendererTest) ---------
 

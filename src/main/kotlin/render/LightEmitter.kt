@@ -77,6 +77,45 @@ import kotlin.math.roundToInt
  * agreed to 0.0007/255. So the shape change costs about a fiftieth of what the geometry predicts,
  * and nothing is applied. The number that mattered was never derivable on paper.
  *
+ * ## AN ANNULUS EMITTER WAS BUILT AND MEASURED, AND IT DOES NOT WORK. DO NOT REBUILD IT.
+ *
+ * The problem it was meant to solve is real and is still open: a pearl's own light saturates the
+ * pearl's own body, so the iridescent material on it cannot be seen. Measured over the brightest
+ * 0.05% of pixels in a pinned frame — which in every one of these frames are the pearl cores:
+ *
+ *      10 m Shallows   mean RGB (182, 141,  63)   chroma 0.667    0.0% at >= 250
+ *      70 m Twilight   mean RGB (234, 210,  85)   chroma 0.638    0.0%
+ *     140 m Abyss      mean RGB (246, 241, 187)   chroma 0.240   27.0%
+ *
+ * The obvious fix is to move the emitter's peak off the body: keep the outer silhouette (so the
+ * cast is unchanged — external rays hit the same rim in the same place) and punch the middle out,
+ * leaving a ring outside the 1.2 m body. Built, at two hole radii, captured at 140 m in the Abyss
+ * against the shipped disc:
+ *
+ *     disc                          frame mean 9.675   chroma 0.240   27.0% at >= 250
+ *     annulus, hole 0.62 half-widths   "     8.860     "     0.260   22.1%
+ *     annulus, hole 0.86 half-widths   "     8.876     "     0.249   26.7%
+ *
+ * The second one has almost the entire emitter removed — a ring 0.14 half-widths thick, its inner
+ * edge nearly three times the body's radius — and the pearl is STILL a blown-out white disc. The
+ * effect is not small; it is absent.
+ *
+ * THE REASON IS IN `radiance_cascades.frag`, and it is a property of the whole approach rather
+ * than of the radii. A probe inside the hole is SURROUNDED by the ring, so every ray it casts
+ * hits emitting geometry; and we pass `radius = 0` on every `drawLight`, which is not "unbounded
+ * radius" but "skip the distance term entirely" (`sampleScene`'s `if (radius > 0.0)` branch), so
+ * what a ray brings back does not depend on how far it travelled. The irradiance at the centre of
+ * an annulus is therefore the same as the irradiance inside a disc, exactly, at any hole radius.
+ * The disc's own case is the same statement one step further along: the local SDF is signed and
+ * `raymarch` steps by `max(0.0, sdf)`, so inside an emitter the first step is zero, `stepSize <=
+ * MIN_STEP` fires immediately, and the probe samples the scene at its own texel.
+ *
+ * So no emitter SHAPE can spare the body at the centre of its own light. What would work is a
+ * non-zero `radius` (which turns the distance term back on and would make the hole's width mean
+ * something) — but that changes the falloff of every light in the game and would be a lighting
+ * task of its own. The alternative that does not touch the lighting at all is to stop asking the
+ * ALBEDO to survive an unbounded multiply: see `DiveRenderer.pearlAlbedoExposure`.
+ *
  * ## Loading: the same asynchronous path `DiverSprite` established, minus the file
  *
  * `Texture.load()` returns immediately when `filePath` is blank (`Texture.kt:45`), so a texture
