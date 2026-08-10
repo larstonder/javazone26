@@ -91,19 +91,8 @@ These were each established empirically (several by decompiling `pulse-engine-0.
 - **The engine's `Gamepad` exposes only `isPressed`/`getAxis`** — there is no `wasClicked` for a controller button. Everything consuming lifecycle input takes level readings and does its own previous-frame edge detection (`RunLifecycle`, `InitialsEntry`). A stuck button on a booth encoder must never be able to restart the game repeatedly or blast through the alphabet.
 - **Gameplay input reads gamepad 0; lifecycle input scans every connected gamepad** (`anyLifecycleActionPressed`). Index 0 is not guaranteed to be the cabinet's stick, and "any button to start" has to mean any.
 - **The HUD lives on its own surface**, not `mainSurface`. `GlobalIlluminationSystem` multiplies `mainSurface` by the light map — which is what makes the Abyss dark, and would also multiply the HUD into near-invisibility. Its `zOrder` is pinned explicitly (`HUD_Z_ORDER`), because the engine otherwise assigns one by surface creation order.
-- **`SpriteSheet`'s constructor takes `(…, format, maxMipLevels, hCells, vCells)`** — the
-  argument order is *not* the field declaration order, which reads `horizontalCells,
-  verticalCells` first. Passing `(…, cols, rows, 0)` sets `hCells = rows` and `vCells = 0`,
-  so `size = rows * 0 = 0`, the backing `Texture[]` is zero-length, and `getTexture(0)`
-  throws on the first frame drawn. Verified from bytecode: the 6th int is forwarded to
-  `Texture.<init>`'s trailing `maxMipLevels`, and the synthetic defaults constructor
-  defaults that slot to `5`, pairing with the `LINEAR_MIPMAP` filter default.
-- **`maxMipLevels = 0` allocates no texture storage at all.** `TextureArray` computes
-  `mipLevels = min(maxMipLevels, floor(log2(size)) + 1)` with no `coerceAtLeast(1)` and
-  hands it to `glTexStorage3D` as `levels`; `levels = 0` is `GL_INVALID_VALUE`, so nothing
-  is allocated and every later `glTexSubImage3D` fails too — no exception, no log. `1` is
-  the value that means "one level, no mips". `tools/build_spritesheet.py` prints the
-  correct constructor call for exactly this reason.
+- **`SpriteSheet`'s constructor takes `(…, format, maxMipLevels, hCells, vCells)`** — the argument order is *not* the field declaration order, which reads `horizontalCells, verticalCells` first. Passing `(…, cols, rows, 0)` sets `hCells = rows` and `vCells = 0`; the constructor accepts that combination without complaint and silently builds a zero-length `Texture[]` — the misconfiguration itself raises nothing. It only surfaces two stages later, as a thrown `ArrayIndexOutOfBoundsException` from `getTexture(0)` the first time a frame is drawn, by which point the call site that actually got it wrong is off the stack. Verified from bytecode: the 6th int is forwarded to `Texture.<init>`'s trailing `maxMipLevels`, and the synthetic defaults constructor defaults that slot to `5`, pairing with the `LINEAR_MIPMAP` filter default.
+- **`maxMipLevels = 0` allocates no texture storage at all.** `TextureArray` computes `mipLevels = min(maxMipLevels, floor(log2(size)) + 1)` with no `coerceAtLeast(1)` and hands it to `glTexStorage3D` as `levels`; `levels = 0` is `GL_INVALID_VALUE`, so nothing is allocated and every later `glTexSubImage3D` fails too — no exception, no log. `1` is the value that means "one level, no mips". `tools/build_spritesheet.py` prints the correct constructor call for exactly this reason.
 
 ## Config and release
 
@@ -111,7 +100,7 @@ These were each established empirically (several by decompiling `pulse-engine-0.
 
 **Day two at the booth:** uncomment and change `dailySeed` in `application.cfg` and restart. That regenerates the water column and, because every `ScoreEntry` stores the seed it was earned under, gives day two a fresh leaderboard while day one's board stays intact in `scoreboard.json`.
 
-**Sprite art.** `assets/` (183 MB of source frames) and `release/` are gitignored; the *baked* sheets in `src/main/resources/sprites/` are committed and ship in the `.exe`. A clean clone can build and run but cannot re-bake without the source frames. The bake is byte-reproducible, so re-running it with unchanged inputs produces no diff.
+**Sprite art.** `assets/` (183 MB of 1000×2000 source frames) and `release/` are gitignored; the *baked* sheets in `src/main/resources/sprites/` are committed and ship in the `.exe`. A clean clone can build and run but cannot re-bake without the source frames. The bake is byte-reproducible, so re-running it with unchanged inputs produces no diff.
 
 ## Conventions
 
