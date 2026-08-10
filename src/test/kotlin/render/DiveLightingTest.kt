@@ -3,7 +3,11 @@ package render
 import dive.DiveInput
 import dive.DiveSim
 import dive.Zone
+import java.io.File
+import javax.imageio.ImageIO
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -284,6 +288,144 @@ class DiveLightingTest
                 size * DiveLighting.torchIntensityFor(size), 1e-3f,
                 "an emitter of ${size}m casts a different amount of light than the ${DiveLighting.TORCH_BALANCE_SIZE_METRES}m one the beam was balanced at"
             )
+        }
+    }
+
+    /**
+     * THE TORCH IS CARRIED AT THE SPRITE'S HEAD, AND THIS IS THE ONLY PLACE THAT CHECKS THE TWO
+     * AGREE.
+     *
+     * The owner's report was that the diver glowed from his chest: the emitter sat at
+     * `sim.x, sim.depth`, which is the CENTRE-origin position `DiveRenderer.drawDiver` hands
+     * `drawTexture`, i.e. the middle of the body. `DiveLighting.torchX`/`torchDepth` now displace
+     * it forward along `beamHeadingDegrees` — and `DiverSprite.bodyAngleFor` poses the BODY from
+     * that same heading, so "forward" has to come out at the sprite's head at every heading or
+     * the light leaves from somewhere he is not.
+     *
+     * WHAT MAKES THIS NON-TAUTOLOGICAL. It does not restate `(cos h, -sin h)`, which would pass
+     * for any sign convention someone happened to type. It pushes the top-centre of the quad —
+     * the head — through a transcription of `texture.vert`'s OWN rotation, exactly as
+     * `DiverSpriteTest.the body is drawn pointing along the torch's heading` does, and requires
+     * the lighting offset to land there. `DiverSpriteTest` establishes that the sprite's head
+     * points along the heading; this establishes that the LIGHT does. Neither implies the other,
+     * and between them a sign error anywhere in the pair fails the build.
+     *
+     * The heading list includes [DiverSprite.REST_HEADING_DEGREES] on purpose: that is the
+     * attract screen and the first instant of every run, and it is the case a flipped `sin` would
+     * turn into a diver whose mask light shines out of his fins.
+     */
+    @Test
+    fun `the torch emits from the sprite's head, not from the middle of the body`()
+    {
+        val offset = DiveLighting.torchOffsetMetres()
+
+        for (heading in listOf(0f, 45f, 90f, -90f, 180f, -180f, 137.5f, -170f, 359f, DiverSprite.REST_HEADING_DEGREES))
+        {
+            // texture.vert:68  offset = (vertexPos - origin) * size * rotate(radians(angle))
+            // texture.vert:50  rotate(a) = mat2(c, s, -s, c)          (GLSL, column-major)
+            // A row-vector product is transpose(M) * p, so local p = (px, py) lands at
+            // (c*px + s*py, -s*px + c*py). The head is the quad's top-centre, which in
+            // origin-relative local coordinates is (0, -1) because world y runs DOWN.
+            val a = Math.toRadians(DiverSprite.bodyAngleFor(heading).toDouble())
+            val headX = (cos(a) * 0.0 + sin(a) * -1.0).toFloat()
+            val headY = (-sin(a) * 0.0 + cos(a) * -1.0).toFloat()
+
+            // An off-origin diver, so a torch that merely forgot to add the diver's own position
+            // cannot pass.
+            val diverX = -17.5f
+            val diverDepth = 132f
+
+            assertEquals(
+                diverX + offset * headX, DiveLighting.torchX(diverX, heading), 1e-3f,
+                "at heading $heading the torch is not above the sprite's head horizontally"
+            )
+            assertEquals(
+                diverDepth + offset * headY, DiveLighting.torchDepth(diverDepth, heading), 1e-3f,
+                "at heading $heading the torch is not at the sprite's head in depth"
+            )
+        }
+    }
+
+    /**
+     * HOW FAR FORWARD, CHECKED AGAINST THE ART RATHER THAN AGAINST ITSELF.
+     *
+     * [DiveLighting.TORCH_FORWARD_FRACTION] is a judgement call, so asserting its value would
+     * assert nothing. What is NOT a judgement call is the pair of bounds the judgement was made
+     * inside, and both are read off the committed sheet here so a re-bake at a different pose or
+     * frame height cannot leave them stale:
+     *
+     *  - **Forward of the SHOULDERS.** Below that the emitter is back on the torso and the
+     *    original complaint returns. The shoulder line is the first row from the top where the
+     *    silhouette reaches 60% of its widest — the head and neck are 34-48 texels across against
+     *    a 91-texel torso, so the jump at the shoulders is unambiguous.
+     *  - **Its LEADING EDGE at or behind the CROWN.** The emitter is a quad that rasterises into
+     *    the scene, not an abstract point (see [DiveLighting.DIVER_LIGHT_SIZE_METRES]), so a disc
+     *    poking out past the top of his head reads as a lamp floating in front of him rather than
+     *    one he is wearing — and it would do so at every heading at once. That is why the bound is
+     *    on the edge and not on the centre.
+     *
+     * This is the test that fires if the diver is resized and the offset is left behind, because
+     * both sides are fractions of the same height. It says nothing about whether the result LOOKS
+     * right, which is not testable and was settled by capture instead.
+     */
+    @Test
+    fun `the torch sits on the head and its emitter stays inside the silhouette`()
+    {
+        val crown = crownFractionFromSheet()
+        val shoulder = shoulderFractionFromSheet()
+
+        assertTrue(
+            DiveLighting.TORCH_FORWARD_FRACTION > shoulder,
+            "the torch is ${DiveLighting.TORCH_FORWARD_FRACTION} of the way forward, behind the sheet's shoulder line at $shoulder — " +
+            "that is back on the torso, which is the 'glowing from the chest' the offset exists to fix"
+        )
+
+        val leadingEdge = DiveLighting.TORCH_FORWARD_FRACTION +
+            DiveLighting.DIVER_LIGHT_SIZE_METRES / Framing.DIVER_HEIGHT_METRES / 2f
+        assertTrue(
+            leadingEdge <= crown,
+            "the emitter's leading edge is at $leadingEdge of the body height against a crown at $crown — " +
+            "the quad would rasterise outside his silhouette and read as a lamp floating in front of him"
+        )
+    }
+
+    private companion object
+    {
+        private const val SHEET = "src/main/resources/sprites/diver-diffuse.png"
+
+        /**
+         * Alpha coverage per row of frame 0 of the committed sheet, top of the cell first. The
+         * sheet is authored head-up (`DiverSprite.REST_HEADING_DEGREES`), so row 0 is the leading
+         * end. Threshold 16/255 rather than 0 so the anti-aliased fringe does not count as body.
+         */
+        fun frameZeroRowCoverage(): IntArray
+        {
+            val sheet = ImageIO.read(File(SHEET))
+            val w = DiverSprite.FRAME_TEXELS_WIDE
+            val h = DiverSprite.FRAME_TEXELS_TALL
+            assertTrue(sheet.width >= w && sheet.height >= h, "$SHEET is smaller than one declared cell")
+            return IntArray(h) { y ->
+                (0 until w).count { x -> (sheet.getRGB(x, y) ushr 24 and 0xFF) > 16 }
+            }
+        }
+
+        /** Distance from the body's CENTRE to the top of his head, as a fraction of the height. */
+        fun crownFractionFromSheet(): Float
+        {
+            val rows = frameZeroRowCoverage()
+            val crown = rows.indexOfFirst { it > 0 }
+            assertTrue(crown >= 0, "no opaque texels at all in frame 0 of $SHEET")
+            return (rows.size / 2f - crown) / rows.size
+        }
+
+        /** Same, to the shoulder line — the first row reaching 60% of the silhouette's widest. */
+        fun shoulderFractionFromSheet(): Float
+        {
+            val rows = frameZeroRowCoverage()
+            val threshold = rows.max() * 0.6f
+            val shoulder = rows.indexOfFirst { it >= threshold }
+            assertTrue(shoulder > 0, "could not find a shoulder line in frame 0 of $SHEET")
+            return (rows.size / 2f - shoulder) / rows.size
         }
     }
 }

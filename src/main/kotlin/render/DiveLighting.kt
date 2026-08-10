@@ -13,6 +13,7 @@ import no.njoh.pulseengine.modules.lighting.global.GlobalIlluminationSystem
 import no.njoh.pulseengine.modules.scene.systems.EntityRendererImpl
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * Pearls ARE the light. In the Abyss they are the only light source, which is why lighting
@@ -151,6 +152,95 @@ object DiveLighting
         TORCH_BALANCE_SIZE_METRES / emitterSizeMetres
 
     private val TORCH_SIZE_COMPENSATION = torchIntensityFor(DIVER_LIGHT_SIZE_METRES)
+
+    /**
+     * How far ahead of the diver's CENTRE the torch is carried, as a fraction of
+     * [Framing.DIVER_HEIGHT_METRES]. At the current 9 m diver that is 3.6 m.
+     *
+     * ## Why there is an offset at all
+     *
+     * `sim.x, sim.depth` is the MIDDLE of the body — it is the centre-origin position
+     * `DiveRenderer.drawDiver` hands `drawTexture` — and the torch used to emit from exactly
+     * that point. What you saw was a diver glowing from the chest while his head, mask and hands
+     * were at the leading end of the sprite: a man lit from inside rather than a man carrying a
+     * light. Owner's words on a capture of a downward swim: "shouldn't the light be emitted from
+     * in front of the character?"
+     *
+     * ## Why a FRACTION and not 3.6 m
+     *
+     * `Framing.DIVER_HEIGHT_METRES` has been changed twice already (3 -> 6 -> 9) and a hand-typed
+     * metre value would silently stop meaning "his head" at the next change. That is not a
+     * hypothetical: it is exactly how [DIVER_LIGHT_SIZE_METRES] came to be half the body in
+     * `fd036f7`. The offset is a place ON the diver, so it is written as one.
+     *
+     * ## Why 0.40 specifically
+     *
+     * Measured off the committed sheet rather than reasoned about. A cell is 384 texels tall for
+     * [Framing.DIVER_HEIGHT_METRES] of world height, so one texel is 0.0234 m, and (rows where
+     * alpha > 16, frame 0):
+     *
+     *     snorkel tip / crown   row 2      0.495 of the height above centre
+     *     mask                  rows 8-25  0.44
+     *     chin                  row 40     0.40
+     *     shoulders             row 55     0.36
+     *     HANDS                 rows 150-195   0.06 — i.e. essentially AT the centre
+     *
+     * So "the hands" is not available as an anchor: this diver swims with his arms at his sides,
+     * and his hands are at his hips. The head is the only leading end there is, and 0.40 puts the
+     * emitter's centre on the chin/mask — a mask light, which is what a free-diver would actually
+     * be wearing.
+     *
+     * 0.40 is also the largest round value that keeps the emitter WHOLLY INSIDE the silhouette:
+     * the quad is [DIVER_LIGHT_SIZE_METRES] across, i.e. 0.133 of the height, so its leading edge
+     * sits at 0.40 + 0.067 = 0.467 against a crown at 0.495. That is the property worth
+     * preserving if anyone re-tunes this — a disc that pokes out past the head reads as a lamp
+     * floating in front of him rather than as one he is wearing, and it would do so at every
+     * heading at once.
+     *
+     * ## The hovering case is safe BY CONSTRUCTION, not by luck
+     *
+     * The offset direction is [beamAngleDeg], the same single heading `DiverSprite.bodyAngleFor`
+     * poses the BODY from, so the emitter lands on the sprite's head at every heading — including
+     * the held heading below [STATIONARY_SPEED_THRESHOLD], where the diver keeps the pose he
+     * coasted to a stop in. There is no state in which the body faces one way and the light
+     * leaves from another, so the light cannot come loose from him. Deriving the offset from
+     * `sim.vx/vy` instead would break exactly that: a hovering diver has no velocity to derive a
+     * direction from, and the offset would collapse to zero (or to `atan2` noise) while his body
+     * stayed posed.
+     *
+     * ## It applies to the TORCH ONLY
+     *
+     * Pearls and the anglerfish's lure are omnidirectional and have no facing — they pass
+     * `coneAngle = 360` and `angle = 0` — so there is no "in front" for them to be offset along.
+     * They stay on their own centres.
+     */
+    internal const val TORCH_FORWARD_FRACTION = 0.40f
+
+    /** The torch's forward offset from the diver's centre, in metres. */
+    internal fun torchOffsetMetres(): Float = Framing.DIVER_HEIGHT_METRES * TORCH_FORWARD_FRACTION
+
+    /**
+     * Where the torch emits from, given the diver's centre and the smoothed heading.
+     *
+     * TWO FUNCTIONS RATHER THAN ONE RETURNING A PAIR, because a `Pair<Float, Float>` in the
+     * render path is a per-frame allocation and this project does not do those (see CLAUDE.md).
+     * Two `cos`/`sin` calls a frame is not a cost worth a boxed tuple.
+     *
+     * THE Y TERM IS NEGATED, and that is the same flip [updateAim] applies in the other
+     * direction. [beamAngleDeg] lives in `GiSceneRenderer`'s convention — counter-clockwise from
+     * +x with +y running UP the screen (see `AimAngle`'s class doc) — while world y IS depth and
+     * runs DOWN. `updateAim` converts a world velocity into that convention by negating `sim.vy`;
+     * this converts a heading in that convention back into a world displacement by negating the
+     * `sin`. The two negations are inverses of each other, so a diver swimming straight down
+     * (`vy > 0`, heading -90) gets `depth + offset`, i.e. the torch DEEPER than his centre, which
+     * is the direction he is going.
+     */
+    internal fun torchX(diverX: Float, headingDegrees: Float): Float =
+        diverX + torchOffsetMetres() * cos(Math.toRadians(headingDegrees.toDouble())).toFloat()
+
+    /** @see torchX — world y is depth and runs DOWN, hence the negated `sin`. */
+    internal fun torchDepth(diverDepth: Float, headingDegrees: Float): Float =
+        diverDepth - torchOffsetMetres() * sin(Math.toRadians(headingDegrees.toDouble())).toFloat()
 
     /**
      * How many metres of water around an occluder GI's ambient occlusion darkens. A plain
@@ -598,6 +688,13 @@ object DiveLighting
     /**
      * The anglerfish lure. Same colour AND same intensity curve as a real pearl, deliberately
      * — the tell is motion, never light (see DiveRenderer.drawAnglerfish).
+     *
+     * NOT OFFSET the way the torch is ([TORCH_FORWARD_FRACTION]), and neither are the pearls. The
+     * offset exists because the diver has a facing and carries his light at one end of himself;
+     * these two emit `coneAngle = 360` from a body that has no front, so there is no direction to
+     * offset them ALONG. Giving the lure one would also be a second heading to keep in step with
+     * the fish's drawn sprite, which is the shape of bug this file already carries two comments
+     * about.
      */
     private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
     {
@@ -649,23 +746,38 @@ object DiveLighting
     {
         val speed = hypot(sim.vx, sim.vy)
 
+        // THE TORCH IS CARRIED IN FRONT OF HIM, not at his middle. `sim.x, sim.depth` is the
+        // CENTRE of the body — see [TORCH_FORWARD_FRACTION] for the measurement off the sheet and
+        // for why the direction is [beamAngleDeg] rather than a second heading derived here.
+        val torchX = torchX(sim.x, beamAngleDeg)
+        val torchDepth = torchDepth(sim.depth, beamAngleDeg)
+
         // THE HEADING IS NO LONGER INTEGRATED HERE — see [updateAim], which runs on the fixed tick
         // so that the diver's BODY can be drawn to the same number in the same frame. Everything
         // left in this method is a per-frame derivation from state, so culling it costs nothing
         // and can lose nothing.
+        //
+        // CULLED ON THE EMITTER'S OWN POSITION, not the diver's. The two are now up to
+        // [torchOffsetMetres] apart — 3.6 m against a 3 m margin — so culling on `sim.x` would
+        // drop a torch that is still in frame, or keep one that is not, by more than the margin
+        // covers. The quad that is drawn is the quad to test.
         //
         // Padded by LIGHT_CULL_MARGIN_METRES like the other two, not by this light's own size: the
         // torch quad is now 1.2 m, and a margin that small would cut the beam of a diver a metre
         // outside the rect, whose light still reaches into it (radius = 0, so nothing attenuates
         // with distance). The margin's own doc records why the `upscaleSmallSources` argument that
         // used to justify a per-light margin does not apply to us at all.
-        if (!cam.showsSquare(sim.x, sim.depth, DIVER_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
+        if (!cam.showsSquare(torchX, torchDepth, DIVER_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
 
+        // Intensity still keys off the DIVER's depth, not the torch's. The offset moves where the
+        // light comes from; it must not also nudge the zone blend, or the beam would brighten
+        // slightly whenever he happened to point downward. Same reason the light budget is
+        // unchanged by this commit: `size x intensity` is untouched (`006512b`).
         val baseIntensity = diverIntensityForDepth(sim.depth)
         surface.setDrawColor(diverLight)
         renderer.drawLight(
             texture = LightEmitter.emitter(),
-            x = sim.x, y = sim.depth, w = DIVER_LIGHT_SIZE_METRES, h = DIVER_LIGHT_SIZE_METRES,
+            x = torchX, y = torchDepth, w = DIVER_LIGHT_SIZE_METRES, h = DIVER_LIGHT_SIZE_METRES,
             angle = beamAngleDeg,
             intensity = beamIntensity(baseIntensity, speed),
             coneAngle = beamConeAngle(speed),
