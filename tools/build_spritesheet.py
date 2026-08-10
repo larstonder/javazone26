@@ -30,6 +30,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from spritesheet.assembly import assemble, content_box
 from spritesheet.geometry import choose_grid, frame_width
+from spritesheet.qa import write_qa_bundle
 from spritesheet.resample import resample_diffuse, resample_normal
 from spritesheet.validate import (
     SourceError, check_alpha_agreement, check_dimensions, check_normal_encoding,
@@ -140,6 +141,9 @@ def bake(frame_height: int, keep_last: bool) -> int:
     write_png(OUT_DIR / "diver-normal.png", normal_sheet, meta)
     print(f"\nwrote {OUT_DIR / 'diver-diffuse.png'}")
     print(f"wrote {OUT_DIR / 'diver-normal.png'}")
+
+    write_qa_bundle(QA_DIR, grid, len(diffuse), diffuse_sheet, normal_sheet)
+    print(f"wrote QA bundle to {QA_DIR}")
 
     print(f"""
 Kotlin - copy verbatim, the argument order is NOT the field order:
