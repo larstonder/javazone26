@@ -220,7 +220,9 @@ object DiveLighting
     internal fun torchOffsetMetres(): Float = Framing.DIVER_HEIGHT_METRES * TORCH_FORWARD_FRACTION
 
     /**
-     * Where the torch emits from, given the diver's centre and the smoothed heading.
+     * A point [metres] along [headingDegrees] from world ([x], [depth]) — the one place in this
+     * file that turns a heading into a world displacement, and therefore the one place that has
+     * to get the Y flip right.
      *
      * TWO FUNCTIONS RATHER THAN ONE RETURNING A PAIR, because a `Pair<Float, Float>` in the
      * render path is a per-frame allocation and this project does not do those (see CLAUDE.md).
@@ -232,15 +234,223 @@ object DiveLighting
      * runs DOWN. `updateAim` converts a world velocity into that convention by negating `sim.vy`;
      * this converts a heading in that convention back into a world displacement by negating the
      * `sin`. The two negations are inverses of each other, so a diver swimming straight down
-     * (`vy > 0`, heading -90) gets `depth + offset`, i.e. the torch DEEPER than his centre, which
-     * is the direction he is going.
+     * (`vy > 0`, heading -90) gets `depth + offset`, i.e. a positive offset lands DEEPER than his
+     * centre, which is the direction he is going.
+     *
+     * A NEGATIVE [metres] IS THE SAME POINT BEHIND HIM, which is what [rimX]/[rimDepth] pass.
+     * Extracted for exactly that reason: a second hand-written `cos`/`-sin` pair for the rim
+     * would be a second chance to get the flip wrong, and a sign error there is invisible in a
+     * still of a diver swimming straight down (where behind and in front differ only in depth)
+     * and glaring in one of a diver swimming sideways.
      */
-    internal fun torchX(diverX: Float, headingDegrees: Float): Float =
-        diverX + torchOffsetMetres() * cos(Math.toRadians(headingDegrees.toDouble())).toFloat()
+    private fun alongHeadingX(x: Float, headingDegrees: Float, metres: Float): Float =
+        x + metres * cos(Math.toRadians(headingDegrees.toDouble())).toFloat()
 
-    /** @see torchX — world y is depth and runs DOWN, hence the negated `sin`. */
+    /** @see alongHeadingX — world y is depth and runs DOWN, hence the negated `sin`. */
+    private fun alongHeadingDepth(depth: Float, headingDegrees: Float, metres: Float): Float =
+        depth - metres * sin(Math.toRadians(headingDegrees.toDouble())).toFloat()
+
+    /** Where the torch emits from, given the diver's centre and the smoothed heading. */
+    internal fun torchX(diverX: Float, headingDegrees: Float): Float =
+        alongHeadingX(diverX, headingDegrees, torchOffsetMetres())
+
+    /** @see torchX */
     internal fun torchDepth(diverDepth: Float, headingDegrees: Float): Float =
-        diverDepth - torchOffsetMetres() * sin(Math.toRadians(headingDegrees.toDouble())).toFloat()
+        alongHeadingDepth(diverDepth, headingDegrees, torchOffsetMetres())
+
+    // --- The rim: making the diver legible in the deep without making him a light source -------
+
+    /**
+     * THE RIM IS A LIGHT AND NOT A PAINTED OUTLINE, AND THAT IS FORCED BY THE COMPOSITE.
+     *
+     * The problem it fixes, measured at 160 m in a pearl-free patch of the Abyss (16:9,
+     * 3200x1800): the diver's own silhouette averaged **6.35/255** of luma against **1.15/255**
+     * for the water in a 5-9 m ring around him. Five code values of separation. That is consistent
+     * with §11's art direction on a dev monitor in a dark room and it is nothing at all on a
+     * booth screen in a bright exhibition hall, where the hall's own light raises the panel's
+     * effective black point well above two counts.
+     *
+     * The obvious fix — a second, slightly larger draw of the sprite behind the body in a cool
+     * edge colour, the classic 2D outline — CANNOT WORK HERE, and the reason is structural rather
+     * than aesthetic. `GlobalIlluminationSystem` installs a MULTIPLY of `mainSurface` by the light
+     * map (that multiply is what makes the Abyss dark at all). An outline drawn to `main` is
+     * albedo, so it is multiplied by the same near-zero light map as the diver and the water; at
+     * 160 m the whole frame away from the diver averages 4.1/255, so even a pure-white outline
+     * would land in the low single digits. Paint cannot raise a pixel the light map has already
+     * multiplied to nothing. **Only light survives the multiply**, so the rim has to be light.
+     *
+     * And the same multiply is what makes a light SAFE here, which is the part worth keeping hold
+     * of. The water's reflectance is pinned near [DiveRenderer.GI_REFLECTANCE_FLOOR] — the abyss
+     * band is a 0.035 blue and near zero in red and green — while the diver's albedo is a lit
+     * character sheet, an order of magnitude higher across all three channels. One and the same
+     * photon therefore lifts him roughly an order of magnitude more than it lifts the water it
+     * crosses on the way. That is the whole trick: a light dim enough to leave the sea alone is
+     * still bright enough to draw his edge.
+     *
+     * ## Where it is, and why the normal map does the shaping
+     *
+     * Mirror of the torch. The torch is carried at his mask, [TORCH_FORWARD_FRACTION] of the body
+     * forward along [beamAngleDeg]; the rim emits from [RIM_BACK_FRACTION] of the body BEHIND him
+     * along the same heading, and points forward — so his whole body lies inside its cone and the
+     * surfaces facing his fins are the ones that catch it.
+     *
+     * That is a rim in the photographic sense and not a pasted outline, because `gi_normal_map`
+     * is live and the engine rotates the sampled normals with the sprite:
+     * `normal_map.vert:70` builds `normalRotation = rotMatrix(rotation + cameraAngle)` and
+     * `normal_map.frag:63` applies it to `normal.xy` before the lighting pass sees it. So the
+     * rim's shape is generated by the art's own geometry at whatever heading the diver is posed
+     * at, rather than being a silhouette we drew a second time and have to keep in step.
+     * **Nothing here needs to know the sprite's rotation** beyond the single [beamAngleDeg] the
+     * body is already posed from, which is why this cannot come loose from him.
+     *
+     * WHICH EDGE lights up is a question about the sheet's green-channel convention, which the
+     * bake spec (§9) explicitly records as unverified against this consumer. It was settled by
+     * capture, not by derivation — see the task report. Either way the legibility gain is the
+     * same; only the side of him that catches it moves.
+     *
+     * ## Why it is not simply a bigger ambient, or a bigger torch
+     *
+     * Ambient lifts the water by construction — it is the water's own term. A wider or stronger
+     * torch lights what he is looking at, which is the one thing the design will not have: the
+     * risk of the deep is that you cannot see, and the torch is the budget the player spends
+     * against it. The rim points at HIM.
+     */
+    private val rimLight = Color(0.55f, 0.78f, 1f)
+
+    /**
+     * How far BEHIND the diver's centre the rim emits from, as a fraction of
+     * [Framing.DIVER_HEIGHT_METRES]. A fraction, not 2.7 m, for exactly the reason
+     * [TORCH_FORWARD_FRACTION] is one: the height has already been changed three times (3 -> 6 ->
+     * 9) and a hand-typed metre value stops meaning "behind him" at the next change.
+     *
+     * 0.30 rather than the torch's 0.40 because the two ends of the sheet are not symmetric. The
+     * trailing end is a pair of SPLAYED FINS with open water between the blades (read off frame 0
+     * of the committed sheet), and an emitter sitting between them would rasterise into that gap
+     * and read as a lamp clipped to his feet. 0.30 is back at his knees, where the silhouette is
+     * still solid, and it is still 0.70 of the body away from the torch — the separation is what
+     * makes the two read as different lights rather than one big one.
+     */
+    internal const val RIM_BACK_FRACTION = 0.30f
+
+    /**
+     * The rim's emitter quad, as a fraction of [Framing.DIVER_HEIGHT_METRES]: 0.9 m at the
+     * current 9 m diver.
+     *
+     * A FRACTION, WHERE [DIVER_LIGHT_SIZE_METRES] IS DELIBERATELY NOT ONE, and the difference is
+     * not an inconsistency. The torch's size is a statement about a torch — a flame is the size a
+     * flame is, whoever carries it — and tying it to the body is the specific bug `fd036f7`
+     * introduced. The rim's emitter is not an object in the world at all: it is a construction
+     * that has to stay hidden inside the silhouette, so its size is a property OF THE SILHOUETTE
+     * and has to scale with it. At 0.10 the quad's trailing edge sits at 0.30 + 0.05 = 0.35 of
+     * the height behind his centre, against fins that reach ~0.5 — inside him at every diver
+     * height, which is what `DiveLightingTest` asserts against the sheet rather than against this
+     * number.
+     */
+    internal const val RIM_SIZE_FRACTION = 0.10f
+
+    /**
+     * THE RIM'S PEAK ON-AXIS RADIANCE IN THE ABYSS, IN THE SAME UNIT AS [STATIONARY_PEAK_RADIANCE]
+     * AND [BEAM_PEAK_RADIANCE] — multiples of the diver's base intensity at this depth. That the
+     * unit is shared is the point: it makes the rim's budget readable against the torch's without
+     * anyone having to redo the cone arithmetic.
+     *
+     * The unit works out that way because [RIM_CONE_ANGLE] is exactly 180 degrees, where
+     * [coneMaskPeak] is exactly 1 — see that function's "landmark" note. No cone correction, no
+     * hidden multiplier, and nothing to keep in step if the cone is ever re-tuned except this one
+     * relationship, which `DiveLightingTest` asserts.
+     *
+     * 5 SOUNDS LARGE AGAINST A HOVERING TORCH'S 1 AND IS NOT, BECAUSE THE TWO CONES ARE NOT
+     * COMPARABLE ON THEIR PEAKS ALONE. The torch is aimed: a 50-degree cone puts everything it has
+     * down its own axis and the diver is not on it — he is BEHIND the emitter, which is the whole
+     * reason he is dark. The rim is a hemisphere spread over the body from a quad hidden inside
+     * his own silhouette. What actually reaches the screen is the number to look at, and measured
+     * at 160 m the diver's pixels read 21/255 against a pearl's blown-out 255 with a bloom halo
+     * around it several body-widths across. It does not compete with a pearl and it cannot be
+     * mistaken for the torch.
+     *
+     * CHOSEN BY BRACKETING AND CAPTURE, not by taste. At 160 m in a pearl-free patch of the Abyss
+     * (16:9, 3200x1800, Rec.709 luma out of 255, the diver's true silhouette against a 5-9 m ring
+     * of water, animation pinned to frame 0 so the control pair is bit-identical):
+     *
+     *     cast    diver   water   diver-water   frame mean outside 22.5 m
+     *     off      6.35    1.15       5.20        4.1063
+     *     1.0      7.57    1.14       6.43        4.1078
+     *     2.5     11.04    1.14       9.90        4.1083
+     *     5.0     20.95    1.16      19.79        4.1100
+     *     15.0    50.15    1.62      48.53        4.1192
+     *
+     * 5 is where he reads at booth scale — see the contact sheet in the task report, where the
+     * 1280-px-wide downscale is the closest thing to a queue's view of the panel this project can
+     * capture. 15 reads as a diver who GLOWS, which §11 does not allow, and its water column
+     * starts to move (1.15 -> 1.62 in the ring, and eight times the control pair's spread on the
+     * frame mean). Below 2.5 the gain is real but too small to survive a bright hall.
+     *
+     * Deeper than the Abyss's midpoint this is the whole cast; above it, it is scaled down by
+     * [rimDaylightLossByZone] — see [rimCastFractionForDepth].
+     */
+    internal const val RIM_CAST_FRACTION = 5.0f
+
+    /**
+     * A forward HEMISPHERE. Two properties, and both are load-bearing:
+     *
+     *  - 180 degrees puts NO LIGHT BEHIND ITS OWN ORIGIN ([coneMaskPeak]'s landmark), so the rim
+     *    adds nothing at all to the water astern of the diver — the one part of the frame the
+     *    torch is not already lighting, and therefore the part where a lift would show most.
+     *  - Its cone mask peaks at exactly 1, so [RIM_CAST_FRACTION] can be stated as a peak
+     *    radiance directly, with no `1 / coneMaskPeak` correction of the kind
+     *    [beamIntensity] needs.
+     *
+     * Narrower would need that correction back and would make the emitter hotter for the same
+     * cast; wider is not available (360 is GI's distinct omnidirectional case, which bypasses the
+     * mask entirely and would spray light out behind him).
+     */
+    private const val RIM_CONE_ANGLE = 180f
+
+    /** How far behind the diver's centre the rim emits from, in metres. */
+    internal fun rimOffsetMetres(): Float = Framing.DIVER_HEIGHT_METRES * RIM_BACK_FRACTION
+
+    /** The rim's emitter quad, in metres. */
+    internal fun rimSizeMetres(): Float = Framing.DIVER_HEIGHT_METRES * RIM_SIZE_FRACTION
+
+    /** Where the rim emits from — [rimOffsetMetres] BEHIND the diver along the heading. */
+    internal fun rimX(diverX: Float, headingDegrees: Float): Float =
+        alongHeadingX(diverX, headingDegrees, -rimOffsetMetres())
+
+    /** @see rimX */
+    internal fun rimDepth(diverDepth: Float, headingDegrees: Float): Float =
+        alongHeadingDepth(diverDepth, headingDegrees, -rimOffsetMetres())
+
+    /**
+     * The nominal intensity to hand `drawLight` for the rim, such that
+     * `rimSizeMetres() * rimIntensityForDepth(d)` is exactly [RIM_CAST_FRACTION] of the torch's
+     * own base cast `DIVER_LIGHT_SIZE_METRES * diverIntensityForDepth(d)` at every depth, every
+     * emitter size and every diver height.
+     *
+     * `size * intensity` IS THE CONSERVED QUANTITY — `radius = 0` skips the distance term, so a
+     * probe's irradiance from a light is the fraction of its rays that hit it, which goes as the
+     * light's angular size and hence as `size / distance`. That is the same physics
+     * [torchIntensityFor] is built on and the same discipline `006512b` established; expressing
+     * the rim as a ratio rather than as a number is what stops [RIM_SIZE_FRACTION] being
+     * re-tuned one day and silently changing how much light is in the frame.
+     *
+     * It rides [diverIntensityForDepth] rather than carrying a depth table of its own, so the
+     * rim follows the torch's zone ramp for free and there is only one place that decides how
+     * bright the diver's own light is at a given depth. In the Shallows that ramp is 2.0 against
+     * an ambient of (0.34, 0.52, 0.68) — three orders of magnitude of daylight to compete with —
+     * which is why the rim is measurably present there and visually absent, exactly as wanted.
+     */
+    internal fun rimIntensityForDepth(depth: Float): Float =
+        diverIntensityForDepth(depth) * rimCastFractionForDepth(depth) *
+            DIVER_LIGHT_SIZE_METRES / rimSizeMetres()
+
+    /**
+     * [RIM_CAST_FRACTION] scaled by how much daylight this depth has lost — see
+     * [rimDaylightLossByZone], which is where that ramp comes from and why. Continuous in depth
+     * (`DepthBlend`) like every other depth-varying quantity in this file, so a diver descending
+     * never crosses a step.
+     */
+    internal fun rimCastFractionForDepth(depth: Float): Float =
+        RIM_CAST_FRACTION * DepthBlend.blend(depth, rimDaylightLossByZone)
 
     /**
      * How many metres of water around an occluder GI's ambient occlusion darkens. A plain
@@ -263,6 +473,40 @@ object DiveLighting
     // the instant a zone boundary is crossed.
     private val pearlIntensityByZone = floatArrayOf(0.6f, 1.0f, 1.8f, 2.6f, 4.0f)
     private val diverIntensityByZone = floatArrayOf(2.0f, 2.0f, 2.0f, 2.0f, 1.2f)
+
+    /**
+     * How much of the rim ([rimLight]) a depth gets: **exactly the fraction of the surface's
+     * daylight that has been lost by the time you reach it**.
+     *
+     * DERIVED FROM [ambientGreen], NOT A TABLE OF ITS OWN, and that is the whole idea. The rim is
+     * standing in for a light the water has taken away, so the amount of it that is wanted is the
+     * amount that is missing: `1 - ambient(depth) / ambient(surface)`. Anchored per zone that is
+     * (0, 0.42, 0.73, 0.91, 1) — nothing at all in the Shallows, everything in the Abyss — and
+     * because it is computed from the ambient table rather than copied out of it, re-tuning the
+     * ambient moves the rim with it instead of leaving the two to drift.
+     *
+     * GREEN carries the derivation because it is 0.7152 of Rec.709 luminance; red and green both
+     * reach exactly zero in the Abyss, so either would do, but green is the one whose loss the eye
+     * is actually measuring when it says the deep is dark.
+     *
+     * ## Why this is not optional
+     *
+     * The rim's cost is paid in the water it also lights, and that cost is proportional to the
+     * water's own reflectance, which the zone bands raise by more than a factor of ten from the
+     * Abyss to the Shallows. Measured, with the rim flat across depth (16:9, 3200x1800, luma out
+     * of 255, against a bit-identical control pair):
+     *
+     *     depth   water ring 5-9 m     frame mean outside 22.5 m
+     *     160 m   1.147 -> 1.157        4.1092 -> 4.1100   (+0.0008, inside the +-0.0015 floor)
+     *      70 m   8.736 -> 9.236        6.5105 -> 6.5356   (+0.025)
+     *      10 m   8.281 -> 13.719       3.6007 -> 3.8383   (+0.238)
+     *
+     * A tenth of the frame's brightness added to the Shallows is exactly the "lifting the water"
+     * this must not do, and it buys nothing there: at 10 m the ambient is (0.34, 0.52, 0.68) and
+     * the diver is already legible against lit water. The ramp spends the rim where the darkness
+     * is, which is also where it is free.
+     */
+    private val rimDaylightLossByZone = FloatArray(ambientGreen.size) { 1f - ambientGreen[it] / ambientGreen[0] }
 
     /**
      * Speed (m/s) at which the beam reaches full focus. Also the cutoff below which the
@@ -640,6 +884,7 @@ object DiveLighting
 
         drawPearlLights(surface, renderer, sim, cam)
         drawAnglerfishLight(surface, renderer, sim, cam)
+        drawDiverRim(surface, renderer, sim, cam)
         drawDiverBeam(surface, renderer, sim, cam)
     }
 
@@ -781,6 +1026,56 @@ object DiveLighting
             angle = beamAngleDeg,
             intensity = beamIntensity(baseIntensity, speed),
             coneAngle = beamConeAngle(speed),
+            radius = 0f
+        )
+    }
+
+    /**
+     * The rim — see [rimLight] for why it is a light at all and what it is trying to do.
+     *
+     * NOT RAMPED BY SPEED, unlike the beam. The beam's ramp is about intent: how hard you are
+     * swimming is how focused your torch is. The rim is about being seen, which does not stop
+     * mattering when the player lets go of the stick — a hovering diver in the Abyss is exactly
+     * the moment you most need to find him on the panel. It is the same light hovering as
+     * swimming, and there is correspondingly nothing here that can pop across
+     * [STATIONARY_SPEED_THRESHOLD].
+     *
+     * CULLED ON THE EMITTER'S OWN POSITION, like the torch and for the same reason: the quad
+     * that is drawn is the quad to test, and this one is [rimOffsetMetres] from the diver's
+     * centre in the opposite direction to the torch, so the two disagree about whether he is on
+     * screen by more than the margin covers.
+     *
+     * Drawn BEFORE the beam only so that a reader meets the lights in the order the diver's own
+     * light budget is spent; `GiSceneRenderer` batches them and the order has no effect. What
+     * does matter is that each `drawLight` is immediately preceded by its own `setDrawColor` —
+     * the call takes the surface's current colour, which is why the torch's `diverLight` cannot
+     * be left to stand in for this one.
+     */
+    private fun drawDiverRim(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
+    {
+        // NOT SUBMITTED AT ALL WHERE THE RAMP HAS TURNED IT OFF, and this is not merely an
+        // optimisation. A light quad is a REGION in the local scene, and a region whose colour is
+        // black still takes part in the SDF the cascades march against — it occludes. Submitted
+        // with a zero cast in the Shallows it measurably DARKENED the diver: 14.777 -> 13.412 of
+        // luma at 10 m, with the frame mean going 3.6007 -> 3.5965, i.e. the rim made the shallows
+        // very slightly worse while emitting nothing. Skipping it restores them exactly.
+        if (rimCastFractionForDepth(sim.depth) <= 0f) return
+
+        val x = rimX(sim.x, beamAngleDeg)
+        val depth = rimDepth(sim.depth, beamAngleDeg)
+        val size = rimSizeMetres()
+        if (!cam.showsSquare(x, depth, size, LIGHT_CULL_MARGIN_METRES)) return
+
+        // The DIVER's depth, not the emitter's — same reason the beam uses it: the offset decides
+        // where the light comes from and must not also nudge the zone blend, or the rim would
+        // brighten every time he happened to point upward.
+        surface.setDrawColor(rimLight)
+        renderer.drawLight(
+            texture = LightEmitter.emitter(),
+            x = x, y = depth, w = size, h = size,
+            angle = beamAngleDeg,
+            intensity = rimIntensityForDepth(sim.depth),
+            coneAngle = RIM_CONE_ANGLE,
             radius = 0f
         )
     }
