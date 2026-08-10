@@ -366,10 +366,18 @@ object Hud
             // Flat square fallback — identical to what shipped before this commit — for the
             // first frame, before the engine has run the deferred `addRenderer` init. The ring
             // is the game's only air warning and must never be the thing that is missing.
+            //
+            // The quad is grown so the DISC the shader inscribes in it covers the area the
+            // square bubble did ([IridescenceRenderer.EQUAL_AREA_DISC_SCALE]). Here that is a
+            // gameplay requirement rather than an exposure one: every bubble losing a fifth of
+            // its area is the air warning getting quieter, and the warning getting quieter is
+            // precisely the regression AIR_LOW_SIZE_GAIN exists to fight.
             if (iridescence != null)
-                iridescence.draw(bx, by, bubbleSize, bubbleSize, IridescentMaterial.BUBBLE)
-            else
-                surface.fillRectCentred(bx, by, bubbleSize, bubbleSize)
+            {
+                val quad = IridescenceRenderer.equalAreaQuad(bubbleSize)
+                iridescence.draw(bx, by, quad, quad, IridescentMaterial.BUBBLE)
+            }
+            else surface.fillRectCentred(bx, by, bubbleSize, bubbleSize)
         }
     }
 

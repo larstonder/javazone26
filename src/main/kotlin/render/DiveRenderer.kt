@@ -435,9 +435,14 @@ object DiveRenderer
         val size = Framing.PEARL_SIZE_METRES
         surface.setDrawColor(pearlColor)
         if (iridescence != null)
-            iridescence.draw(centreX, depth, size, size, IridescentMaterial.PEARL)
-        else
-            surface.fillRectCentred(centreX, depth, size, size)
+        {
+            // The shader inscribes a DISC in the quad, so the quad is grown to keep the drawn
+            // area the pearl has always had — see [IridescenceRenderer.EQUAL_AREA_DISC_SCALE],
+            // which has the measurement of what not doing this did to the abyss's exposure.
+            val quad = IridescenceRenderer.equalAreaQuad(size)
+            iridescence.draw(centreX, depth, quad, quad, IridescentMaterial.PEARL)
+        }
+        else surface.fillRectCentred(centreX, depth, size, size)
     }
 
     /**

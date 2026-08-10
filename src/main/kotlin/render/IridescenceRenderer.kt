@@ -199,6 +199,52 @@ class IridescenceRenderer(private val config: SurfaceConfigInternal) : BatchRend
         /** The shared unit quad's only vertex attribute. */
         const val QUAD_ATTRIBUTE = "vertexPos"
 
+        /**
+         * How much bigger a quad has to be for the DISC this shader inscribes in it to cover the
+         * same area as the square that quad used to be filled with: `2 / sqrt(pi)` = 1.1284.
+         *
+         * ## Why this is not a cosmetic detail
+         *
+         * `iridescence.frag` discards everything outside the unit circle, so switching a pearl
+         * from `fillRectCentred` to this renderer silently removed `1 - pi/4` = 21.5% of its
+         * drawn area. Two things depend on that area, and both are load-bearing:
+         *
+         *  - **The world surface's exposure.** `mainSurface` is multiplied by GI's light map and
+         *    then run through a THRESHOLDED bloom (threshold 1.4, `DiveLighting.setup`), which
+         *    is violently non-linear: a pearl in the Abyss sits far above the threshold, so the
+         *    bloom's energy is roughly `area x (albedo x light - threshold)` and shrinking the
+         *    area cuts the halo by more than the area itself. Measured against a same-build
+         *    control pair (which agreed to 0.001/255) the round mask ALONE — with the emitters
+         *    untouched, and they are untouched — took a 16:9 abyss frame from a mean of 14.60 to
+         *    7.41 out of 255. That is the abyss's balance moving, which is exactly what this
+         *    task was told not to do.
+         *  - **The air ring's visual mass.** The ring is the game's only air warning (`Hud`).
+         *    Quietly making every bubble a fifth smaller is a gameplay regression.
+         *
+         * So the QUAD grows and the drawn area stays put. The alternative — leaving the quad
+         * alone and brightening the material to compensate — would have been a change to what a
+         * pearl emits in all but name, and it could not have been stated exactly: this factor
+         * is exact, `IridescenceGeometryTest` proves it, and it is the same number for every
+         * object this shader draws.
+         *
+         * Note what this does NOT compensate for and could not: the film desaturates the pearl,
+         * so its RED specifically is lower than the flat amber's even at equal area, while its
+         * blue is much higher. The composition preserves mean LUMINANCE exactly (see that test),
+         * not per-channel radiance, and bloom is per-channel. The residual is measured in this
+         * task's report rather than hidden.
+         */
+        val EQUAL_AREA_DISC_SCALE = (2.0 / kotlin.math.sqrt(Math.PI)).toFloat()
+
+        /**
+         * The quad size that draws a disc of the same area as a [squareSize] square — the size
+         * to pass [draw] wherever this renderer replaces a `fillRectCentred`.
+         *
+         * A function rather than a per-call-site multiply for the reason `fillRectCentred`'s own
+         * doc gives: it is used from two files for two different objects, and a factor written
+         * out twice is a factor that gets edited once.
+         */
+        fun equalAreaQuad(squareSize: Float) = squareSize * EQUAL_AREA_DISC_SCALE
+
         /** Floats written per instance by [draw]. Must equal the layout's stride in floats. */
         const val FLOATS_PER_INSTANCE = 11
 
