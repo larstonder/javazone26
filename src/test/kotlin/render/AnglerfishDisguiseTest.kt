@@ -30,6 +30,7 @@ import kotlin.test.assertTrue
 class AnglerfishDisguiseTest
 {
     private val source = File(RENDERER).readText()
+    private val lightingSource = File(LIGHTING).readText()
 
     @Test
     fun `the lure and a real pearl are drawn by the same function`()
@@ -94,16 +95,75 @@ class AnglerfishDisguiseTest
     }
 
     /**
+     * THE LURE IS ALSO A LIGHT, AND THE LIGHT IS THE HALF THAT MATTERS IN THE ABYSS.
+     *
+     * Everything above guards the pearl's SURFACE. In the Abyss the surface is barely the point:
+     * ambient is effectively zero and what a player actually sees of either object is the glow it
+     * casts, which comes from `DiveLighting`, not `DiveRenderer`. `drawPearlLights` and
+     * `drawAnglerfishLight` cannot funnel through one function the way the two surface draws do —
+     * one loops over `sim.pearls` and the other takes the single `sim.anglerfish` — so what is
+     * pinned instead is that their `drawLight` ARGUMENT LISTS are the same text once the subject
+     * is renamed. Emitter size, colour, cone and intensity curve are all in there.
+     *
+     * This gap was live and unguarded until the pearl's emitter was resized: the size and the
+     * intensity are written out at both call sites, and changing one and not the other would have
+     * given the lure a glow of its own with nothing to say so.
+     */
+    @Test
+    fun `the lure emits exactly the light a pearl of the same depth emits`()
+    {
+        val lure = drawLightArgumentsIn(bodyOf("drawAnglerfishLight", lightingSource)).replace("fish.", "SUBJECT.")
+        val pearl = drawLightArgumentsIn(bodyOf("drawPearlLights", lightingSource)).replace("pearl.", "SUBJECT.")
+
+        assertEquals(
+            pearl, lure,
+            "DiveLighting.drawAnglerfishLight passes drawLight different arguments than " +
+            "drawPearlLights does. In the Abyss the glow IS the disguise, so any difference — " +
+            "emitter size, intensity, cone, colour — is a tell the player can learn"
+        )
+    }
+
+    /**
+     * The text between `drawLight(` and its MATCHING `)`, whitespace-collapsed. Balanced rather
+     * than "up to the next `)`" because the argument list contains calls of its own
+     * (`pearlIntensityForDepth(pearl.depth)`), and a naive scan would compare only the arguments
+     * before the first of them — silently passing on a divergent `coneAngle` or `radius`.
+     *
+     * One normalisation, and it is spelled out because a normalisation is a hole in the check:
+     * the pearl loop hoists `LightEmitter.emitter()` above the loop and the lure calls it inline,
+     * which is a difference in where the texture is FETCHED and not in which texture is passed.
+     */
+    private fun drawLightArgumentsIn(body: String): String
+    {
+        val start = body.indexOf("drawLight(")
+        assertTrue(start >= 0, "expected a drawLight( call:\n$body")
+        var depth = 0
+        var i = start + "drawLight(".length - 1
+        val open = i + 1
+        while (i < body.length)
+        {
+            if (body[i] == '(') depth++
+            if (body[i] == ')' && --depth == 0) break
+            i++
+        }
+        assertTrue(i < body.length, "unterminated drawLight( in:\n$body")
+        return body.substring(open, i)
+            .replace("LightEmitter.emitter()", "emitter")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    /**
      * The text of `private fun <name>` up to the next member declaration. Comments are stripped
      * first, exactly as `DrawTest` and `MainCameraOwnershipTest` do: this file's prose talks at
      * length about pearls and lures and materials, and a scan that read it would report the
      * explanation as the offence.
      */
-    private fun bodyOf(name: String): String
+    private fun bodyOf(name: String, from: String = source): String
     {
-        val stripped = stripComments(source)
+        val stripped = stripComments(from)
         val start = stripped.indexOf("private fun $name")
-        assertTrue(start >= 0, "DiveRenderer no longer has a `private fun $name` — re-read this test")
+        assertTrue(start >= 0, "no `private fun $name` any more — re-read this test")
         val rest = stripped.substring(start + 1)
         val end = Regex("\\n    (private|internal|fun|val|const) ").find(rest)?.range?.first ?: rest.length
         return rest.substring(0, end)
@@ -112,6 +172,7 @@ class AnglerfishDisguiseTest
     private companion object
     {
         const val RENDERER = "src/main/kotlin/render/DiveRenderer.kt"
+        const val LIGHTING = "src/main/kotlin/render/DiveLighting.kt"
 
         /** The one function that knows what a pearl-surfaced object looks like. */
         const val SHARED_DRAW = "drawPearlSurface"

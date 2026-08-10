@@ -72,13 +72,116 @@ import kotlin.math.sin
  * i.e. the WHOLE QUAD emits, corners included. That is what put a square box around every pearl.
  * `LightEmitter`'s class doc has the shader reading behind it, why the falloff has to live in
  * ALPHA rather than in colour, and what the shape change measured at.
+ *
+ * The pearls then needed the SIZE half of the same fix, which they had not had: an emitter is a
+ * flat shelf of irradiance with a hard rim, so a 3 m one around a 1.2 m pearl is a visible box of
+ * lifted water whatever its shape. See [PEARL_LIGHT_SIZE_METRES] and [PEARL_SIZE_COMPENSATION].
  */
 object DiveLighting
 {
     private val pearlLight = Color(1f, 0.82f, 0.45f)
     private val diverLight = Color(0.6f, 0.85f, 1f)
 
-    private const val PEARL_LIGHT_SIZE_METRES = 3f
+    /**
+     * A pearl's emitter: the size of the QUAD it emits from, in metres.
+     *
+     * ## THE SQUARE HALO, PART TWO — the shape was fixed in `006512b` and the SIZE was not
+     *
+     * `006512b` gave every light a round emitter ([LightEmitter]) and shrank the DIVER's quad
+     * from body scale to a torch head. It left this at 3 m, against a 1.2 m pearl. The owner,
+     * looking at the attract screen: *"could we check why the light is masked like this around
+     * the pearls near the surface?"* — each pearl sitting inside a faintly visible box of
+     * slightly lifted water roughly 2.5x its own diameter. Near the surface, because ambient is
+     * 0.68 blue there and a pearl's own contribution is a small lift on a bright field, so its
+     * boundary reads; in the Abyss the pearl dominates and nothing shows.
+     *
+     * ## WHAT IT ACTUALLY IS, MEASURED
+     *
+     * The emitter quad is a REGION that rasterises into GI's local scene, and with `radius = 0`
+     * there is no distance term (`radiance_cascades.frag`'s `sampleScene`), so **inside** the
+     * emitter every probe's first raymarch step is zero and it samples the emitter itself: the
+     * whole disc comes out as a FLAT SHELF of irradiance with a hard rim at its silhouette. That
+     * shelf, not a falloff, is what has a visible boundary.
+     *
+     * Isolated by capturing the same pinned frame with and without the pearl lights and
+     * subtracting (`p1_d_base.png`), the shelf is a hard-edged, visibly polygonal patch about
+     * 3 m across around a 1.2 m pearl — the emitter, quantised by the quarter-scale local scene
+     * ([setup]'s `localSceneTexScale`), which at 3 m resolves the circle in about 15 texels and
+     * so reads as a rounded box rather than as a circle. Driving the size to 12 m in the same
+     * capture makes it unmistakable: the shelf becomes a stair-stepped disc measuring 11.7 m
+     * against the 12 m asked for. **The artefact's diameter IS this constant, one for one.**
+     *
+     * ## SO THE EMITTER GOES INSIDE THE BODY
+     *
+     * A pearl, unlike the diver, IS the light — so its emitter belongs within its own drawn
+     * silhouette, where the pearl itself hides the shelf. The drawn disc is
+     * `IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES)` = 1.354 m across, and 1.2 m
+     * sits inside it with room to spare. It is stated as its own number rather than derived from
+     * the pearl's size for the reason [DIVER_LIGHT_SIZE_METRES] is: "as big as the body" is the
+     * coupling that caused this, and it happens to be harmless only while the body is small.
+     * `DiveLightingTest` pins the bound that matters — emitter <= drawn silhouette — so growing
+     * it back fails the build. It is also the size the torch already runs at, i.e. a known-good
+     * ~9 texels in the quarter-scale SDF, and well above `scene.vert:87`'s minimum quad size.
+     */
+    internal const val PEARL_LIGHT_SIZE_METRES = 1.2f
+
+    /**
+     * How much the pearls' intensity is raised to pay for the shrink above. **1.1, MEASURED — and
+     * emphatically NOT the 2.5 the arithmetic asks for.**
+     *
+     * [pearlIntensityByZone]'s five numbers were tuned by eye against the old 3 m quad, so this is
+     * a correction relative to 3 m and there is deliberately no `PEARL_BALANCE_SIZE_METRES`
+     * constant beside it — see the last paragraph for why a size the compensation could be
+     * DERIVED from would be a trap rather than a convenience.
+     *
+     * ## The arithmetic, which is right about the light map and wrong about the frame
+     *
+     * `radius = 0` makes irradiance linear in the quad's size ([torchIntensityFor] has the
+     * derivation), so `size * intensity` is conserved and the honest compensation for a
+     * 3 m -> 1.2 m shrink is 2.5. That is exactly the lever `006512b` pulled for the torch, and
+     * on the LIGHT MAP it is correct here too: with the bloom removed, a 1.2 m emitter at 2.5x
+     * intensity puts +18.5% on the light's contribution to the frame mean, i.e. the cast really
+     * is conserved to within a fifth.
+     *
+     * With the bloom back on, the same build reads:
+     *
+     *     depth 12 Shallows   frame mean 9.033 -> 11.206     +24%
+     *     depth 75 Twilight               2.946 -> 23.773    +707%
+     *     depth 140 Abyss                 3.757 -> 21.444    +471%
+     *
+     * The Abyss becomes an orange wash. THE REASON IS THAT SHRINKING AN EMITTER WHILE CONSERVING
+     * ITS CAST NECESSARILY RAISES ITS PEAK RADIANCE — the same flux leaves a fifth of the area —
+     * and `setup`'s bloom is thresholded at 1.4 and therefore super-linear in exactly that peak.
+     * Where ambient is near zero the bloom around the pearls IS the visible frame, and there are
+     * thirty of them on screen, so their haloes add. The torch got away with the same lever
+     * because there is one of it and it is a cone.
+     *
+     * ## The measured number
+     *
+     * Frame means against a same-build control pair (which agreed to 0.0004/255 at 140 m and was
+     * bit-identical at 12 m), as a percentage of the 3 m baseline at each depth:
+     *
+     *     intensity x     d12 Shallows    d75 Twilight    d140 Abyss
+     *     1.00              -10.7%          -34.9%          -24.6%
+     *     1.10               -9.3%          -14.0%           -1.0%
+     *     1.25                 -               -            +40.8%
+     *     1.50                 -               -           +122.4%
+     *     2.50              +24.1%         +707.0%         +470.8%
+     *
+     * 1.1 is the only value in that sweep that is within 15% of the baseline in all three zones,
+     * and the cliff between 1.10 and 1.25 in the Abyss is the bloom threshold being crossed by a
+     * whole population of pearls at once. What it costs is stated plainly: the Shallows and the
+     * Twilight sit about 9-14% below where they were, because the far-field cast is genuinely
+     * weaker (a 1.2 m emitter at 1.1x casts roughly half what a 3 m one at 1.0x did) and the
+     * bloom only partly makes it up. That is the price of the halo, and it is small enough that a
+     * side-by-side capture of the Shallows reads as the same frame with rounder pearls.
+     *
+     * **RE-MEASURE THIS IF [PEARL_LIGHT_SIZE_METRES] CHANGES.** It is deliberately NOT a function
+     * of the size, because it is not derivable from the size — the table above is not a curve
+     * anyone would have guessed, and `LightEmitter`'s own class doc records the previous time an
+     * analytic compensation for this post chain came out fifty times too big.
+     */
+    internal const val PEARL_SIZE_COMPENSATION = 1.1f
 
     /**
      * The diver's torch: the size of the QUAD that emits it, in metres.
@@ -97,9 +200,16 @@ object DiveLighting
      * shape was never the problem. The SIZE was.
      *
      * The diagnostic sat in the same frame the whole time: pearls emit through this same
-     * `drawLight` call and read as clean glows, because their emitter is 3 m for a 1.2 m body
+     * `drawLight` call and read as clean glows, because their emitter was 3 m for a 1.2 m body
      * rather than 6 m for a 6 m one. The engine's own reference does the same thing — `Torch`
      * passes its FLAME sprite, sized like a flame, and casts light across a room.
+     *
+     * THAT DIAGNOSTIC WAS TRUE AND STILL DID NOT GO FAR ENOUGH: 3 m against a 1.2 m pearl is
+     * better than 6 m against a 6 m diver, and it is still an emitter that pokes out past the
+     * body it belongs to, which is the halo the owner then reported around every pearl. See
+     * [PEARL_LIGHT_SIZE_METRES]. The rule that survives both is: **the emitter must be no larger
+     * than the thing a player believes is glowing** — for the diver that is a torch head, for a
+     * pearl it is the pearl.
      *
      * So 1.2 m: a torch head, decoupled from the swimmer holding it and stated as its own number
      * because it is not a fraction of anything. It is above the floor `scene.vert:87` puts on a
@@ -692,12 +802,21 @@ object DiveLighting
      * GI_LOCAL_SCENE, whose renderer keeps the field default of `false`. So the quad
      * rasterised is exactly the quad asked for.
      *
-     * The margin stays, at one pearl-light size, for what it now genuinely buys: a light just
-     * off the visible rect still contributes to on-screen probes, because `radius = 0` means
-     * there is no distance falloff to make its contribution negligible at the boundary. Three
-     * metres, in metres, at any resolution.
+     * The margin stays for what it genuinely buys: a light just off the visible rect still
+     * contributes to on-screen probes, because `radius = 0` means there is no distance falloff to
+     * make its contribution negligible at the boundary. Three metres, in metres, at any
+     * resolution.
+     *
+     * IT USED TO READ `= PEARL_LIGHT_SIZE_METRES` AND MUST NOT AGAIN. That was written when the
+     * pearl's emitter was 3 m, so the two happened to be the same number; shrinking the emitter to
+     * 1.2 m ([PEARL_LIGHT_SIZE_METRES]) would have dragged the margin down with it and started
+     * culling lights that are still doing visible work off-screen. HOW FAR a light reaches and HOW
+     * BIG its emitter is are independent — the intensity compensates for the size — and the
+     * measured profile says so: a pearl's isolated contribution at 3.2 m from its centre is still
+     * 8% of its value at 1 m. So this is its own number now, and `DiveLightingTest` fails the
+     * build if it is ever re-tied to an emitter.
      */
-    private const val LIGHT_CULL_MARGIN_METRES = PEARL_LIGHT_SIZE_METRES
+    internal const val LIGHT_CULL_MARGIN_METRES = 3f
 
     private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
     {
@@ -897,8 +1016,17 @@ object DiveLighting
      * change is roughly a fiftieth of the analytic one, which is inside the noise of anything
      * anyone could judge by eye, and applying nothing is closer to right than applying 4/pi.
      * Do not re-derive this on paper; the post chain is what decides it.
+     *
+     * IT IS COMPENSATED FOR THE EMITTER'S SIZE, by [PEARL_SIZE_COMPENSATION] — also a
+     * measurement, and also much smaller than the arithmetic asks for, for the same reason. The
+     * factor is applied HERE rather than at the `drawLight` call sites so that the one number
+     * this function returns is the one the shader is given: `DiveRenderer.pearlAlbedoExposure`
+     * reads it as "how hard is this pearl shining on itself", and it takes its own reference from
+     * this same function, so a uniform factor cancels there by construction and the material's
+     * exposure is untouched by the shrink. The lure gets it too, necessarily — it calls this.
      */
-    internal fun pearlIntensityForDepth(depth: Float): Float = DepthBlend.blend(depth, pearlIntensityByZone)
+    internal fun pearlIntensityForDepth(depth: Float): Float =
+        DepthBlend.blend(depth, pearlIntensityByZone) * PEARL_SIZE_COMPENSATION
 
     /**
      * Same continuity treatment as [pearlIntensityForDepth], for the diver's own light, times

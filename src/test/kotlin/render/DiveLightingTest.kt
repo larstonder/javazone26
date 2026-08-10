@@ -267,6 +267,64 @@ class DiveLightingTest
     }
 
     /**
+     * THE SAME REGRESSION, FOR THE PEARLS — the half of it `006512b` did not do.
+     *
+     * The torch was shrunk and the pearls were left at a 3 m quad around a 1.2 m body, which the
+     * owner reported as a faintly visible box of lifted water about 2.5x the pearl's diameter,
+     * clearest near the surface where ambient is high enough for its rim to read. It is not a
+     * shape problem — `LightEmitter` already makes the emitter round — it is that with
+     * `radius = 0` the inside of an emitter is a FLAT SHELF of irradiance with a hard rim, so any
+     * part of the quad sticking out past the body is a visible region. Confirmed by capture: the
+     * shelf's diameter tracks the constant one for one (12 m asked, 11.7 m measured).
+     *
+     * The bound asserted is therefore the property that makes the shelf invisible: the emitter
+     * must fit inside the pearl's own DRAWN silhouette, so that the pearl itself covers it. That
+     * silhouette is the iridescence shader's inscribed disc, whose diameter is
+     * `equalAreaQuad(PEARL_SIZE_METRES)` — derived here rather than typed, so that re-tuning
+     * either the pearl's size or the equal-area scale moves this bound with it.
+     */
+    @Test
+    fun `a pearl's emitter fits inside the pearl, so its shelf of light has nowhere to show`()
+    {
+        val drawnDiameter = IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES)
+
+        assertTrue(
+            DiveLighting.PEARL_LIGHT_SIZE_METRES <= drawnDiameter,
+            "a pearl's emitter is ${DiveLighting.PEARL_LIGHT_SIZE_METRES}m across a pearl drawn " +
+            "${drawnDiameter}m across — the part that pokes out is a flat shelf of irradiance " +
+            "with a hard rim, which is the halo the owner reported around every pearl"
+        )
+    }
+
+    /**
+     * HOW FAR A LIGHT REACHES IS NOT HOW BIG ITS EMITTER IS, and the cull margin is the one place
+     * that used to confuse them: it read `= PEARL_LIGHT_SIZE_METRES`, which was harmless only
+     * while that happened to be 3 m. Shrinking the emitter would have dragged the margin down
+     * with it and begun culling pearls that are a metre off screen and still lighting the water
+     * that is on it — a pop while panning, invisible in any still.
+     *
+     * The relationship asserted is that the margin outlives the emitter: it must stay clear of
+     * BOTH emitter sizes by a wide factor. `radius = 0` means there is no distance falloff to
+     * make an off-screen light negligible, and the measured contribution profile backs the
+     * number — a pearl still puts 8% of its 1 m value on the water 3.2 m away.
+     */
+    @Test
+    fun `the cull margin is not tied to an emitter's size, because reach and size are independent`()
+    {
+        listOf(
+            "pearl" to DiveLighting.PEARL_LIGHT_SIZE_METRES,
+            "torch" to DiveLighting.DIVER_LIGHT_SIZE_METRES
+        ).forEach { (name, size) ->
+            assertTrue(
+                DiveLighting.LIGHT_CULL_MARGIN_METRES >= size * 2f,
+                "the cull margin (${DiveLighting.LIGHT_CULL_MARGIN_METRES}m) has followed the " +
+                "$name emitter (${size}m) down; a light's reach is set by its intensity too, and " +
+                "with radius = 0 there is no falloff to make an off-screen one negligible"
+            )
+        }
+    }
+
+    /**
      * SHRINKING THE EMITTER MUST NOT CHANGE WHAT IT CASTS, and the relationship rather than the
      * resulting number is what is asserted — the failure this exists to catch is someone moving
      * the emitter's size and leaving a hand-typed multiplier behind, which is exactly what
