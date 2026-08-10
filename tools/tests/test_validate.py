@@ -44,6 +44,13 @@ def test_check_dimensions_rejects_odd_one_out():
         check_dimensions([(1000, 2000), (1000, 2000), (999, 2000)])
 
 
+def test_check_dimensions_rejects_empty_list():
+    # An empty list has no "mixed" dimensions to disagree on, so the len(unique) > 1
+    # check silently passes it - but zero frames is not a valid bake input either.
+    with pytest.raises(SourceError):
+        check_dimensions([])
+
+
 def test_alpha_agreement_tolerates_pillows_truncation():
     # Pillow reads the 16-bit diffuse as its HIGH BYTE, producing ~6326 legitimate
     # off-by-one differences per frame. A zero-tolerance gate aborts on real data.
@@ -79,6 +86,17 @@ def test_check_normal_encoding_rejects_a_raw_linear_map():
     rgb[..., 2] = 255
     with pytest.raises(SourceError, match="unit"):
         check_normal_encoding(rgb, np.full((8, 8), 255, dtype=np.uint8), 3)
+
+
+def test_check_normal_encoding_rejects_an_all_transparent_frame():
+    # mean_normal_length returns nan when no texel is opaque (mask.any() is False).
+    # nan comparisons are always False, so `abs(length - 1.0) > TOLERANCE` alone
+    # would silently PASS this frame; the `not np.isfinite(length) or` guard is what
+    # actually catches it.
+    rgb = np.zeros((8, 8, 3), dtype=np.uint8)
+    alpha = np.zeros((8, 8), dtype=np.uint8)
+    with pytest.raises(SourceError, match="unit"):
+        check_normal_encoding(rgb, alpha, 0)
 
 
 def test_union_bbox_is_inclusive_and_spans_every_frame():

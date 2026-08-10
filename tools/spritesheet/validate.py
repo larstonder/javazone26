@@ -43,6 +43,8 @@ def check_pairing(diffuse: list, normals: list) -> None:
 
 
 def check_dimensions(sizes: list) -> None:
+    if not sizes:
+        raise SourceError("no source frames to check dimensions of")
     unique = set(sizes)
     if len(unique) > 1:
         raise SourceError(f"source frames have mixed dimensions: {sorted(unique)}")
