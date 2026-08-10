@@ -19,6 +19,8 @@ The target is a **two-day unattended arcade cabinet in front of a queue**. That 
 ./gradlew test --tests "dive.DiveSimTest.*surfac*"           # one test (backtick names: match the string)
 ./gradlew build               # compile + test
 ./gradlew buildWin64Release   # Windows .exe + bundled JRE -> release/win64/en-pust-til-1.0.zip
+python3 tools/build_spritesheet.py    # re-bake the diver sprite sheets from assets/ (gitignored)
+cd tools && python3 -m pytest         # the bake script's tests
 ```
 
 `run` sets `-XstartOnFirstThread` on macOS automatically (LWJGL/GLFW needs the window on the process's first thread).
@@ -89,12 +91,27 @@ These were each established empirically (several by decompiling `pulse-engine-0.
 - **The engine's `Gamepad` exposes only `isPressed`/`getAxis`** — there is no `wasClicked` for a controller button. Everything consuming lifecycle input takes level readings and does its own previous-frame edge detection (`RunLifecycle`, `InitialsEntry`). A stuck button on a booth encoder must never be able to restart the game repeatedly or blast through the alphabet.
 - **Gameplay input reads gamepad 0; lifecycle input scans every connected gamepad** (`anyLifecycleActionPressed`). Index 0 is not guaranteed to be the cabinet's stick, and "any button to start" has to mean any.
 - **The HUD lives on its own surface**, not `mainSurface`. `GlobalIlluminationSystem` multiplies `mainSurface` by the light map — which is what makes the Abyss dark, and would also multiply the HUD into near-invisibility. Its `zOrder` is pinned explicitly (`HUD_Z_ORDER`), because the engine otherwise assigns one by surface creation order.
+- **`SpriteSheet`'s constructor takes `(…, format, maxMipLevels, hCells, vCells)`** — the
+  argument order is *not* the field declaration order, which reads `horizontalCells,
+  verticalCells` first. Passing `(…, cols, rows, 0)` sets `hCells = rows` and `vCells = 0`,
+  so `size = rows * 0 = 0`, the backing `Texture[]` is zero-length, and `getTexture(0)`
+  throws on the first frame drawn. Verified from bytecode: the 6th int is forwarded to
+  `Texture.<init>`'s trailing `maxMipLevels`, and the synthetic defaults constructor
+  defaults that slot to `5`, pairing with the `LINEAR_MIPMAP` filter default.
+- **`maxMipLevels = 0` allocates no texture storage at all.** `TextureArray` computes
+  `mipLevels = min(maxMipLevels, floor(log2(size)) + 1)` with no `coerceAtLeast(1)` and
+  hands it to `glTexStorage3D` as `levels`; `levels = 0` is `GL_INVALID_VALUE`, so nothing
+  is allocated and every later `glTexSubImage3D` fails too — no exception, no log. `1` is
+  the value that means "one level, no mips". `tools/build_spritesheet.py` prints the
+  correct constructor call for exactly this reason.
 
 ## Config and release
 
 `application.cfg` is the **booth default** and ships in the release `.exe`: fullscreen, no pinned window size (takes the display's native resolution), `logLevel = WARN`. `application-dev.cfg` is loaded automatically on top of it by the engine and restores windowed + DEBUG for local `./gradlew run`; it is excluded from the release by the `exclude("*-dev*")` line in `build.gradle.kts`. `screenMode` and window size **cannot** be changed at runtime — there's no setter that reaches the window after creation — which is why this split exists rather than an env var.
 
 **Day two at the booth:** uncomment and change `dailySeed` in `application.cfg` and restart. That regenerates the water column and, because every `ScoreEntry` stores the seed it was earned under, gives day two a fresh leaderboard while day one's board stays intact in `scoreboard.json`.
+
+**Sprite art.** `assets/` (183 MB of source frames) and `release/` are gitignored; the *baked* sheets in `src/main/resources/sprites/` are committed and ship in the `.exe`. A clean clone can build and run but cannot re-bake without the source frames. The bake is byte-reproducible, so re-running it with unchanged inputs produces no diff.
 
 ## Conventions
 
