@@ -2,7 +2,6 @@ package render
 
 import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
-import no.njoh.pulseengine.core.asset.types.Texture
 import no.njoh.pulseengine.core.graphics.api.Camera
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.BloomEffect
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect
@@ -59,6 +58,19 @@ import kotlin.math.hypot
  * per-parameter semantics of `drawLight`, read off the shader source rather than assumed, are
  * documented on [coneMaskPeak] — they are unintuitive enough that the old 25x-versus-1x
  * pairing looked reasonable while being roughly a factor of five out.
+ *
+ * SMALL, ROUND EMITTERS — and the SMALL is the load-bearing half. A light's emitter quad is a
+ * REGION that rasterises into the scene, not an abstract point: whatever its shape, at body size
+ * you see the emitter instead of the light. The diver's torch was drawn from a quad the height of
+ * the diver, and read as a hard-edged rectangle wheeling around him; making it round only turned
+ * it into a hard-edged circle. It is now 1.2 m — see [DIVER_LIGHT_SIZE_METRES], which has the
+ * whole diagnosis, and [TORCH_SIZE_COMPENSATION], which is how the cast survives the shrink.
+ *
+ * All three `drawLight` calls below then pass [LightEmitter.emitter] rather than `Texture.BLANK`,
+ * because `drawLight` takes the emitter's shape from the texture and BLANK means "no texture",
+ * i.e. the WHOLE QUAD emits, corners included. That is what put a square box around every pearl.
+ * `LightEmitter`'s class doc has the shader reading behind it, why the falloff has to live in
+ * ALPHA rather than in colour, and what the shape change measured at.
  */
 object DiveLighting
 {
@@ -70,20 +82,75 @@ object DiveLighting
     /**
      * The diver's torch: the size of the QUAD that emits it, in metres.
      *
-     * TIED TO THE DIVER'S OWN SIZE RATHER THAN BEING A SECOND 3. It was a literal `3f` — the same
-     * number `Framing.DIVER_SIZE_METRES` happened to hold — and the two silently parted company
-     * the moment the diver was doubled to 6 m for the sprite art, leaving the torch emitting from
-     * a quad half the body's height, i.e. from inside the chest. Expressed as the diver's height
-     * so a future resize cannot separate them again.
+     * ## A TORCH HEAD, NOT A BODY — and the history matters, because this has now been wrong in
+     * both directions
      *
-     * Below GI's `upscaleSmallSources` threshold either way (`10 * globalWorldScale` = 40 world
-     * units, and 6 is well under it), so the shader still enlarges the quad up to 3x and divides
-     * the intensity by the same factor — the peak radiance the beam reaches the screen at is
-     * therefore unchanged by the resize, only its origin is broader. That is also why
-     * [drawDiverBeam] pads its cull by one full light size and not by [LIGHT_CULL_MARGIN_METRES],
-     * which is a PEARL's size and would now be too small by half.
+     * It was a literal `3f`, which happened to equal the old `Framing.DIVER_SIZE_METRES`. When the
+     * diver doubled to 6 m for the sprite art the two silently parted company, and the fix was to
+     * express this AS the diver's height so a future resize could not separate them again. That
+     * reasoning is right for a lamp centred on a body and wrong for a torch, and the resize it
+     * introduced is what made the defect visible: **a light's emitter quad is a REGION that
+     * rasterises into the scene**, and at body size that region is far too big to be mistaken for a
+     * source. The player's words were that the diver had "a hard-edged rectangle" around him;
+     * making it round moved the defect rather than fixing it — a hard-edged circle instead. The
+     * shape was never the problem. The SIZE was.
+     *
+     * The diagnostic sat in the same frame the whole time: pearls emit through this same
+     * `drawLight` call and read as clean glows, because their emitter is 3 m for a 1.2 m body
+     * rather than 6 m for a 6 m one. The engine's own reference does the same thing — `Torch`
+     * passes its FLAME sprite, sized like a flame, and casts light across a room.
+     *
+     * So 1.2 m: a torch head, decoupled from the swimmer holding it and stated as its own number
+     * because it is not a fraction of anything. It is above the floor `scene.vert:87` puts on a
+     * light quad (`pixelSizeInWorld * 1500 / camScale`, which works out at ~0.11 m for our camera
+     * at any resolution), and 1.2 m is 9 texels across in the quarter-scale local SDF — coarse, but
+     * enough for the JFA to build a shape from.
+     *
+     * ## Where the reach comes from now: [TORCH_SIZE_COMPENSATION]
+     *
+     * A CORRECTION TO WHAT THIS COMMENT USED TO CLAIM: `upscaleSmallSources` does NOT apply here.
+     * `GlobalIlluminationSystem` sets it on the GI_GLOBAL_SCENE renderer only
+     * (GlobalIlluminationSystem.kt:203-207); the GI_LOCAL_SCENE renderer, which is what feeds the
+     * SDF the near-field cascades march against, is left at the field default of `false`. Nothing
+     * enlarges a small light for us, and nothing divides its intensity either.
      */
-    private const val DIVER_LIGHT_SIZE_METRES = Framing.DIVER_HEIGHT_METRES
+    internal const val DIVER_LIGHT_SIZE_METRES = 1.2f
+
+    /**
+     * The emitter size the beam's balance was tuned at, in metres. `d92c723` set
+     * [BEAM_INTENSITY_MULT] and [STATIONARY_PEAK_RADIANCE] against a 3 m quad; `fd036f7` then
+     * doubled the quad to 6 m as a side effect of resizing the diver, which doubled the beam's
+     * reach without anyone choosing to. This is the number that balance belongs to.
+     */
+    internal const val TORCH_BALANCE_SIZE_METRES = 3f
+
+    /**
+     * The nominal intensity multiplier that makes an emitter of [emitterSizeMetres] cast exactly
+     * what the [TORCH_BALANCE_SIZE_METRES] one did. At our 1.2 m that is 2.5.
+     *
+     * IT IS A RATIO OF SIZES BECAUSE THE FALLOFF IS ANGULAR, NOT RADIAL. We pass `radius = 0`,
+     * which in `radiance_cascades.frag` is not "unbounded radius" but "skip the distance term
+     * altogether" — so what a probe receives from a light is its radiance times the FRACTION OF
+     * ITS RAYS THAT HIT IT, and that fraction is proportional to the light's angular size, i.e.
+     * to `size / distance`. Irradiance is therefore linear in the quad's size at every distance,
+     * and dividing the quad by 2.5 while multiplying the intensity by 2.5 leaves the cast
+     * identical everywhere while shrinking the visible source to a fifth of its area.
+     *
+     * A FUNCTION rather than a bare constant so that the RELATIONSHIP is what is written down and
+     * what is tested: the failure mode this is guarding against is precisely someone changing the
+     * emitter's size and leaving a hand-typed multiplier behind, which is how `fd036f7` came to
+     * double the beam without anyone noticing.
+     *
+     * It also restores the `d92c723` balance exactly rather than approximately, and the
+     * hovering-versus-moving ramp survives it untouched by construction: [beamIntensity] is
+     * expressed entirely in MULTIPLES of the base intensity it is handed, so scaling that base
+     * moves both ends of the ramp together and cannot change their ratio. `DiveLightingTest`'s
+     * ramp cases assert against `base` for that reason and are unaffected.
+     */
+    internal fun torchIntensityFor(emitterSizeMetres: Float): Float =
+        TORCH_BALANCE_SIZE_METRES / emitterSizeMetres
+
+    private val TORCH_SIZE_COMPENSATION = torchIntensityFor(DIVER_LIGHT_SIZE_METRES)
 
     /**
      * How many metres of water around an occluder GI's ambient occlusion darkens. A plain
@@ -492,24 +559,33 @@ object DiveLighting
      * NOT a safety fudge, and deliberately not a copy of the 50-PIXEL `CULL_MARGIN` the deleted
      * `isOnScreen` carried — that number existed because the old check compared a light's CENTRE
      * against the screen's rows and so needed slack for the quad's own half-size, which
-     * [showsSquare] now accounts for exactly. This margin covers something the old one never
-     * did: `scene.vert:88-99` enlarges small light sources by up to 3x (`upscaleSmallSources`,
-     * with `threshold = 10 * globalWorldScale` = 40 world units, and our lights are 3 m) while
-     * dividing their intensity by the same factor, so the quad actually rasterised can reach
-     * `3 * size / 2` from its centre instead of `size / 2`. One full light size of padding
-     * covers that worst case exactly, at any resolution, in metres.
+     * [showsSquare] now accounts for exactly.
+     *
+     * WHAT IT USED TO SAY, AND WHY THAT WAS WRONG. It claimed to cover `scene.vert:88-99`'s
+     * `upscaleSmallSources`, which enlarges a light quad by up to 3x while dividing its
+     * intensity by the same factor. That branch never runs on our lights:
+     * `GlobalIlluminationSystem` only sets `upscaleSmallSources` on the GI_GLOBAL_SCENE
+     * renderer (GlobalIlluminationSystem.kt:203-207), and every `drawLight` below goes to
+     * GI_LOCAL_SCENE, whose renderer keeps the field default of `false`. So the quad
+     * rasterised is exactly the quad asked for.
+     *
+     * The margin stays, at one pearl-light size, for what it now genuinely buys: a light just
+     * off the visible rect still contributes to on-screen probes, because `radius = 0` means
+     * there is no distance falloff to make its contribution negligible at the boundary. Three
+     * metres, in metres, at any resolution.
      */
     private const val LIGHT_CULL_MARGIN_METRES = PEARL_LIGHT_SIZE_METRES
 
     private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
     {
+        val emitter = LightEmitter.emitter()
         surface.setDrawColor(pearlLight)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
             if (!cam.showsSquare(pearl.x, pearl.depth, PEARL_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES))
                 return@forEach
             renderer.drawLight(
-                texture = Texture.BLANK,
+                texture = emitter,
                 x = pearl.x, y = pearl.depth, w = PEARL_LIGHT_SIZE_METRES, h = PEARL_LIGHT_SIZE_METRES,
                 angle = 0f,
                 intensity = pearlIntensityForDepth(pearl.depth),
@@ -529,7 +605,7 @@ object DiveLighting
         if (!cam.showsSquare(fish.x, fish.depth, PEARL_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
         surface.setDrawColor(pearlLight)
         renderer.drawLight(
-            texture = Texture.BLANK,
+            texture = LightEmitter.emitter(),
             x = fish.x, y = fish.depth, w = PEARL_LIGHT_SIZE_METRES, h = PEARL_LIGHT_SIZE_METRES,
             angle = 0f,
             intensity = pearlIntensityForDepth(fish.depth),
@@ -578,15 +654,17 @@ object DiveLighting
         // left in this method is a per-frame derivation from state, so culling it costs nothing
         // and can lose nothing.
         //
-        // Padded by one full DIVER light size, not by LIGHT_CULL_MARGIN_METRES, which is a pearl's
-        // size: the margin exists to cover `upscaleSmallSources` growing the quad to 3x, so it has
-        // to be this light's own size. The two were the same number until the diver was doubled.
-        if (!cam.showsSquare(sim.x, sim.depth, DIVER_LIGHT_SIZE_METRES, DIVER_LIGHT_SIZE_METRES)) return
+        // Padded by LIGHT_CULL_MARGIN_METRES like the other two, not by this light's own size: the
+        // torch quad is now 1.2 m, and a margin that small would cut the beam of a diver a metre
+        // outside the rect, whose light still reaches into it (radius = 0, so nothing attenuates
+        // with distance). The margin's own doc records why the `upscaleSmallSources` argument that
+        // used to justify a per-light margin does not apply to us at all.
+        if (!cam.showsSquare(sim.x, sim.depth, DIVER_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
 
         val baseIntensity = diverIntensityForDepth(sim.depth)
         surface.setDrawColor(diverLight)
         renderer.drawLight(
-            texture = Texture.BLANK,
+            texture = LightEmitter.emitter(),
             x = sim.x, y = sim.depth, w = DIVER_LIGHT_SIZE_METRES, h = DIVER_LIGHT_SIZE_METRES,
             angle = beamAngleDeg,
             intensity = beamIntensity(baseIntensity, speed),
@@ -661,11 +739,29 @@ object DiveLighting
      * Deeper zones are darker, so pearls must shine harder to stay legible. Continuous in
      * depth (see [DepthBlend]) rather than switching at a zone boundary. Pure and
      * unit-tested — everything else here needs a live GL context to verify.
+     *
+     * NOT COMPENSATED FOR THE ROUND EMITTER, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION.
+     * A disc intercepts pi/4 as many of GI's rays as the square it is inscribed in (Cauchy: mean
+     * width is perimeter / pi), so the arithmetic says every light should be brightened by 4/pi
+     * to keep the change a change of shape only. Built that way and captured, it was wildly
+     * wrong: the 16:9 frame mean went 6.382 -> 11.632, i.e. +82% for a nominal +27%, because
+     * `setup` puts an ACES tone mapper and a THRESHOLDED bloom (`threshold = 1.4`) on
+     * mainSurface and neither is linear in radiance near a light. The same capture with the
+     * compensation removed reads 6.239 — 2.2% below the square-emitter baseline, against a
+     * same-build control pair that agreed to 0.0007/255. So the honest correction for the shape
+     * change is roughly a fiftieth of the analytic one, which is inside the noise of anything
+     * anyone could judge by eye, and applying nothing is closer to right than applying 4/pi.
+     * Do not re-derive this on paper; the post chain is what decides it.
      */
     internal fun pearlIntensityForDepth(depth: Float): Float = DepthBlend.blend(depth, pearlIntensityByZone)
 
-    /** Same continuity treatment as [pearlIntensityForDepth], for the diver's own light. */
-    internal fun diverIntensityForDepth(depth: Float): Float = DepthBlend.blend(depth, diverIntensityByZone)
+    /**
+     * Same continuity treatment as [pearlIntensityForDepth], for the diver's own light, times
+     * [TORCH_SIZE_COMPENSATION] — the torch emits from a quad a fifth of the pearls' area, and
+     * with `radius = 0` a light's reach is linear in its quad's size. See that constant.
+     */
+    internal fun diverIntensityForDepth(depth: Float): Float =
+        DepthBlend.blend(depth, diverIntensityByZone) * TORCH_SIZE_COMPENSATION
 
     // `isOnScreen(screenY, screenHeight)` USED TO LIVE HERE and went with the coordinates it was
     // written in: it was a screen-row bounds check with a 50-PIXEL margin, and there are no

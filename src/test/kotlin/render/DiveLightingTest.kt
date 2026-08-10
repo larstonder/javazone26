@@ -237,4 +237,53 @@ class DiveLightingTest
 
         DiveLighting.resetAim()
     }
+
+    /**
+     * THE REGRESSION THIS WHOLE EPISODE WAS, HELD AS A BUILD-TIME ASSERTION.
+     *
+     * A light's emitter quad is a REGION that rasterises into the scene. `fd036f7` tied the
+     * torch's quad to `Framing.DIVER_HEIGHT_METRES` — sound reasoning for a lamp centred on a
+     * body, wrong for a torch — and the emitter became as tall as the swimmer, which is how the
+     * player came to see a hard-edged rectangle around him rather than a light. Rounding it only
+     * made the rectangle a circle; the size was the defect.
+     *
+     * So: the torch's emitter must stay far smaller than the diver, and it must not be expressed
+     * as a fraction of him. Half the body height is a generous bound — the real value is a fifth
+     * of it — chosen so this fires on the specific mistake (re-tying it to the body) rather than
+     * on a legitimate re-tune.
+     */
+    @Test
+    fun `the torch emits from a quad far smaller than the diver, not from one the size of him`()
+    {
+        assertTrue(
+            DiveLighting.DIVER_LIGHT_SIZE_METRES < Framing.DIVER_HEIGHT_METRES * 0.5f,
+            "the torch's emitter is ${DiveLighting.DIVER_LIGHT_SIZE_METRES}m against a ${Framing.DIVER_HEIGHT_METRES}m diver — " +
+            "at body scale the emitter quad reads as a hard-edged patch of light instead of as a source"
+        )
+    }
+
+    /**
+     * SHRINKING THE EMITTER MUST NOT CHANGE WHAT IT CASTS, and the relationship rather than the
+     * resulting number is what is asserted — the failure this exists to catch is someone moving
+     * the emitter's size and leaving a hand-typed multiplier behind, which is exactly what
+     * `fd036f7` did in the other direction.
+     *
+     * The physics: `radius = 0` disables `radiance_cascades.frag`'s distance term, so a probe's
+     * irradiance from a light is the fraction of its rays that hit it, which is proportional to
+     * the light's angular size, i.e. to `size / distance`. `size * intensity` is therefore the
+     * conserved quantity at every distance, and it must come out at the size the beam's balance
+     * was signed off against no matter what emitter size is chosen.
+     */
+    @Test
+    fun `the torch's cast is conserved when its emitter is resized`()
+    {
+        for (size in listOf(0.4f, 1.2f, 3f, 6f, 9f))
+        {
+            assertEquals(
+                DiveLighting.TORCH_BALANCE_SIZE_METRES,
+                size * DiveLighting.torchIntensityFor(size), 1e-3f,
+                "an emitter of ${size}m casts a different amount of light than the ${DiveLighting.TORCH_BALANCE_SIZE_METRES}m one the beam was balanced at"
+            )
+        }
+    }
 }

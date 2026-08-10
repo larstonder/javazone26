@@ -22,6 +22,7 @@ import render.DiveLighting
 import render.DiveRenderer
 import render.DiverSprite
 import render.Hud
+import render.LightEmitter
 import render.RunLifecycle
 import render.RunLifecycleState
 import render.anyLifecycleActionPressed
@@ -533,6 +534,13 @@ class EnPustTil : PulseEngineGame()
         // fallback rectangle until DiverSprite.sheetsReady() turns true, and complains in the log
         // if it never does.
         DiverSprite.load(engine)
+
+        // The one GENERATED asset: the round emitter every drawLight in DiveLighting shapes its
+        // light from. Same queue, same asynchronous upload, same gate-and-warn arrangement
+        // (LightEmitter.emitter falls back to Texture.BLANK, i.e. to the old square, rather than
+        // handing the shader a handle it would discard every light for). It has no file behind it,
+        // so it must be filled before it is queued — which is what LightEmitter.load does.
+        LightEmitter.load(engine)
 
         DiveLighting.setup(engine)
 

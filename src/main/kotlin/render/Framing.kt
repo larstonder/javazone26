@@ -65,13 +65,18 @@ object Framing
      * and smear adjacent frames together — so there is no mip chain to absorb it and the high
      * frequencies in the normal map in particular would alias. At 10% it is 2.1x.
      *
-     * FOUR THINGS SIT AT A FIXED DISTANCE FROM THE DIVER AND NONE OF THEM SCALES WITH THIS.
+     * THINGS SIT AT A FIXED DISTANCE FROM THE DIVER AND NONE OF THEM SCALES WITH THIS.
      * Changing it means re-checking each: `Hud.AIR_RING_RADIUS_METRES` (the bubble ring orbits
-     * him), `Hud.HELD_OFFSET_METRES` (the held count hangs below him),
-     * `DiveLighting.DIVER_LIGHT_SIZE_METRES` (his torch's emitting quad — tied to this constant,
-     * so that one does follow), and `Tuning.PEARL_PICKUP_RADIUS` / `AIR_POCKET_PICKUP_RADIUS`,
-     * which are GAMEPLAY and must not be touched from here. See `DiverSpriteTest`'s ring-clearance
-     * case for the first, and this task's report for the pickup-radius consequence.
+     * him), `Hud.HELD_OFFSET_METRES` (the held count hangs below him), and
+     * `Tuning.PEARL_PICKUP_RADIUS` / `AIR_POCKET_PICKUP_RADIUS`, which are GAMEPLAY and must not
+     * be touched from here. See `DiverSpriteTest`'s ring-clearance case for the first, and this
+     * task's report for the pickup-radius consequence.
+     *
+     * `DiveLighting.DIVER_LIGHT_SIZE_METRES` USED TO BE TIED TO THIS AND DELIBERATELY IS NOT ANY
+     * MORE — do not re-tie it. A light's emitter quad is a region that rasterises into the scene,
+     * so a body-sized emitter is seen as a patch of light rather than as a source; that coupling
+     * is what put a hard-edged rectangle around the diver. It is a torch head now, at its own
+     * 1.2 m, and `DiveLightingTest` fails the build if it ever grows back toward this constant.
      */
     const val DIVER_HEIGHT_METRES = 6f
     const val PEARL_SIZE_METRES = 1.2f
