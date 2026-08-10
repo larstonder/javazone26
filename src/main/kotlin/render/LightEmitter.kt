@@ -9,7 +9,9 @@ import no.njoh.pulseengine.core.graphics.api.TextureWrapping
 import no.njoh.pulseengine.core.shared.utils.Logger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -221,12 +223,210 @@ object LightEmitter
         maxMipLevels = 1
     )
 
-    /** Fills the texture and queues it for upload. Called once, from `EnPustTil.onCreate`. */
+    /** Fills both textures and queues them for upload. Called once, from `EnPustTil.onCreate`. */
     fun load(engine: PulseEngine)
     {
         texture.loadFrom(buildPixels(), TEXELS, TEXELS)
         engine.asset.load(texture)
+        shaftTexture.loadFrom(buildShaftPixels(), TEXELS, TEXELS)
+        engine.asset.load(shaftTexture)
     }
+
+    // --- The SHAFT emitter: the same profile, in the other channel ---------------------------
+
+    /**
+     * # THE GOD RAYS EMIT FROM A SECOND TEXTURE, AND ITS FALLOFF IS IN RGB — THE EXACT OPPOSITE
+     * OF EVERYTHING ABOVE. This is the one place in the file where the reasoning inverts, so it
+     * is worth being explicit about why the rule that governs [alphaAt] does not govern here.
+     *
+     * The rule above is: a pearl's light is only ever seen FROM OUTSIDE, radiance is sampled
+     * where a ray HITS the emitter (i.e. on its rim), so a colour ramp that reaches zero at the
+     * rim scales every escaping ray to zero. Shape must therefore live in alpha.
+     *
+     * A shaft is the one light in this game the player is meant to look at the INSIDE of. And the
+     * inside of an emitter is not sampled on its rim: the local SDF is signed, `raymarch` steps by
+     * `max(0.0, sdf)`, so a probe INSIDE an emitter takes a zero first step, trips
+     * `stepSize <= MIN_STEP` immediately and samples the scene AT ITS OWN TEXEL
+     * (`radiance_cascades.frag`). What a shaft looks like from the inside is therefore, texel for
+     * texel, this texture's RGB times `intensity` — the property that made the pearls' 3 m
+     * emitter a visible flat shelf with a hard rim (`DiveLighting.PEARL_LIGHT_SIZE_METRES` has
+     * that measurement) is here the entire mechanism the effect is built on.
+     *
+     * So the shape goes in RGB, where it can be a smooth gradient, and ALPHA becomes a plain
+     * silhouette whose only job is to cut where there is nothing left to cut — [SHAFT_SILHOUETTE_RGB]
+     * states that as a radiance rather than as a radius so the two channels cannot be re-tuned out
+     * of step. `LightShaftsTest` asserts the two emitters as OPPOSITES, channel for channel,
+     * because building this one the way the pearl's is built gives a flat-topped bar of light with
+     * a hard rim, which looks at a glance like a rendering bug rather than like a wrong channel.
+     *
+     * WHAT IT COSTS, DELIBERATELY: with RGB falling to nothing at the rim, a shaft casts far less
+     * into the water AROUND it than its own brightness suggests — the failure mode this file warns
+     * about for pearls, wanted here. A shaft that lit its surroundings evenly would be a sixty
+     * metre area light, and the guard rail on this whole feature (spec 11, 6b) is that the deep
+     * must not be lifted.
+     *
+     * The profile is SEPARABLE — see [SHAFT_FADE_IN_END] for what a radial one looked like when it
+     * was built and captured, and why a shaft's two axes are not the same problem.
+     */
+    /**
+     * Where along the shaft the fade-in from the surface finishes, and where the fade-out to
+     * nothing finishes, in half-texture units running from -1 at the SURFACE end of the quad to
+     * +1 at the deep end.
+     *
+     * ASYMMETRIC ON PURPOSE, and it is the reason the profile below is separable rather than
+     * radial. A radial falloff — the obvious thing, and what this was built as first — makes the
+     * shaft an ELLIPSE: brightest halfway down its own length and tapering at both ends. Captured,
+     * five of those read as blue almond-shaped slabs hanging in the water rather than as light
+     * coming in from above. A shaft has to be strongest where it enters and weakest where it runs
+     * out, which is a property of one axis and not of a radius.
+     *
+     * The short fade-in exists so the shaft does not begin with a hard bright cap sitting exactly
+     * on the surface line, which reads as a spotlight aimed downward.
+     *
+     * WHICH END OF THE QUAD IS THE SURFACE was established by capture, not assumed: `scene.vert`
+     * maps `texCoord = vertexPos` with the quad's local +y (v = 1) along the rotated `h` axis,
+     * which in world space is `(sin a, cos a)` and therefore points DEEPER (see `LightShafts`).
+     * v = 0 is the surface end, so `ny = 2v - 1` runs -1 at the surface to +1 at the bottom. The
+     * upload's own row order could still have flipped that, so it was checked against a frame.
+     */
+    const val SHAFT_FADE_IN_END = -0.94f
+    const val SHAFT_FADE_OUT_END = 1.0f
+
+    /**
+     * The radiance at which the hard `texColor.a < 0.5` discard is placed — the shaft's edge,
+     * stated as a fraction of peak brightness rather than as a radius, so it cannot drift out of
+     * step with [shaftRgbAt] if the profile is ever re-tuned.
+     *
+     * 0.10 rather than the 0.02 this was built with, and the difference was measured. The
+     * silhouette is BOTH what is drawn and what blocks every other light, so the two cannot be
+     * tuned apart: at 0.02 it reached out into the flank where the shaft contributes nothing worth
+     * looking at while still occluding at full strength, and a same-build on/off pair had 30% of
+     * the frame DARKER with the shafts in than without them. At 0.10 that is 1.0%. Everything
+     * between the two contours was pure cost.
+     */
+    const val SHAFT_SILHOUETTE_RGB = 0.10f
+
+    /**
+     * # THE SHAFT'S ALPHA IS CAPPED BELOW 0.8, AND THAT NUMBER IS THE ENGINE'S, NOT A TASTE
+     *
+     * `final.frag` decides whether a texel is covered by scene GEOMETRY and, if it is, replaces
+     * the lighting there outright:
+     *
+     * ```
+     * final.frag:32-46   bool isOccluder = scene.a > 0.8;
+     *                    if (isOccluder) { if (isLightSource) light *= sourceIntensity; ... }
+     * ```
+     *
+     * That is right for every other light in this game: a pearl's emitter sits ON the pearl and the
+     * torch's ON the diver, so the texels it covers really are a surface, and lighting a surface by
+     * its own source's intensity is what makes a light source look lit.
+     *
+     * A shaft covers OPEN WATER. Nothing is there — and the pearls and the diver that swim through
+     * it are emphatically not part of it. Left at full alpha, `light *= sourceIntensity` scaled
+     * everything inside a shaft by that shaft's own `DiveLighting.shaftIntensityForDepth`, which
+     * the depth ramp drives below 1, so a shaft DARKENED whatever it contained — and did it
+     * proportionally to how deep the shaft reached. Capping the alpha just under the engine's
+     * threshold is how you say "emit here, but this is not a surface": `scene.frag`'s discard and
+     * `jfa_seed.frag`'s seed both threshold at 0.5, so 0.75 is fully drawn and fully seeded into
+     * the SDF, while `final.frag` leaves the water inside the shaft alone.
+     *
+     * It does NOT buy back the ray occlusion — the shaft is still a region in the SDF and a ray
+     * that hits it stops there. That is inherent to being a light in this renderer at all, and the
+     * lever for it is [SHAFT_SILHOUETTE_RGB], not this.
+     */
+    const val SHAFT_ALPHA_CEILING = 0.75f
+
+    /**
+     * The shaft's radiance at [nx], [ny] in half-texture units: a transverse profile across the
+     * shaft's width times a longitudinal one along its length. Separable, for the reason
+     * [SHAFT_FADE_IN_END] gives.
+     *
+     * The transverse profile always spans the full half-width, i.e. a shaft is exactly as wide as
+     * the quad `DiveLighting` submits — there is deliberately no "core width" fraction here,
+     * because `LightShafts.width` already is that number and a second one would only give two
+     * places to set it from.
+     */
+    fun shaftRgbAt(nx: Float, ny: Float): Float
+    {
+        val across = smootherFalloff(abs(nx).coerceAtMost(1f)).pow(SHAFT_CORE_SHARPNESS)
+        val along = when
+        {
+            ny <= SHAFT_FADE_IN_END ->
+                1f - smootherFalloff(((ny + 1f) / (SHAFT_FADE_IN_END + 1f)).coerceIn(0f, 1f))
+            else ->
+                smootherFalloff(((ny - SHAFT_FADE_IN_END) / (SHAFT_FADE_OUT_END - SHAFT_FADE_IN_END)).coerceIn(0f, 1f))
+        }
+        return across * along
+    }
+
+    /**
+     * The shaft's silhouette: a linear ramp in RADIANCE that reaches 0.5 — the engine's discard
+     * threshold, thresholded identically in `scene.frag` and `jfa_seed.frag`, which must agree —
+     * at exactly [SHAFT_SILHOUETTE_RGB], and holds at [SHAFT_ALPHA_CEILING] above 1.5x that.
+     *
+     * A RAMP rather than a step for the reason [ALPHA_RAMP_INNER] gives: `GiSceneRenderer` samples
+     * with LINEAR filtering and the SDF is seeded from the same threshold, so a one-texel cliff
+     * aliases into a ragged edge that moves as the shaft is sampled at different scales.
+     */
+    fun shaftAlphaAt(nx: Float, ny: Float): Float =
+        (shaftRgbAt(nx, ny) * 0.5f / SHAFT_SILHOUETTE_RGB).coerceAtMost(SHAFT_ALPHA_CEILING)
+
+    /**
+     * How concentrated the shaft is on its own spine. 1 is a plain smoothstep, which captured as a
+     * uniformly filled blue rod; raising it pulls the brightness into a core with a long dim flank,
+     * which is what makes a band of light read as a shaft of it rather than as an object.
+     */
+    const val SHAFT_CORE_SHARPNESS = 1.9f
+
+    /** `1 - smoothstep(0, 1, t)`, i.e. 1 at the centre falling to 0 at the edge. */
+    private fun smootherFalloff(t: Float) = 1f - t * t * (3f - 2f * t)
+
+    /** @see buildPixels — same layout, same texel-centre sampling, both channels populated. */
+    fun buildShaftPixels(): ByteBuffer
+    {
+        val buffer = ByteBuffer.allocateDirect(TEXELS * TEXELS * 4).order(ByteOrder.nativeOrder())
+        for (y in 0 until TEXELS)
+        {
+            val ny = (y + 0.5f) / TEXELS * 2f - 1f
+            for (x in 0 until TEXELS)
+            {
+                val nx = (x + 0.5f) / TEXELS * 2f - 1f
+                val rgb = (shaftRgbAt(nx, ny) * 255f).roundToInt().coerceIn(0, 255).toByte()
+                buffer.put(rgb)
+                buffer.put(rgb)
+                buffer.put(rgb)
+                buffer.put((shaftAlphaAt(nx, ny) * 255f).roundToInt().coerceIn(0, 255).toByte())
+            }
+        }
+        buffer.flip()
+        return buffer
+    }
+
+    /** @see texture — same format and the same reasons; a separate asset because a shaft is a
+     *  different shape, not a differently sized one. */
+    val shaftTexture = Texture(
+        filePath = "",
+        name = "gi_light_shaft",
+        initWidth = TEXELS,
+        initHeight = TEXELS,
+        filter = TextureFilter.LINEAR,
+        wrapping = TextureWrapping.CLAMP_TO_EDGE,
+        format = TextureFormat.RGBA8,
+        maxMipLevels = 1
+    )
+
+    /**
+     * The shaft texture, or NULL while the upload is still in flight — and null means "draw no
+     * shafts this frame", not "fall back to BLANK".
+     *
+     * [emitter] falls back because a square pearl glow for a few frames is worse-looking than a
+     * round one and nothing else. The same fallback here would be a full-quad, full-radiance
+     * RECTANGLE 50 m long across the shallows, which is not a degraded shaft — it is a bright
+     * white bar and would read as a crash. Scenery that is absent for three frames at boot is
+     * strictly better, and unlike the pearls there is no gameplay riding on it, so this one
+     * fails silent rather than loud.
+     */
+    fun shaftEmitter(): Texture? = shaftTexture.takeIf { it.handle != TextureHandle.INVALID }
 
     /**
      * Ten seconds at 60 fps before the missing emitter is said out loud — the same budget, and the
