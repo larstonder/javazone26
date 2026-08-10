@@ -236,11 +236,44 @@ object DiveLighting
      * is the direction he is going.
      */
     internal fun torchX(diverX: Float, headingDegrees: Float): Float =
-        diverX + torchOffsetMetres() * cos(Math.toRadians(headingDegrees.toDouble())).toFloat()
+        diverX + torchOffsetX(headingDegrees, unitsPerMetre = 1f)
 
     /** @see torchX — world y is depth and runs DOWN, hence the negated `sin`. */
     internal fun torchDepth(diverDepth: Float, headingDegrees: Float): Float =
-        diverDepth - torchOffsetMetres() * sin(Math.toRadians(headingDegrees.toDouble())).toFloat()
+        diverDepth + torchOffsetY(headingDegrees, unitsPerMetre = 1f)
+
+    /**
+     * The torch's displacement from the diver's centre, expressed in whatever unit
+     * [unitsPerMetre] converts a metre into — 1 for world metres, `pixelsPerMetre` for the HUD's
+     * screen pixels.
+     *
+     * ## Why the scale is a parameter rather than two derivations
+     *
+     * The torch is now needed in TWO spaces. `DiveRenderer` needs it in world metres, both to
+     * emit the light ([drawDiverBeam]) and to tell the iridescence shader where the light is;
+     * `Hud` needs the same point in screen pixels, because the air ring's bubbles are drawn on
+     * the HUD surface and are lit by the same torch (see `shaders/iridescence.frag` for why the
+     * bearing to the torch is what drives the effect at all).
+     *
+     * Two spaces, one point. Deriving it twice — `sim.x + offset * cos(...)` on one side and
+     * `diverScreenX + offset * ppm * cos(...)` on the other — is exactly the duplicated
+     * derivation that produced the shipped world-offset-from-HUD bug (`6ea1f53`), and here it
+     * would show as the pearls' colour bands and the ring's shimmer disagreeing about which way
+     * the diver is facing. So the offset is computed once and scaled, and both `torchX`/
+     * `torchDepth` above are now thin wrappers over the same two functions the HUD calls with a
+     * different scale. There is one trigonometric expression per axis in this file.
+     *
+     * THE Y NEGATION LIVES HERE, once. [beamAngleDeg] is in `GiSceneRenderer`'s convention
+     * (counter-clockwise from +x with +y UP), while world y IS depth and runs DOWN — and screen
+     * y on the HUD surface runs down too, for the same reason. So the identical negation is
+     * correct in both spaces, which is the second half of why one function can serve them.
+     */
+    internal fun torchOffsetX(headingDegrees: Float, unitsPerMetre: Float): Float =
+        torchOffsetMetres() * unitsPerMetre * cos(Math.toRadians(headingDegrees.toDouble())).toFloat()
+
+    /** @see torchOffsetX — y runs DOWN in both spaces, hence the negated `sin`. */
+    internal fun torchOffsetY(headingDegrees: Float, unitsPerMetre: Float): Float =
+        -torchOffsetMetres() * unitsPerMetre * sin(Math.toRadians(headingDegrees.toDouble())).toFloat()
 
     /**
      * How many metres of water around an occluder GI's ambient occlusion darkens. A plain

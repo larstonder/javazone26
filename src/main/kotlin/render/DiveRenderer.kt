@@ -211,12 +211,25 @@ object DiveRenderer
         val worldRight = bottomRight.x
         val worldBottom = bottomRight.y
 
+        // The iridescence renderer, and the torch that drives it, are resolved ONCE for the
+        // whole frame and handed down — the same arrangement as `cam` and `normalMaps` above,
+        // and for the stronger of the two reasons: a pearl and the lure disguised as one must
+        // provably be lit from the same point, and the light's own emitter (DiveLighting
+        // .drawDiverBeam) derives that point from these very functions. Null until the renderer
+        // has been attached (frame one) or if its shader failed to compile — see
+        // IridescenceRenderer's class doc; both draws below fall back to a flat square.
+        val iridescence = IridescenceRenderer.of(surface)
+        iridescence?.setLightSource(
+            DiveLighting.torchX(sim.x, aimDegrees),
+            DiveLighting.torchDepth(sim.depth, aimDegrees)
+        )
+
         drawZoneBands(surface, worldLeft, worldTop, worldRight, worldBottom)
         drawColumnWalls(surface, worldLeft, worldTop, worldRight, worldBottom)
         drawSurfaceLine(surface, worldLeft, worldRight)
         drawAirPockets(surface, sim, cam)
-        drawPearls(surface, sim, cam)
-        drawAnglerfish(surface, sim, cam)
+        drawPearls(surface, sim, cam, iridescence)
+        drawAnglerfish(surface, sim, cam, iridescence)
         drawDiver(surface, sim, cam, normalMaps, aimDegrees)
     }
 
@@ -369,14 +382,13 @@ object DiveRenderer
         }
     }
 
-    private fun drawPearls(surface: Surface, sim: DiveSim, cam: Camera)
+    private fun drawPearls(surface: Surface, sim: DiveSim, cam: Camera, iridescence: IridescenceRenderer?)
     {
         val size = Framing.PEARL_SIZE_METRES
-        surface.setDrawColor(pearlColor)
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
             if (!cam.showsSquare(pearl.x, pearl.depth, size)) return@forEach
-            surface.fillRectCentred(pearl.x, pearl.depth, size, size)
+            drawPearlSurface(surface, iridescence, pearl.x, pearl.depth)
         }
     }
 
@@ -384,14 +396,48 @@ object DiveRenderer
      * The anglerfish's lure. Drawn IDENTICALLY to a pearl, deliberately — in the Abyss,
      * where pearls are the only light, you cannot tell treasure from predator by looking.
      * The tell is motion: a real pearl never moves, this drifts slowly toward the diver.
+     *
+     * IT IS THE SAME CALL, NOT THE SAME-LOOKING CALL. This used to be a copy of the pearl's
+     * three lines, which was fine while a pearl was a flat amber square and stopped being fine
+     * the moment a pearl grew a material of its own: two copies of "amber, this size" can be
+     * edited apart, and if the lure keeps the old look for even one commit the trap is over —
+     * a player who can tell them apart at a glance never gets eaten, and the abyss's whole
+     * risk stops existing. So both go through [drawPearlSurface], and
+     * `AnglerfishDisguiseTest` fails the build if this method ever draws anything else.
      */
-    private fun drawAnglerfish(surface: Surface, sim: DiveSim, cam: Camera)
+    private fun drawAnglerfish(surface: Surface, sim: DiveSim, cam: Camera, iridescence: IridescenceRenderer?)
     {
         val fish = sim.anglerfish ?: return
+        if (!cam.showsSquare(fish.x, fish.depth, Framing.PEARL_SIZE_METRES)) return
+        drawPearlSurface(surface, iridescence, fish.x, fish.depth)
+    }
+
+    /**
+     * ONE pearl-surfaced object at world ([centreX], [depth]) — a real pearl or the lure, and by
+     * construction there is no way to tell which from what is drawn.
+     *
+     * Iridescent through the game's own shader (`shaders/iridescence.frag`), which also gives it
+     * its round silhouette: the shader builds a hemisphere normal across the quad and discards
+     * the corners, so what a flat `fillRectCentred` here would have made a square comes out as a
+     * small nacreous sphere whose colour bands sweep as the diver's torch passes over it.
+     *
+     * THE FALLBACK IS THE OLD LOOK, NOT A MISSING PEARL. `IridescenceRenderer.of` is null on the
+     * first frame (the engine defers `addRenderer`'s init by a frame) and would be null again if
+     * the shader ever failed to load. A pearl is the game's currency and the abyss's only light;
+     * it may degrade to the flat amber square it has always been, and it may never be absent.
+     *
+     * The draw colour is set on every call rather than hoisted out of the pearl loop, because
+     * `drawTexture` MODULATES by it and the fallback path shares it with every other primitive
+     * on this surface — the same trap `drawDiver` documents in the other direction.
+     */
+    private fun drawPearlSurface(surface: Surface, iridescence: IridescenceRenderer?, centreX: Float, depth: Float)
+    {
         val size = Framing.PEARL_SIZE_METRES
-        if (!cam.showsSquare(fish.x, fish.depth, size)) return
         surface.setDrawColor(pearlColor)
-        surface.fillRectCentred(fish.x, fish.depth, size, size)
+        if (iridescence != null)
+            iridescence.draw(centreX, depth, size, size, IridescentMaterial.PEARL)
+        else
+            surface.fillRectCentred(centreX, depth, size, size)
     }
 
     /**

@@ -22,6 +22,7 @@ import render.DiveLighting
 import render.DiveRenderer
 import render.DiverSprite
 import render.Hud
+import render.IridescenceRenderer
 import render.LightEmitter
 import render.RunLifecycle
 import render.RunLifecycleState
@@ -589,6 +590,24 @@ class EnPustTil : PulseEngineGame()
             zOrder = HUD_Z_ORDER
         )
 
+        // THE GAME'S OWN SHADER, on both surfaces — one program, two coordinate spaces.
+        //
+        // `IridescenceRenderer` is a `BatchRenderer`, so it belongs to a SURFACE and is handed
+        // that surface when it draws. Attaching one instance here and one below is what lets a
+        // world-space pearl in metres and a screen-space air bubble in pixels come out of the
+        // same GLSL: each instance uploads its own surface's `viewProjection`, exactly as the
+        // engine's `TextureRenderer` already does for `fillRect` on both. See that class's doc
+        // — this is the extension path for every custom shader that follows, and it is
+        // deliberately NOT a `PostProcessingEffect`, which would be a whole-screen filter
+        // rather than a per-object surface property.
+        //
+        // Attached AFTER DiveLighting.setup so that GI's own surfaces already exist and this
+        // cannot be confused for one of them; the engine defers the actual `init` to the top of
+        // the next frame either way (`SurfaceImpl.addRenderer` queues it), which is why both
+        // call sites tolerate a null renderer for one frame.
+        IridescenceRenderer.addTo(engine.gfx.mainSurface)
+        IridescenceRenderer.addTo(hudSurface)
+
         System.getenv("EPT_SCREENSHOT")?.let {
             engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
             hudSurface.addPostProcessingEffect(render.ScreenshotEffect(it.replace(".png", "") + "-hud"))
@@ -890,7 +909,7 @@ class EnPustTil : PulseEngineGame()
         {
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
 
-            RunLifecycleState.PLAYING -> Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
+            RunLifecycleState.PLAYING -> Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
 
             // The screen underneath is drawn FIRST and in full, then dimmed by the pause
             // screen's own scrim. A paused run keeps its HUD — a stopped clock and a full
@@ -900,19 +919,19 @@ class EnPustTil : PulseEngineGame()
             RunLifecycleState.PAUSED ->
             {
                 if (lifecycle.pausedFromIdle) drawIdleScreen(hud, w, h)
-                else Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
+                else Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
                 drawPauseScreen(hud, w, h)
             }
 
             RunLifecycleState.RUN_OVER ->
             {
-                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
+                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
                 drawRunOverScreen(hud, w, h)
             }
 
             RunLifecycleState.ENTER_INITIALS ->
             {
-                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h)
+                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
                 drawInitialsEntryScreen(hud, w, h)
             }
         }

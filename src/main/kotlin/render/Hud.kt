@@ -273,12 +273,13 @@ object Hud
         diverY: Float,
         pixelsPerMetre: Float,
         w: Float,
-        h: Float
+        h: Float,
+        aimDegrees: Float
     )
     {
         drawBanked(surface, sim, h)
         drawClock(surface, sim, w, h)
-        drawAirRing(surface, sim, diverX, diverY, pixelsPerMetre)
+        drawAirRing(surface, sim, diverX, diverY, pixelsPerMetre, aimDegrees)
         drawHeld(surface, sim, diverX, diverY, pixelsPerMetre, h)
         drawDepthTape(surface, sim, w, h)
     }
@@ -318,7 +319,7 @@ object Hud
      * when there is only one bubble left to shout with. All three were defects in earlier
      * versions; each is explained where its constants are declared.
      */
-    private fun drawAirRing(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, ppm: Float)
+    private fun drawAirRing(surface: Surface, sim: DiveSim, diverX: Float, diverY: Float, ppm: Float, aimDegrees: Float)
     {
         val remaining = airBubblesRemaining(sim.air, Tuning.BASE_AIR_SECONDS)
         if (remaining <= 0) return
@@ -332,13 +333,43 @@ object Hud
         // throb in place, which is the actual warning at the moment it matters most.
         val bubbleSize = AIR_BUBBLE_SIZE_METRES * ppm * airBubbleSizeScale(remaining) * pulse
 
+        // THE SAME SHADER AS THE PEARLS, ON THIS SURFACE'S OWN CAMERA. `IridescenceRenderer` is
+        // a `BatchRenderer` attached per-surface, so the instance found here uploads the HUD's
+        // identity camera and everything below stays in screen PIXELS — this file still owns no
+        // coordinate maths and still never sees a metre. See IridescenceRenderer's class doc.
+        //
+        // The torch's position on this surface comes from `DiveLighting.torchOffset*` scaled by
+        // `ppm`, which is the SAME derivation the world renderer uses at scale 1 and the same one
+        // the light itself is emitted from. Deriving the offset again here with a local cos/sin
+        // is the duplicated-derivation shape of the shipped 6ea1f53 bug; it would show up as the
+        // ring's shimmer and the pearls' colour bands disagreeing about which way the diver faces.
+        val iridescence = IridescenceRenderer.of(surface)
+        iridescence?.setLightSource(
+            diverX + DiveLighting.torchOffsetX(aimDegrees, ppm),
+            diverY + DiveLighting.torchOffsetY(aimDegrees, ppm)
+        )
+
+        // The draw colour stays FULLY OPAQUE, unchanged from before this commit. The
+        // translucency is the material's ([IridescentMaterial.BUBBLE]), and it is applied
+        // per-fragment as a curve from the bubble's centre to its rim — which is the point:
+        // authoring it as a flat draw-colour alpha here would fade the SILHOUETTE too, and the
+        // silhouette is what carries the count, the clockwise depletion and the low-air throb.
+        // See that material's doc for how its numbers were chosen against this surface's alpha
+        // behaviour.
         surface.setDrawColor(if (low) danger else cold)
+
         for (slot in firstOccupiedSlot(remaining) until AIR_BUBBLE_COUNT)
         {
             val angle = airBubbleSlotAngle(slot)
             val bx = diverX + cos(angle) * radius
             val by = diverY + sin(angle) * radius
-            surface.fillRectCentred(bx, by, bubbleSize, bubbleSize)
+            // Flat square fallback — identical to what shipped before this commit — for the
+            // first frame, before the engine has run the deferred `addRenderer` init. The ring
+            // is the game's only air warning and must never be the thing that is missing.
+            if (iridescence != null)
+                iridescence.draw(bx, by, bubbleSize, bubbleSize, IridescentMaterial.BUBBLE)
+            else
+                surface.fillRectCentred(bx, by, bubbleSize, bubbleSize)
         }
     }
 
