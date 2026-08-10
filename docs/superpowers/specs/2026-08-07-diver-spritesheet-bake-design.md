@@ -316,6 +316,31 @@ copied from the bake rather than retyped.
   search rather than assumed cheap.
 - Any other sprite set — pearls, air pockets and the anglerfish are still primitives.
 
+### Two things the render-wiring branch must settle first
+
+Both surfaced in the final whole-branch review, from engine bytecode. Neither changes what the
+bake produces, and neither blocks this work — but both are cheaper to know now than to discover
+at the booth.
+
+**VRAM: these two sheets cost roughly 503 MB of eager allocation, not the 16 MB a naive
+`w x h x 4` suggests.** The 2048 bucket's `DEFAULT_CAPACITIES` capacity is **15** for both
+SRGBA8 and RGBA8, and `TextureArray.init` allocates every layer up front, so each sheet creates
+a 2048x2048x15 array whether the layers are used or not. They will *not* share an array with
+anything existing: `getOrCreateTextureArrayFor` requires matching filter, wrapping **and**
+`maxMipLevels`, and these sheets use LINEAR / CLAMP_TO_EDGE / 1 against the engine defaults of
+LINEAR_MIPMAP / REPEAT / 5. Dropping to `--frame-height 256` reaches the 1024 bucket but its
+capacity is 50, giving ~419 MB - not a clean win. The grid search already minimises the bucket,
+which is the right lever; there is no better one available from the bake side. This needs
+measuring on the actual booth GPU before the sheets are wired in.
+
+**The normal map's green-channel Y convention is unverified against the consumer.** The game's
+world is +y **down** (see CLAUDE.md's architecture table), and a tangent-space normal map that
+assumes +y up will light the diver as though the key light came from the opposite side. The bake
+preserves whatever convention the source art uses; it does not and should not guess. `qa.py`'s
+`normal-relit.gif` is the diagnostic - if the highlight travels the wrong way around the body as
+the light sweeps, the green channel needs flipping, and that flip belongs in the renderer or in
+a re-export, not in the bake.
+
 Not out of scope any more: **how the normal map reaches the lighting pass is known.** CLAUDE.md
 and `render/Draw.kt` document it as the same world rect submitted twice — albedo to `main` via
 `drawTexture`, normal to `gi_normal_map` via `NormalMapRenderer.drawNormalMap` — with an identical
