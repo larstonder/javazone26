@@ -80,15 +80,48 @@ import kotlin.math.sin
 object DiveLighting
 {
     private val pearlLight = Color(1f, 0.82f, 0.45f)
-    private val diverLight = Color(0.6f, 0.85f, 1f)
+
+    /** Internal only so [shaftLight] can be asserted against it — see there. */
+    internal val diverLight = Color(0.6f, 0.85f, 1f)
 
     /**
-     * The god rays. A cold, desaturated daylight — the colour of the surface seen from below, and
-     * deliberately NOT the torch's [diverLight], which is a warmer lamp-blue. Two lights that are
-     * the same colour are one light with a gap in it, and the shafts have to read as coming from
-     * somewhere the diver is not.
+     * The god rays. WARM, and it used to be cold — `f2f2eaa` shipped `(0.66, 0.86, 1)` on the
+     * reasoning that daylight seen from below is blue and that the shafts had to differ from the
+     * torch. Half of that survives and half does not.
+     *
+     * What does not: the sky above this water is becoming a SUNSET. Light entering from a low sun
+     * is warm before the water has had any depth in which to take the red out of it, and a shaft
+     * is by definition the part of it that has travelled least — so cold shafts under a warm sky
+     * were the one combination that reads as two unrelated pictures.
+     *
+     * What does: it must not be the torch's [diverLight], which is a lamp-blue. Two lights the
+     * same colour are one light with a gap in it, and the shafts have to read as coming from
+     * somewhere the diver is not. With the torch cold and the shafts warm the two are now further
+     * apart than they were, not closer, so the original constraint is better served by inverting
+     * it than it was by obeying it.
+     *
+     * The red is at 1 and the blue is pulled well down, rather than red being lifted: GI is a
+     * MULTIPLY against water albedo that is itself blue in the shallows (see [ambientRed] and
+     * friends), so a warm light on blue water comes back toward neutral. The colour has to be
+     * warmer than the intended result by roughly that much, and `LightShaftsTest` pins only the
+     * ordering — that the shafts are warm and the torch is cold — because that is the requirement
+     * and these three numbers are taste.
      */
-    private val shaftLight = Color(0.66f, 0.86f, 1f)
+    internal val shaftLight = Color(1f, 0.74f, 0.45f, SHAFT_PEAK_OPACITY)
+
+    /**
+     * The alpha a band reaches where it is at full crest, at the surface, before the depth ramp.
+     * It rides in [shaftLight]'s alpha channel because that is how a draw colour reaches
+     * `godrays.frag` — the packed `config.currentDrawColor` — and having it anywhere else would
+     * be a second place to set the same thing.
+     *
+     * THIS IS THE LEVEL, and it is the number measured against the deep. `mainSurface` composites
+     * with NORMAL alpha blending, so a band is `dst + a * (tint - dst)`: bounded above by the
+     * tint, which is what stops a stack of overlapping crests blowing out, and very close to a
+     * plain add while the water under it is much darker than the tint (which it is everywhere
+     * these are drawn). See this task's report for the sweep against a same-build control pair.
+     */
+    private const val SHAFT_PEAK_OPACITY = 0.7f
 
     /**
      * A pearl's emitter: the size of the QUAD it emits from, in metres.
@@ -765,6 +798,19 @@ object DiveLighting
             BloomEffect().apply { intensity = 1.2f; radius = 0f; threshold = 1.4f }
         )
 
+        // The god rays. A custom BatchRenderer on the WORLD surface — not a light, and not a
+        // surface of its own: GI's composite is `base + light` (final.frag:57), so albedo here
+        // survives into the deep and there is nothing to escape from. See `ShaftRenderer` and
+        // `LightShafts` for the correction to CLAUDE.md's "GI multiplies mainSurface" and for
+        // what these give up by no longer being lights.
+        //
+        // Added AFTER both effects above only for readability — a batch renderer and a
+        // post-processing effect are different lists and cannot interleave. It is added after
+        // whatever DiveRenderer has already attached, though, and batch renderers run in the
+        // order they were ADDED: that is why ShaftRenderer.draw participates in the shared depth
+        // cursor rather than relying on call order.
+        ShaftRenderer.addTo(engine.gfx.mainSurface)
+
         engine.scene.start()
     }
 
@@ -815,9 +861,12 @@ object DiveLighting
         val surface = engine.gfx.getSurface(GlobalIlluminationSystem.GI_LOCAL_SCENE) ?: return
         val renderer = surface.getRenderer<GiSceneRenderer>() ?: return
 
-        // Shafts first only because they are the background of the light budget; GiSceneRenderer
-        // batches every drawLight below and the submission order has no effect on the result.
-        drawLightShafts(surface, renderer, cam)
+        // The god rays are NOT a drawLight and are not on this surface at all — they are albedo
+        // strips on mainSurface (see [drawLightShafts] and `LightShafts`). They are issued from
+        // here because this is the render-clock call that already has the camera in hand, and
+        // because DiveRenderer has finished with mainSurface by now, which is what puts them in
+        // front of the world.
+        drawLightShafts(engine, cam)
         drawPearlLights(surface, renderer, sim, cam)
         drawAnglerfishLight(surface, renderer, sim, cam)
         drawDiverBeam(surface, renderer, sim, cam)
@@ -856,62 +905,60 @@ object DiveLighting
     internal const val LIGHT_CULL_MARGIN_METRES = 3f
 
     /**
-     * The god rays — see `LightShafts` for where they are and why they are lights rather than
-     * paint, and [LightEmitter.shaftRgbAt] for why they emit from a texture of their own.
+     * The god rays. `LightShafts` owns the band stack and the history — including why these are
+     * albedo on `mainSurface` rather than `drawLight` calls, which is the one decision on this
+     * feature that has changed twice.
      *
-     * NO `sim` PARAMETER, and that is the design rather than an omission: a shaft is a fixed
-     * feature of the water column. It does not track the diver, it does not know the run state,
-     * and it looks the same in attract mode as it does mid-dive, which is exactly what the owner
+     * NO `sim` PARAMETER, and that is the design rather than an omission: the shafts are a fixed
+     * feature of the water column. They do not track the diver, they do not know the run state,
+     * and they look the same in attract mode as they do mid-dive, which is exactly what the owner
      * is looking at when he sees the mockup.
      *
-     * ## A SHAFT WHOSE RAMP HAS TURNED IT OFF IS NOT SUBMITTED AT ALL
+     * ## A STRIP THAT IS OFF SCREEN IS NOT SUBMITTED, AND THAT IS THE ABYSS GUARD RAIL
      *
-     * The `continue` below is not an optimisation, and the evidence for that is already in this
-     * project's history: `d6faaa5` measured a light submitted with a zero cast making the frame
-     * WORSE (the diver's luma went 14.777 -> 13.412 at 10 m) because a light quad is a REGION in
-     * the local scene and takes part in the SDF the cascades march against whatever colour it is.
-     * A black region occludes. Five 50 m occluders hanging across the shallows would be a far
-     * bigger version of that fault than one rim quad was, so the shafts are skipped rather than
-     * dimmed to nothing, and the same `continue` is what keeps the Abyss exactly as dark as it
-     * was — the guard rail is enforced by not drawing, not by drawing something small.
+     * The depth ramp reaches exactly zero only at the Abyss's own midpoint, 135 m, and "nearly
+     * zero times a warm colour" is still a lift a frame mean can measure. `f2f2eaa` got its
+     * +0.00% in the Abyss because its five shafts were simply not on screen at 140 m, not because
+     * of its ramp. That has to be reproduced deliberately now the overlay is a band of geometry:
+     * the strips stop at `LightShafts.END_DEPTH_METRES`, so at 140 m — where the top of the frame
+     * is 116 m — this loop submits nothing at all and the Abyss is untouched by construction.
+     * `LightShafts.tailFade` is what stops that cut ever being visible as a horizontal line.
      *
-     * ## THEY DO NOT DRIFT, AND THAT IS A DECISION
+     * ## THE ANIMATION CLOCK IS ADVANCED HERE, ONCE
      *
-     * Slow lateral movement would sell the caustic. The only clock in this codebase that a moving
-     * shaft could legitimately use is the fixed tick inside `RunLifecycle.simulationAdvances` —
-     * `DiverSprite.loopPhase` argues that case in full, and the argument is airtight: any other
-     * clock either keeps running through a pause or makes a pinned capture irreproducible, and
-     * `shaders/iridescence.frag` deliberately went without one for the second reason.
-     *
-     * But `simulationAdvances` is FALSE in IDLE, by design, so that an unattended cabinet is not
-     * running a clock all night. The attract screen is precisely where these shafts are meant to
-     * do their work, so a correctly-gated drift would be frozen exactly where it was wanted and
-     * moving only while a player is already busy looking at pearls. That is the wrong half. The
-     * hook is one line if it is ever wanted — advance a phase beside `DiverSprite.advanceLoop`
-     * and add it to `LightShafts.centreX` — but it should come with a second look at whether
-     * attract mode deserves a clock of its own, which is a booth-reliability question and not a
-     * rendering one.
+     * This is the only place in the game holding a render clock, and `LightShafts.advance` is the
+     * only consumer of it. See `LightShafts.PIN_ENV` for why a render clock is right for this and
+     * how a capture is pinned — the short version is that the owner asked for an animation, a
+     * render clock is the only one that runs on the attract screen, and a frozen phase is one
+     * environment variable away.
      */
-    private fun drawLightShafts(surface: Surface, renderer: GiSceneRenderer, cam: Camera)
+    private fun drawLightShafts(engine: PulseEngine, cam: Camera)
     {
-        val emitter = LightEmitter.shaftEmitter() ?: return
-        surface.setDrawColor(shaftLight)
-        for (i in 0 until LightShafts.count)
+        LightShafts.advance(engine.data.deltaTime)
+
+        val surface = engine.gfx.mainSurface
+        val renderer = ShaftRenderer.of(surface) ?: return
+
+        // setTint, NOT surface.setDrawColor: the draw colour is shared state on the surface and
+        // these strips are the last thing drawn to it, so anything it was left at was still there
+        // when DiveRenderer drew the next frame. See ShaftRenderer.setTint — it cost a measurement
+        // to find and it had made a control build lose most of its pearls.
+        renderer.setTint(shaftLight)
+
+        val width = LightShafts.halfWidth() * 2f
+        val height = LightShafts.stripHeight()
+        for (i in 0 until LightShafts.STRIP_COUNT)
         {
-            val depth = LightShafts.centreDepth(i)
-            val intensity = shaftIntensityForDepth(depth)
-            if (intensity <= 0f) continue
+            val top = LightShafts.stripTopDepth(i)
+            if (!cam.isInView(-LightShafts.halfWidth(), top, width, height)) continue
 
-            val x = LightShafts.centreX(i)
-            if (!cam.showsSquare(x, depth, LightShafts.boundingSize(i), LIGHT_CULL_MARGIN_METRES)) continue
-
-            renderer.drawLight(
-                texture = emitter,
-                x = x, y = depth, w = LightShafts.width(i), h = LightShafts.length(i),
-                angle = LightShafts.TILT_DEGREES,
-                intensity = intensity,
-                coneAngle = WIDE_GLOW_CONE_ANGLE,
-                radius = 0f
+            renderer.draw(
+                centreX = 0f,
+                centreDepth = top + height * 0.5f,
+                width = width,
+                height = height,
+                rampTop = shaftRampForDepth(top),
+                rampBottom = shaftRampForDepth(top + height)
             )
         }
     }
@@ -1130,20 +1177,18 @@ object DiveLighting
     internal fun shaftDaylightForDepth(depth: Float): Float = DepthBlend.blend(depth, shaftDaylightByZone)
 
     /**
-     * What a shaft centred at [depth] is handed as `intensity`. A single base level times the
-     * ramp, so there is one number to re-tune and the depth behaviour cannot be re-tuned by
-     * accident along with it.
+     * How much of the god rays survives at [depth]: the daylight that is left, times the
+     * geometric tail that takes the overlay to nothing before its strips run out.
      *
-     * The base was chosen by capture rather than by reasoning — see this task's report for the
-     * sweep. What it is balanced against is the Shallows' frame mean against a same-build control
-     * pair: the shafts have to be visible as shafts without measurably lifting the water they
-     * are not in.
+     * The two factors are separate because they say different things and fail differently. The
+     * first ([shaftDaylightForDepth]) is the guard rail — an arithmetic identity with the ambient
+     * table, so the shafts cannot outlive the daylight. The second (`LightShafts.tailFade`) is
+     * about where we stop DRAWING, and exists only so the bottom edge of the last strip is never
+     * a visible horizontal line. Folding them into one ramp would let a look tweak to the second
+     * silently move the first.
      */
-    internal fun shaftIntensityForDepth(depth: Float): Float =
-        SHAFT_BASE_INTENSITY * shaftDaylightForDepth(depth)
-
-    /** @see shaftIntensityForDepth */
-    private const val SHAFT_BASE_INTENSITY = 1f
+    internal fun shaftRampForDepth(depth: Float): Float =
+        shaftDaylightForDepth(depth) * LightShafts.tailFade(depth)
 
     internal fun pearlIntensityForDepth(depth: Float): Float =
         DepthBlend.blend(depth, pearlIntensityByZone) * PEARL_SIZE_COMPENSATION
