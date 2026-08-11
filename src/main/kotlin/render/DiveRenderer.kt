@@ -244,14 +244,33 @@ object DiveRenderer
             DiveLighting.torchDepth(sim.depth, aimDegrees)
         )
 
-        drawZoneBands(surface, worldLeft, worldTop, worldRight, worldBottom)
+        // THE WATER NO LONGER STARTS AT THE TOP OF THE FRAME, and that is what makes a sky
+        // possible at all. `mainSurface`'s background is transparent and [Sky] is drawn on its own
+        // surface BEHIND this one, so everything above [WaterSurface.QUAD_BOTTOM_DEPTH] is left
+        // for the water quad's alpha ramp to resolve against the sunset. See [WaterSurface] for
+        // why the boundary is one alpha ramp rather than two edges that have to meet.
+        //
+        // Null only on frame one, or if the shader failed to compile. Then the bands run from the
+        // top of the frame exactly as they always did and the flat waterline comes back — i.e. the
+        // game degrades to what it looked like before there was a sky, rather than to a hole.
+        val water = WaterRenderer.of(surface)
+        val bandTop = if (water != null) max(worldTop, WaterSurface.QUAD_BOTTOM_DEPTH) else worldTop
+
+        drawZoneBands(surface, worldLeft, bandTop, worldRight, worldBottom)
         // Between the bands and the walls, and it has to be exactly there. The bands are opaque
         // and cover the whole visible rect, so a backdrop drawn BEFORE them is not behind them,
         // it is invisible; and the walls are opaque too, which is what confines the silhouettes
         // to the column without a single clip test.
         drawBackdrop(surface, cam, worldTop, worldBottom)
+
+        // After the backdrop and before the walls. After, because a silhouette's quad can reach a
+        // few tens of centimetres past the waterline near the surface and the sea has to be in
+        // front of it; before, because the cliffs stand IN the water and must be in front of the
+        // sea.
+        if (water != null) drawWaterSurface(surface, water, worldLeft, worldTop, worldRight, worldBottom)
+        else drawSurfaceLine(surface, worldLeft, worldRight)
+
         drawColumnWalls(surface, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
-        drawSurfaceLine(surface, worldLeft, worldRight)
         drawAirPockets(surface, sim, cam)
         drawPearls(surface, sim, cam, iridescence)
         drawAnglerfish(surface, sim, cam, iridescence)
@@ -561,6 +580,62 @@ object DiveRenderer
     }
 
     /**
+     * The sea's surface: ONE quad, spanning the visible width and the band of depth
+     * [WaterSurface.QUAD_TOP_DEPTH] to [WaterSurface.QUAD_BOTTOM_DEPTH].
+     *
+     * Everything interesting is in `shaders/water.frag` — the wave, the anti-aliased waterline,
+     * the sun on the crests and the glow under them. What lives here is the two things the shader
+     * cannot know: where the quad goes, and what colour the water it has to hand off to is.
+     *
+     * THE HAND-OFF IS THE PART TO GET RIGHT. The quad's bottom edge is exactly where
+     * [drawZoneBands] starts, so the shader is handed [zoneRedAt] and friends sampled at
+     * [Tuning.SURFACE_DEPTH] and at [WaterSurface.QUAD_BOTTOM_DEPTH] and interpolates between
+     * them. At the bottom edge its output IS the first band's colour — not approximately, exactly
+     * — so the two cannot step apart however the zone tables are retuned. This is the same
+     * discipline as [drawDiver]'s copied argument list: the number that must agree is passed
+     * across rather than derived twice.
+     *
+     * CULLED AGAINST THE VISIBLE RECT DIRECTLY rather than through [showsSquare], because the band
+     * is a wide flat strip and a square test against its LARGER side would be uselessly
+     * conservative — it would keep the sea "on screen" for 100 m of the dive. This is the
+     * measurement behind "the sky costs nothing where it is not visible": below about 10 m of
+     * depth this method issues no draw at all, and [Sky.render] issues none either.
+     */
+    private fun drawWaterSurface(
+        surface: Surface,
+        water: WaterRenderer,
+        worldLeft: Float,
+        worldTop: Float,
+        worldRight: Float,
+        worldBottom: Float
+    )
+    {
+        if (worldTop > WaterSurface.QUAD_BOTTOM_DEPTH || worldBottom < WaterSurface.QUAD_TOP_DEPTH) return
+
+        water.setWaterColours(
+            zoneRedAt(Tuning.SURFACE_DEPTH), zoneGreenAt(Tuning.SURFACE_DEPTH), zoneBlueAt(Tuning.SURFACE_DEPTH),
+            zoneRedAt(WaterSurface.QUAD_BOTTOM_DEPTH),
+            zoneGreenAt(WaterSurface.QUAD_BOTTOM_DEPTH),
+            zoneBlueAt(WaterSurface.QUAD_BOTTOM_DEPTH)
+        )
+
+        val height = WaterSurface.QUAD_BOTTOM_DEPTH - WaterSurface.QUAD_TOP_DEPTH
+        water.draw(
+            (worldLeft + worldRight) * 0.5f,
+            WaterSurface.QUAD_TOP_DEPTH + height * 0.5f,
+            worldRight - worldLeft,
+            height
+        )
+    }
+
+    /**
+     * The waterline, as it was before there was a sea: a flat bar. REACHED ONLY when
+     * [WaterRenderer] is absent — frame one, or a shader that would not compile — and kept for
+     * exactly that reason. Without it those frames would have no cue at all for where banking
+     * happens, which is a gameplay cue and not decoration.
+     *
+     * Original doc follows.
+     *
      * The waterline. Without it there is no visual cue for where banking happens.
      *
      * Spans the visible rect horizontally rather than the column, exactly as before: the water's

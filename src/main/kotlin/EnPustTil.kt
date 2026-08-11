@@ -28,6 +28,9 @@ import render.LightEmitter
 import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
+import render.Sky
+import render.WaterRenderer
+import render.WaterSurface
 import render.anyLifecycleActionPressed
 import render.drawTextWithOutline
 import render.fillRect
@@ -507,7 +510,41 @@ class EnPustTil : PulseEngineGame()
         if (System.getenv("EPT_EDITOR") != null)
             engine.service.add(no.njoh.pulseengine.modules.editor.SceneEditor().also { it.start() })
 
-        engine.gfx.mainSurface.setBackgroundColor(0.02f, 0.06f, 0.14f, 1f)
+        // THE WORLD SURFACE IS NOW TRANSPARENT WHERE NOTHING IS DRAWN, and that one line is what
+        // lets a sky exist. It used to be an opaque dark blue, which was fine while `DiveRenderer`
+        // painted zone bands across the whole visible rect — the clear colour was never seen. It
+        // is not fine now: the bands start at `WaterSurface.QUAD_BOTTOM_DEPTH`, everything above
+        // that is the sea's own alpha ramp over the sunset, and an opaque clear colour would put a
+        // flat navy field between the two.
+        //
+        // Transparency survives the whole post chain, all four steps read off the engine jar
+        // rather than assumed: GI's multiply writes `vec4(c0.rgb * c1.rgb, c0.a)`, the bloom's
+        // final pass writes `vec4(src.rgb + bloom, src.a)`, colour grading only ever touches
+        // `.rgb`, and `BackBufferBaseState` composites with `glBlendFunc(GL_SRC_ALPHA,
+        // GL_ONE_MINUS_SRC_ALPHA)` — STRAIGHT alpha, so a transparent world pixel contributes
+        // nothing at all rather than the premultiplied haze it would under `GL_ONE`.
+        engine.gfx.mainSurface.setBackgroundColor(Color.BLANK)
+
+        // ...and the thing that fills the gap that leaves: the sea's surface, on `main` because it
+        // is part of the LIT world and must be multiplied by the light map, unlike the sky.
+        //
+        // ATTACHED HERE, BEFORE `DiveLighting.setup`, AND THE ORDER IS LOAD-BEARING. Batch
+        // renderers are flushed in the order they were ADDED to the surface, not in the order they
+        // were called — and every one of them writes depth, including for fragments it draws at
+        // alpha 0. `DiveLighting.setup` attaches `ShaftRenderer`, whose quads deliberately take a
+        // greater `currentDepth` than the world so the god rays land in front of it; attached
+        // AFTER it, this renderer is flushed after those quads have already written their depth,
+        // and every water fragment underneath a shaft fails `GL_LEQUAL`.
+        //
+        // That is not a hypothesis. Captured at 6 m with the fragment shader forced to a flat
+        // opaque magenta: the quad rasterised for depth -1.5 to 0.0 and vanished completely from
+        // 0.0 to 8.2 — a cut at exactly the depth the shafts start from, and nowhere else. It
+        // costs no error, no warning and no log line, and it looks like a shader bug.
+        //
+        // So the rule, stated once: THE SEA IS PART OF THE WORLD AND MUST BE FLUSHED WITH THE
+        // WORLD. Anything that draws in FRONT of the world belongs after it here.
+        // `SurfaceRendererOrderTest` fails the build if this call moves below `DiveLighting.setup`.
+        WaterRenderer.addTo(engine.gfx.mainSurface)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
 
@@ -619,9 +656,54 @@ class EnPustTil : PulseEngineGame()
         IridescenceRenderer.addTo(engine.gfx.mainSurface)
         IridescenceRenderer.addTo(hudSurface)
 
+        // THE SKY, ON A SURFACE OF ITS OWN AND BEHIND THE WORLD — see `render/Sky.kt`, which has
+        // the whole argument and the light-map measurements behind it. In short: GI multiplies
+        // `mainSurface` by the light map, so a sunset drawn there comes out with the light map
+        // printed across it; `"hud"` escapes the multiply but is composited ON TOP, which would
+        // paint out the cliff tops that rise into the sky. A third surface escapes the multiply
+        // AND stays behind the world.
+        //
+        //   - camera: `engine.gfx.mainCamera`, DELIBERATELY the shared world camera and the exact
+        //     opposite of the HUD's `null` two calls up. The sky's only interesting edge is the
+        //     waterline, which is a world DEPTH; sharing the camera puts the sky through the same
+        //     matrix as the water, built once per frame in `gfx.initFrame`, so the two cannot
+        //     drift for the same structural reason a light cannot drift from what it lights. This
+        //     is a READ of the camera — `MainCameraOwnershipTest` allows this file to read it and
+        //     separately forbids anything outside `CameraRig` from writing a transform.
+        //   - zOrder: `main`'s plus `Sky.Z_ORDER_OFFSET`. `GraphicsImpl` composites sorted by
+        //     `-zOrder` ascending, so LARGER is drawn EARLIER, i.e. further back — the opposite
+        //     sense to `HUD_Z_ORDER`'s -90. The offset clears GI's nine internal surfaces, which
+        //     take `main + 1 .. + 9`.
+        //   - backgroundColor: transparent, so that once the diver is below the waterline this
+        //     surface contributes nothing at all rather than a colour behind an opaque world.
+        //   - multisampling: left at the engine's NONE. Every edge on this surface is a
+        //     horizontal strip boundary inside a smooth gradient; there is nothing to anti-alias.
+        //     The one edge that needs it is the WATERLINE, and that is the water shader's alpha
+        //     ramp on `main`, which anti-aliases itself against whatever is behind it.
+        val skySurface = engine.gfx.createSurface(
+            name = Sky.SURFACE_NAME,
+            camera = engine.gfx.mainCamera,
+            backgroundColor = Color.BLANK,
+            zOrder = engine.gfx.mainSurface.config.zOrder + Sky.Z_ORDER_OFFSET
+        )
+
+        // THE WAVE'S PHASE, PINNED FOR REPRODUCIBLE CAPTURES. The sea animates on the RENDER
+        // clock — see `WaterSurface`'s clock note for why that is the right call for something
+        // with no gameplay meaning that has to keep moving on the attract screen — and a
+        // render-clock animation is exactly what makes two captures of the same build differ.
+        // `HARNESS.md` is emphatic that a control pair which differs as much as the change under
+        // test has measured nothing, so the phase can be nailed down. Unset at the booth: one
+        // getenv at startup.
+        System.getenv("EPT_WAVE_PHASE")?.toFloatOrNull()?.let { WaterSurface.pin(it) }
+
         System.getenv("EPT_SCREENSHOT")?.let {
             engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
             hudSurface.addPostProcessingEffect(render.ScreenshotEffect(it.replace(".png", "") + "-hud"))
+            // The sky is a third surface now, so a capture of `main` alone is no longer the
+            // frame: above the waterline `main` is transparent and the sunset lives here. Written
+            // with the same no-extension quirk as the HUD's (`ScreenshotEffect` substitutes on
+            // ".png" and there is none left after the replace).
+            skySurface.addPostProcessingEffect(render.ScreenshotEffect(it.replace(".png", "") + "-sky"))
         }
     }
 
@@ -684,6 +766,17 @@ class EnPustTil : PulseEngineGame()
         // Ambient is a continuous function of depth only — no camera/screen dependence — so
         // unlike the positional light draws in onRender, timing here doesn't matter.
         DiveLighting.updateAmbient(sim)
+
+        // THE SEA MOVES ON THE RENDER CLOCK, AND OUTSIDE EVERY LIFECYCLE GATE. Both halves are
+        // deliberate and `WaterSurface`'s clock note argues them at length; the short version is
+        // that the fixed tick is gated on `RunLifecycle.simulationAdvances`, which is FALSE in
+        // IDLE, so a correctly-gated sea would be frozen solid on precisely the screen a booth
+        // queue spends its time looking at. The water and the sky have no gameplay meaning, are
+        // not on the light map, and nothing in `dive/` can observe them — so the presentation
+        // clock is the right one, and it is pinnable (`EPT_WAVE_PHASE`) so captures stay
+        // reproducible. This is the precedent for the floating bubbles and any later ambient
+        // motion; anything the simulation CAN observe still belongs on the fixed tick.
+        WaterSurface.advance(engine.data.deltaTime)
 
         // Start/restart is a LEVEL reading here — deliberately. The engine's Gamepad only
         // exposes isPressed/getAxis (confirmed against the engine jar: no gamepad
@@ -863,6 +956,14 @@ class EnPustTil : PulseEngineGame()
         // rotated to the same number so the diver faces where his light points. Deriving it twice
         // from sim.vx/vy is the shape of the bug 6ea1f53 fixed — see DiveLighting.beamHeadingDegrees.
         val aimDegrees = DiveLighting.beamHeadingDegrees
+
+        // THE SKY, FIRST AND ON ITS OWN SURFACE. Order within this method does not decide what
+        // ends up in front of what — that is the surfaces' zOrder, and the sky's puts it behind
+        // the world — but it is drawn first anyway so the file reads back to front like the
+        // frame does. It is in world metres on the shared camera, so it needs nothing from here
+        // but the camera itself, and it issues no draws at all once the diver is below about
+        // 10 m. See `render/Sky.kt`.
+        Sky.render(engine.gfx.getSurfaceOrDefault(Sky.SURFACE_NAME), worldCamera)
 
         DiveRenderer.render(engine.gfx.mainSurface, sim, worldCamera, normalMaps, aimDegrees)
 
