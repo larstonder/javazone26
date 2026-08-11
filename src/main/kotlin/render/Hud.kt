@@ -5,8 +5,10 @@ import dive.Tuning
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -179,6 +181,199 @@ object Hud
     private val danger = Color(1f, 0.25f, 0.2f)
 
     /**
+     * WHERE A LINE OF TEXT ACTUALLY SITS RELATIVE TO THE `y` IT IS DRAWN AT — read out of the
+     * engine's bytecode rather than guessed, because every alignment below depends on it and
+     * getting it wrong is a half-glyph offset that only a photograph would show.
+     *
+     * `TextRenderer.draw` (pulse-engine-0.13.0.jar, disassembled) measures `ascent` as the
+     * largest `-quad.y` over the glyphs it is about to draw — i.e. how far the tallest glyph
+     * rises above the baseline — and then offsets the whole run by
+     * `ascent - (ascent + lineShift) * yOrigin`, with `lineShift = 0` for a single line. So:
+     *
+     *   yOrigin = 0     the TOP of the tallest glyph lands on `y`   (the engine's default)
+     *   yOrigin = 0.5   the run is CENTRED on `y`
+     *   yOrigin = 1     the BASELINE lands on `y`
+     *
+     * The middle one is the useful one here and it is used for every string this file draws
+     * except HELD. It centres the run on a y WITHOUT this file needing to know the font's cap
+     * height — which it cannot know, since `Font.getQuad` is baked data. That is what lets the
+     * pearl icon share a centre line with BANKED, and the clock sit centred in its box, with no
+     * fudge constant to re-tune if the font is ever swapped.
+     */
+    private const val TEXT_CENTRED_ON_Y = 0.5f
+
+    // --- BANKED: a pearl, then the number ----------------------------------------------
+    /**
+     * The pearl icon's diameter as a fraction of screen height, and the gap between its rim
+     * and the "BANKED" text as a fraction of that diameter.
+     *
+     * The icon is a touch smaller than the text's own font size so it reads as a bullet
+     * belonging to the row rather than as a second element competing with it: BANKED is the
+     * quiet running total (design spec §12 — "small, cold white, top-left"), and the loud
+     * number on this screen is HELD, attached to the diver.
+     */
+    private const val BANKED_ICON_DIAMETER_FRACTION = 0.024f
+    private const val BANKED_ICON_GAP_RATIO = 0.45f
+
+    /**
+     * The icon's amber, deliberately restating `DiveRenderer.pearlColor` rather than sharing it.
+     *
+     * They are not the same quantity even though they are the same three numbers today. The
+     * world's pearl albedo is fed through `DiveRenderer.exposed(...)` on the way to a surface
+     * that GI relights and a thresholded bloom then blows out, so what reaches the eye there is
+     * depth-dependent. The HUD is not relit and not bloomed (class doc), so this is a flat
+     * authored colour: an icon that says "pearls", legible identically at 5 m and at 150 m.
+     * Tying the two together would mean the icon dimming as the diver descends, which is the
+     * opposite of what a banked-total readout should do.
+     */
+    private val pearlIcon = Color(1f, 0.78f, 0.35f)
+
+    // --- The clock's box ----------------------------------------------------------------
+    /**
+     * The clock box, sized from the string it frames rather than from a fixed width.
+     *
+     * [CLOCK_BOX_GLYPH_WIDTH_EM] is an UPPER bound on a digit's advance in the default font,
+     * in ems — the one number here that can only be confirmed by looking at the screen. It is
+     * safe in one direction only: the text is centred in the box ([TEXT_CENTRED_ON_Y] and
+     * `xOrigin = 0.5`), so over-estimating merely adds air at both ends, while under-estimating
+     * would let a digit sit on the border. Erring high is therefore correct, not lazy.
+     *
+     * Sizing from `text.length` also means the box does not jump when the clock crosses ten
+     * minutes and the string grows from "9:59" to "10:00" — a fixed width would have had to be
+     * cut for the longer form and would look loose for the whole run.
+     */
+    private const val CLOCK_BOX_GLYPH_WIDTH_EM = 0.62f
+    private const val CLOCK_BOX_PAD_X_EM = 0.5f
+
+    /**
+     * Vertical padding, in ems, ABOVE AND BELOW A FULL EM — not above and below the cap height.
+     * The box is therefore taller than the glyphs by at least the padding on each side whatever
+     * the font's cap height turns out to be, which is exactly the guarantee this file cannot get
+     * any other way (see [TEXT_CENTRED_ON_Y]).
+     */
+    private const val CLOCK_BOX_PAD_Y_EM = 0.30f
+
+    /** Corner radius and border thickness, both as a fraction of the box's own height. */
+    private const val CLOCK_BOX_CORNER_RATIO = 0.38f
+    private const val CLOCK_BOX_BORDER_RATIO = 0.085f
+
+    /**
+     * The dark plate inside the clock's border.
+     *
+     * Near-opaque on purpose. The clock sits top-centre, which is exactly where the sunlit
+     * Shallows water is brightest, and a bordered box whose interior is the water is a ring
+     * around a bright field rather than an instrument. It is also what makes the border legible
+     * at both ends of a run: the plate, not the water, is what the border has contrast against.
+     * States the opacity it wants to DISPLAY at and runs it through [authoredAlphaFor] like
+     * everything else on this surface.
+     */
+    val clockPlate = Color(0.02f, 0.05f, 0.09f, authoredAlphaFor(0.82f))
+
+    /**
+     * The visible STAIRCASE RISER a rounded corner is allowed, in pixels, and the ceiling on how
+     * many bands may be spent buying it. See [roundedCornerBands] and [roundedBandHalfWidth].
+     *
+     * `Surface.drawQuad` renders nothing at all on macOS and there is no circle primitive, so a
+     * rounded rectangle here is a stack of [Surface.fillRectCentred] slabs whose widths follow
+     * the corner arc. An earlier version of this constant was a flat SIX bands, on the argument
+     * that six puts the largest step "well under a pixel-visible fraction of the radius". That
+     * is wrong, and wrong in the direction that shows: a corner arc has a VERTICAL TANGENT where
+     * it meets the flat cap, so with bands of equal height the width step grows without bound as
+     * the cap is approached — the last of six bands on the clock box's 55 px radius (0.0304 x
+     * 1800 px of screen height) steps 14 px sideways over a 9 px rise. That is not a rounded
+     * corner, it is a chamfered one.
+     *
+     * Two things fix it together, and neither works alone. The bands are cut at equal ANGLES
+     * around the arc rather than at equal heights, which makes them thin exactly where the arc
+     * is shallow and bounds the width step at `radius * bandAngle` everywhere instead of letting
+     * it diverge. And the count is then derived from that bound rather than fixed, so the shape
+     * that needs it pays for it: the clock's 55 px corner takes ~44 bands, the slider handle's
+     * 12 px corner takes ~10, and both land on the same riser on any display.
+     *
+     * 2 px is chosen against a booth display's pixel, not against a fraction of the shape —
+     * "smooth" is a property of the pixel grid. The cap is what stops a future oversized radius
+     * turning a HUD element into thousands of draw calls; it only bites above a 5K panel (a
+     * 0.0304 x h radius reaches 64 bands at h = 2680), and even there it settles at under 3 px
+     * of riser. 89 batched `drawTexture` calls for the clock's box is nothing beside the world's
+     * own submissions.
+     */
+    private const val ROUNDED_CORNER_STEP_PIXELS = 2f
+    private const val ROUNDED_CORNER_MAX_BANDS = 64
+
+    // --- The depth tape's graduations and slider handle ----------------------------------
+    /**
+     * The graduation interval, in metres. Ticks and labels land on multiples of this from 0 to
+     * the last one that fits inside `Tuning.MAX_DEPTH` — 0/25/50/75/100 as the owner's mockup
+     * asks for, and then 125/150 because the column is 160 m deep and a scale that stops
+     * two-thirds of the way down is worse than no scale at all: the Abyss is precisely where a
+     * player needs to know how far past the point of no return they are.
+     */
+    private const val TAPE_GRADUATION_METRES = 25f
+
+    /** Tick length and thickness, as fractions of the tape's width. Ticks extend LEFT only. */
+    private const val TAPE_TICK_LENGTH_RATIO = 2.8f
+    private const val TAPE_TICK_THICKNESS_RATIO = 0.55f
+
+    /** Gap between the end of a tick and the right edge of its label, in tape widths. */
+    private const val TAPE_LABEL_GAP_RATIO = 1.2f
+
+    private const val TAPE_GRADUATION_FONT_FRACTION = 0.014f
+
+    /**
+     * How close a graduation's label may come to the travelling depth readout before it is
+     * dropped for the frame, as a multiple of the graduation label's own font size.
+     *
+     * Both are outlined strings right-aligned to the same column, so an overlap is not a near
+     * miss — it is two black-rimmed strings on the same pixels, which reads as a smudge and
+     * costs the readout its legibility exactly when the diver is at a marked depth. The
+     * graduation is the one that yields: it is a fixed scale the player can infer from its
+     * neighbours, whereas the readout is the live value.
+     */
+    private const val TAPE_GRADUATION_HIDE_GAP_EM = 1.3f
+
+    /** The slider handle: a lozenge straddling the tape, sized in tape widths. */
+    private const val HANDLE_WIDTH_RATIO = 5.5f
+    private const val HANDLE_HEIGHT_RATIO = 2.4f
+    private const val HANDLE_CORNER_RATIO = 0.45f
+    private const val HANDLE_GRIP_WIDTH_RATIO = 0.5f
+    private const val HANDLE_GRIP_HEIGHT_RATIO = 0.16f
+
+    /**
+     * Grip bars across the handle's face, and their pitch as a multiple of a bar's own height.
+     *
+     * Three bars at a pitch of two — bar, gap, bar, gap, bar — is the slider-knob idiom, and it
+     * is what tells the eye the lozenge is a THING ON the tape rather than a gap in it. Three at
+     * pitch 2 occupies 5 bar-heights = 80% of the handle's height ([HANDLE_GRIP_HEIGHT_RATIO] is
+     * 0.16), so the outermost bars stop clear of the rounded ends at any resolution; a fourth
+     * bar, or a wider pitch, would run into the corner arc.
+     */
+    private const val HANDLE_GRIP_COUNT = 3
+    private const val HANDLE_GRIP_PITCH_RATIO = 2f
+
+    /**
+     * The graduation labels, built once at class-init rather than per frame.
+     *
+     * The tape's scale is fixed for the whole game — `Tuning.MAX_DEPTH` is a compile-time
+     * constant — so there is nothing here to recompute, and this keeps the render path
+     * allocation-free (CLAUDE.md: HUD text FORMATTING is the exemption, and a constant string is
+     * not formatting). It also means the strings exist before any frame is drawn, so
+     * `HudTest` can assert every one of them is inside the default font's baked atlas —
+     * U+0020..U+011F, above which a glyph renders as nothing at all and consumes no width,
+     * silently. Digits and "m" are far inside it; the test is there so a future "150 m" with a
+     * non-breaking space, or a prime mark, fails the build instead of vanishing at the booth.
+     */
+    val graduationLabels: Array<String> =
+        Array(graduationCount()) { "${graduationDepth(it).toInt()}m" }
+
+    /**
+     * Ticks and their labels: pale, and a step quieter than the tape they measure. The tape's
+     * own body is the instrument; the graduations are the reading aid, and at 25 m intervals
+     * there are seven of them, so drawing them at the tape's full weight would turn the right
+     * edge into a ladder that competes with the diver.
+     */
+    val graduationMark = Color(0.9f, 0.94f, 1f, authoredAlphaFor(0.72f))
+
+    /**
      * ALPHA ON THE HUD SURFACE IS SQUARED. Do not "tidy" these back down to a tasteful 0.15.
      *
      * MEASURED (trench-hud, 1920x1200 — the raw HUD surface, before compositing): a
@@ -260,6 +455,128 @@ object Hud
         if (remaining > AIR_LOW_THRESHOLD) 1f
         else 1f + (AIR_LOW_THRESHOLD - remaining + 1) * AIR_LOW_SIZE_GAIN
 
+    // --- Layout, extracted from the draw calls so it can be asserted without a GL context ---
+    // Same pattern as `Framing`, `AttractLayout` and the bubble-ring functions above: what a
+    // thing LOOKS like can only be settled by looking, but where it lands relative to the other
+    // things on the row is arithmetic, and arithmetic is testable.
+
+    /**
+     * The two font sizes the screen-anchored rows are built from.
+     *
+     * Functions rather than a `h * FRACTION` written at each call site, because each of them is
+     * needed in TWO places that must agree: the draw call that renders the string, and the
+     * layout function that decides where its box or its row centre is. Two spellings of the same
+     * product is how one of them comes to be edited alone — see `fillRectCentred`'s doc for the
+     * version of that mistake this project actually shipped.
+     */
+    fun bankedFontSize(h: Float): Float = h * BANKED_FONT_FRACTION
+
+    fun clockFontSize(h: Float): Float = h * CLOCK_FONT_FRACTION
+
+    /** The centre line the pearl icon and the BANKED text share. */
+    fun bankedRowCentreY(h: Float): Float = h * MARGIN_FRACTION + bankedFontSize(h) * 0.5f
+
+    fun bankedIconDiameter(h: Float): Float = h * BANKED_ICON_DIAMETER_FRACTION
+
+    /** Icon first, its LEFT RIM on the margin — so the row starts where every other margin is. */
+    fun bankedIconCentreX(h: Float): Float = h * MARGIN_FRACTION + bankedIconDiameter(h) * 0.5f
+
+    /**
+     * Where "BANKED n" starts. Left-aligned (`xOrigin = 0`), so this is the text's left edge and
+     * the gap to the icon's rim is exactly [BANKED_ICON_GAP_RATIO] of the icon's diameter — the
+     * relationship that keeps the pair reading as one row at any resolution, and the one that
+     * breaks silently if either is ever re-anchored to the margin on its own.
+     */
+    fun bankedTextX(h: Float): Float =
+        bankedIconCentreX(h) + bankedIconDiameter(h) * (0.5f + BANKED_ICON_GAP_RATIO)
+
+    /** The clock box's width for a [glyphCount]-character time string. See the constants' doc. */
+    fun clockBoxWidth(fontSize: Float, glyphCount: Int): Float =
+        fontSize * (glyphCount * CLOCK_BOX_GLYPH_WIDTH_EM + 2f * CLOCK_BOX_PAD_X_EM)
+
+    fun clockBoxHeight(fontSize: Float): Float = fontSize * (1f + 2f * CLOCK_BOX_PAD_Y_EM)
+
+    /** The box hangs from the top margin, and the clock is then centred inside the box. */
+    fun clockBoxCentreY(h: Float): Float =
+        h * MARGIN_FRACTION + clockBoxHeight(clockFontSize(h)) * 0.5f
+
+    /**
+     * Half the width of a rounded rectangle at a row [dy] from its centre — the whole geometry
+     * of [fillRoundedRect], pulled out because it is the part that can be wrong.
+     *
+     * Straight through the middle band, then the corner arc: the arc's centre sits
+     * `radius` in from both the side and the end, so at a row `over` past the straight section
+     * the half-width is `halfWidth - radius + sqrt(radius^2 - over^2)`. With `radius = 0` this
+     * degenerates to a plain rectangle at every row, which is what makes the same function
+     * usable for a square-cornered shape without a second code path.
+     *
+     * [radius] is clamped to the smaller half-extent: a radius larger than that describes no
+     * shape (the two corner arcs on a side would overlap), and clamping turns a mis-tuned
+     * constant into a stadium instead of a `sqrt` of a negative.
+     */
+    fun roundedBandHalfWidth(halfWidth: Float, halfHeight: Float, radius: Float, dy: Float): Float
+    {
+        val r = radius.coerceIn(0f, minOf(halfWidth, halfHeight))
+        val straight = halfHeight - r
+        val over = (abs(dy) - straight).coerceIn(0f, r)
+        return halfWidth - r + sqrt(r * r - over * over)
+    }
+
+    /** Where depth [depth] lands on a tape running from [top] down [span] pixels. */
+    fun tapeY(depth: Float, top: Float, span: Float): Float =
+        top + (depth / Tuning.MAX_DEPTH).coerceIn(0f, 1f) * span
+
+    /** How far a graduation tick reaches LEFT of the tape's left edge, for a [tapeWidth] tape. */
+    fun tapeTickLength(tapeWidth: Float): Float = tapeWidth * TAPE_TICK_LENGTH_RATIO
+
+    /**
+     * The column both right-aligned strings on the tape share: the graduation labels and the
+     * travelling depth readout. [tapeX] is the tape's own left edge.
+     *
+     * Extracted because it is the number that decides whether the scale is READABLE: it has to
+     * clear the slider handle ([handleWidth]), which straddles the tape and is the widest thing
+     * on that edge, or a label lands under the handle at the one depth it is describing.
+     * `HudTest` asserts that clearance; it cannot be seen in the source, because the two are
+     * expressed in different constants (tick length plus gap on one side, handle width on the
+     * other) and neither mentions the other.
+     */
+    fun tapeLabelRightX(tapeX: Float, tapeWidth: Float): Float =
+        tapeX - tapeTickLength(tapeWidth) - tapeWidth * TAPE_LABEL_GAP_RATIO
+
+    /** The slider handle's size, in pixels, for a [tapeWidth] tape. It straddles the tape. */
+    fun handleWidth(tapeWidth: Float): Float = tapeWidth * HANDLE_WIDTH_RATIO
+
+    fun handleHeight(tapeWidth: Float): Float = tapeWidth * HANDLE_HEIGHT_RATIO
+
+    /**
+     * How many graduations the tape carries: every multiple of [TAPE_GRADUATION_METRES] from
+     * zero up to and including the last one that fits inside `Tuning.MAX_DEPTH`. Derived rather
+     * than listed so that changing either constant cannot leave a tick hanging off the end of
+     * the tape or the bottom third unmarked.
+     */
+    fun graduationCount(): Int = floor(Tuning.MAX_DEPTH / TAPE_GRADUATION_METRES).toInt() + 1
+
+    fun graduationDepth(index: Int): Float = index * TAPE_GRADUATION_METRES
+
+    /**
+     * How many bands one corner arc of [radius] pixels is drawn as, so that no staircase riser
+     * exceeds [ROUNDED_CORNER_STEP_PIXELS]. See that constant for the whole argument.
+     *
+     * With the arc cut at equal angles the widest riser is `radius * bandAngle` and the arc
+     * spans a quarter turn, so `bands = radius * (TAU / 4) / step` rounded up. Pure, and pinned
+     * by `HudTest` in the unit that matters — pixels of riser at a booth-sized radius — because
+     * "how many bands is enough" is not a number anyone can read off the source.
+     */
+    fun roundedCornerBands(radius: Float): Int =
+        ceil(radius * TAU * 0.25f / ROUNDED_CORNER_STEP_PIXELS).toInt().coerceIn(1, ROUNDED_CORNER_MAX_BANDS)
+
+    /**
+     * Whether a graduation label at [graduationY] is far enough from the travelling depth
+     * readout at [handleY] to be drawn this frame. See [TAPE_GRADUATION_HIDE_GAP_EM].
+     */
+    fun graduationLabelIsClearOfHandle(graduationY: Float, handleY: Float, minGap: Float): Boolean =
+        abs(graduationY - handleY) >= minGap
+
     /**
      * [diverX]/[diverY] are the diver's position on THIS surface, in pixels, and
      * [pixelsPerMetre] is the scale the world is being drawn at. Both come from the world
@@ -284,27 +601,157 @@ object Hud
         drawDepthTape(surface, sim, w, h)
     }
 
-    private fun drawBanked(surface: Surface, sim: DiveSim, h: Float)
+    /**
+     * A rounded rectangle CENTRED on ([centreX], [centreY]), drawn as a stack of
+     * [Surface.fillRectCentred] slabs: one through the straight middle, then
+     * [roundedCornerBands] more at each end whose heights step round the corner arc at equal
+     * ANGLES and whose widths come from [roundedBandHalfWidth].
+     *
+     * There is no circle primitive and no rounded-rect primitive to reach for, and `drawQuad`
+     * would not help even if it drew anything on macOS (render/Draw.kt) — it is an axis-aligned
+     * rect like every other primitive here. So the shape is rasterised out of rects, and two
+     * choices decide whether it looks like a curve. Equal angles rather than equal heights, for
+     * the reason [ROUNDED_CORNER_STEP_PIXELS] gives at length. And each band's width sampled at
+     * its own MIDPOINT, so the stack straddles the true curve and the error alternates sign
+     * along the corner, rather than at an edge, which would make every corner uniformly clipped
+     * or uniformly square.
+     *
+     * A private extension here rather than a `Draw.kt` helper: the clock's box and the depth
+     * tape's slider handle are the only two rounded shapes in the game and both live in this
+     * file, while `Draw.kt`'s contract is the ORIGIN AND ANGLE convention shared with two engine
+     * renderers we do not own. A shape decomposition is a different kind of thing.
+     */
+    private fun Surface.fillRoundedRect(centreX: Float, centreY: Float, width: Float, height: Float, radius: Float)
     {
-        val margin = h * MARGIN_FRACTION
-        val fontSize = h * BANKED_FONT_FRACTION
-        // Top-left, same bright-shallows-to-black-abyss background as everything else on
-        // this surface (see class doc) — outlined so it stays legible at the surface.
-        surface.drawTextWithOutline("BANKED ${sim.banked}", margin, margin + fontSize, fontSize, h, cold)
+        val halfWidth = width * 0.5f
+        val halfHeight = height * 0.5f
+        val r = radius.coerceIn(0f, minOf(halfWidth, halfHeight))
+        val straight = halfHeight - r
+
+        // The middle slab is everything the two corner arcs do not cover, at full width.
+        if (straight > 0f) fillRectCentred(centreX, centreY, width, straight * 2f)
+        if (r <= 0f) return
+
+        // `over` walks from 0 at the start of the arc to the full radius at the flat cap, in
+        // steps of `r * sin`, so the bands are thin where the arc is shallow. Each band's far
+        // edge is the next one's near edge, which is what keeps the stack gap-free: the two
+        // are the same number, computed once.
+        val bands = roundedCornerBands(r)
+        val bandAngle = TAU * 0.25f / bands
+        var nearOver = 0f
+        for (band in 0 until bands)
+        {
+            val farOver = r * sin((band + 1) * bandAngle)
+            val dy = straight + (nearOver + farOver) * 0.5f
+            val bandHeight = farOver - nearOver
+            val bandWidth = roundedBandHalfWidth(halfWidth, halfHeight, r, dy) * 2f
+            fillRectCentred(centreX, centreY - dy, bandWidth, bandHeight)
+            fillRectCentred(centreX, centreY + dy, bandWidth, bandHeight)
+            nearOver = farOver
+        }
     }
 
+    private fun drawBanked(surface: Surface, sim: DiveSim, h: Float)
+    {
+        val centreY = bankedRowCentreY(h)
+        val diameter = bankedIconDiameter(h)
+
+        // THE ICON IS A REAL PEARL, through the very shader the ones in the water are drawn with
+        // ([IridescenceRenderer] + [IridescentMaterial.PEARL]). Two things fall out of that: the
+        // thing BANKED counts and the thing beside it cannot drift apart into two different
+        // ideas of what a pearl looks like, and the HUD gets a ROUND icon on a surface with no
+        // circle primitive on it (the alternative, [fillRoundedRect], is thirteen draw calls of
+        // stepped slabs where this is one).
+        //
+        // [bankedIconDiameter] is the icon's SQUARE — the box the layout above reserves for it,
+        // and exactly what the fallback below fills — and the quad handed to the shader is that
+        // square grown by `equalAreaQuad` so the disc it inscribes covers the same area. That is
+        // the house rule (`IridescenceGeometryTest` scans the source for it), and it is the
+        // right one here for the reason it is right for a ring bubble: without it the icon would
+        // lose a fifth of its ink the moment the renderer became available, i.e. between frame
+        // one and frame two. The disc's rim therefore sits about 6% of a diameter proud of the
+        // reserved box on each side — a couple of pixels at booth resolution, and well inside
+        // the gap [bankedTextX] keeps to the text.
+        //
+        // Its sheen is measured from wherever this frame's [drawAirRing] put the light — one
+        // light source per surface per frame, by design (IridescenceRenderer.setLightSource), so
+        // the icon and the ring's bubbles cannot disagree about where the torch is. Draw order
+        // does not enter into it: `lightPos` is a per-batch uniform, not per-instance.
+        val iridescence = IridescenceRenderer.of(surface)
+        surface.setDrawColor(pearlIcon)
+        if (iridescence != null)
+        {
+            val quad = IridescenceRenderer.equalAreaQuad(diameter)
+            iridescence.draw(bankedIconCentreX(h), centreY, quad, quad, IridescentMaterial.PEARL)
+        }
+        // Frame one, before the engine has run the deferred `addRenderer` init: a flat square
+        // stands in, so the row keeps its shape instead of the text jumping left for a frame.
+        // Same fallback and same reason as [drawAirRing]'s.
+        else surface.fillRectCentred(bankedIconCentreX(h), centreY, diameter, diameter)
+
+        // Top-left, same bright-shallows-to-black-abyss background as everything else on
+        // this surface (see class doc) — outlined so it stays legible at the surface. Centred
+        // on the icon's own centre line ([TEXT_CENTRED_ON_Y]) rather than dropped by a font
+        // size, which is the whole of what makes the pair read as one row.
+        surface.drawTextWithOutline(
+            "BANKED ${sim.banked}", bankedTextX(h), centreY,
+            bankedFontSize(h), h, cold, yOrigin = TEXT_CENTRED_ON_Y
+        )
+    }
+
+    /**
+     * The clock, in a rounded bordered box (the owner's mockup).
+     *
+     * THE BORDER IS THE CLOCK'S OWN COLOUR, so the whole instrument turns red under
+     * [CLOCK_DANGER_SECONDS] rather than only the digits. The digits are five glyphs at the top
+     * of a busy screen; the box is a shape, and a shape changing colour is visible in peripheral
+     * vision, which is where a player watching the diver actually sees the clock from.
+     *
+     * The border is drawn as the WHOLE outer box and the plate then laid over it, rather than as
+     * a ring: a ring would need its own inner-and-outer band decomposition at every row, for a
+     * shape that is on screen at one size. The cost of doing it this way is that [clockPlate] is
+     * not fully opaque, so the interior carries some fraction of the border's colour — a faint
+     * wash that heats with the clock. That is the reason the plate is authored near-opaque
+     * instead of at a tasteful half, where the border's colour rather than the plate's would
+     * decide what the interior looks like. The exact fraction is a capture question, not a
+     * source one: this surface pre-multiplies RGB by alpha AND stores alpha squared (see
+     * [tapeBg]), so the two weights are not the same number.
+     */
     private fun drawClock(surface: Surface, sim: DiveSim, w: Float, h: Float)
     {
-        val fontSize = h * CLOCK_FONT_FRACTION
+        val fontSize = clockFontSize(h)
         val minutes = (sim.clock / 60f).toInt()
         val seconds = (sim.clock % 60f).toInt()
         val color = if (sim.clock < CLOCK_DANGER_SECONDS) danger else cold
+
+        // The one per-frame allocation on this path, and an explicitly exempt one (CLAUDE.md:
+        // HUD text formatting). It is formatted BEFORE the box is drawn because the box is
+        // sized from its length — "9:59" and "10:00" are not the same width.
+        val text = "%d:%02d".format(minutes, seconds)
+
+        val centreX = w * 0.5f
+        val centreY = clockBoxCentreY(h)
+        val boxWidth = clockBoxWidth(fontSize, text.length)
+        val boxHeight = clockBoxHeight(fontSize)
+        val border = boxHeight * CLOCK_BOX_BORDER_RATIO
+        val radius = boxHeight * CLOCK_BOX_CORNER_RATIO
+
+        surface.setDrawColor(color)
+        surface.fillRoundedRect(centreX, centreY, boxWidth, boxHeight, radius)
+
+        // The plate is inset by the border thickness on every side and its corner radius is
+        // reduced by exactly the same amount, which is what keeps the border a CONSTANT
+        // thickness around the corner instead of pinching to nothing at 45 degrees.
+        surface.setDrawColor(clockPlate)
+        surface.fillRoundedRect(centreX, centreY, boxWidth - border * 2f, boxHeight - border * 2f, radius - border)
+
         // Top-centre — exactly where the bright Shallows water sits. Flat cold-blue text
-        // here is the low-contrast pairing that motivated this outline in the first place.
+        // here is the low-contrast pairing that motivated this outline in the first place;
+        // the plate helps, but the box is transparent enough that the outline still earns its
+        // second draw call.
         surface.drawTextWithOutline(
-            "%d:%02d".format(minutes, seconds),
-            w * 0.5f, h * MARGIN_FRACTION + fontSize,
-            fontSize, h, color, xOrigin = 0.5f
+            text, centreX, centreY, fontSize, h, color,
+            xOrigin = 0.5f, yOrigin = TEXT_CENTRED_ON_Y
         )
     }
 
@@ -403,11 +850,19 @@ object Hud
         )
     }
 
-    /** Depth tape down the right edge, with the point-of-no-return marker. */
+    /**
+     * Depth tape down the right edge: a graduated scale, the point-of-no-return marker, and a
+     * slider handle carrying the live depth.
+     *
+     * The tape used to be a bar with two dashes on it, which is a picture of the diver's depth
+     * and not a picture of HOW DEEP THAT IS. The graduations are what make the point-of-no-return
+     * mark quantitative — "the mercy line is at sixty, I am at ninety" — and the handle is what
+     * says the mark is a fixed thing on a scale and the diver is the thing moving along it. Both
+     * are the owner's mockup; the reading they buy is why they are worth the draw calls.
+     */
     private fun drawDepthTape(surface: Surface, sim: DiveSim, w: Float, h: Float)
     {
         val tapeWidth = h * TAPE_WIDTH_FRACTION
-        val margin = h * MARGIN_FRACTION
         val x = w - h * TAPE_RIGHT_MARGIN_FRACTION
         val top = h * TAPE_TOP_FRACTION
         val bottom = h - h * TAPE_BOTTOM_FRACTION
@@ -432,26 +887,77 @@ object Hud
         // ways of saying the same thing, which is how one of them comes to be edited alone.
         val tapeCentreX = x + tapeWidth * 0.5f
 
-        // Point of no return: the mercy that teaches the economy without a word of text.
-        val safeFraction = (sim.maxSafeDepth() / Tuning.MAX_DEPTH).coerceIn(0f, 1f)
-        val safeY = top + safeFraction * span
+        // Every y on the tape goes through [tapeY]. The three call sites below used to be three
+        // copies of `top + (d / MAX_DEPTH).coerceIn(0f, 1f) * span`, which is the shape of
+        // duplicated derivation `fillRectCentred`'s doc records shipping as a real bug: a scale
+        // whose graduations and whose handle disagree about where a depth is would be worse than
+        // no scale, and it would be invisible in the source.
+        val handleY = tapeY(sim.depth, top, span)
+        val labelRightX = tapeLabelRightX(x, tapeWidth)
+
+        // --- The graduated scale --------------------------------------------------------
+        val tickLength = tapeTickLength(tapeWidth)
+        val tickThickness = tapeWidth * TAPE_TICK_THICKNESS_RATIO
+        val graduationFont = h * TAPE_GRADUATION_FONT_FRACTION
+        val labelHideGap = graduationFont * TAPE_GRADUATION_HIDE_GAP_EM
+        for (index in 0 until graduationCount())
+        {
+            val y = tapeY(graduationDepth(index), top, span)
+            // Re-set per iteration because drawTextWithOutline leaves the draw colour on its
+            // own text colour — shared surface state, the leak that once put a whole frame of
+            // world geometry at 70% opacity (see the shaft-tint note in the handover spec).
+            surface.setDrawColor(graduationMark)
+            surface.fillRectCentred(x - tickLength * 0.5f, y, tickLength, tickThickness)
+
+            if (graduationLabelIsClearOfHandle(y, handleY, labelHideGap))
+            {
+                surface.drawTextWithOutline(
+                    graduationLabels[index], labelRightX, y,
+                    graduationFont, h, graduationMark, xOrigin = 1f, yOrigin = TEXT_CENTRED_ON_Y
+                )
+            }
+        }
+
+        // Point of no return: the mercy that teaches the economy without a word of text. Drawn
+        // after the graduations and before the handle — it has to out-read the scale, and the
+        // live handle has to out-read it.
         surface.setDrawColor(noReturnMark)
-        surface.fillRectCentred(tapeCentreX, safeY, tapeWidth * 6f, tapeWidth)
+        surface.fillRectCentred(tapeCentreX, tapeY(sim.maxSafeDepth(), top, span), tapeWidth * 6f, tapeWidth)
 
-        // Current depth marker.
-        val depthFraction = (sim.depth / Tuning.MAX_DEPTH).coerceIn(0f, 1f)
-        val depthY = top + depthFraction * span
-        val markerSize = tapeWidth * 3f
-        surface.setDrawColor(if (sim.canStillReturn()) cold else danger)
-        surface.fillRectCentred(tapeCentreX, depthY, markerSize, markerSize)
+        // --- The slider handle, carrying the live depth ----------------------------------
+        val handleColor = if (sim.canStillReturn()) cold else danger
+        val gripWidth = handleWidth(tapeWidth) * HANDLE_GRIP_WIDTH_RATIO
+        val gripHeight = handleHeight(tapeWidth) * HANDLE_GRIP_HEIGHT_RATIO
 
-        // The marker travels the whole tape as depth increases — the same bright-to-black
-        // span everything else on this surface crosses — so this label needs the outline
-        // just as much as the clock does.
+        surface.setDrawColor(handleColor)
+        surface.fillRoundedRect(
+            tapeCentreX, handleY, handleWidth(tapeWidth), handleHeight(tapeWidth),
+            handleHeight(tapeWidth) * HANDLE_CORNER_RATIO
+        )
+
+        // The grip bars are the tape's own dark backing colour, so the handle reads as a
+        // machined part of the same instrument rather than as a second element with a palette
+        // of its own — and black is the only thing guaranteed to have contrast against BOTH
+        // handle colours, which is not true of any tint.
+        surface.setDrawColor(tapeShadow)
+        for (bar in 0 until HANDLE_GRIP_COUNT)
+        {
+            val dy = (bar - (HANDLE_GRIP_COUNT - 1) * 0.5f) * gripHeight * HANDLE_GRIP_PITCH_RATIO
+            surface.fillRectCentred(tapeCentreX, handleY + dy, gripWidth, gripHeight)
+        }
+
+        // The readout travels the whole tape as depth increases — the same bright-to-black
+        // span everything else on this surface crosses — so this label needs the outline just
+        // as much as the clock does. It shares the graduations' right-aligned column, which is
+        // what makes [graduationLabelIsClearOfHandle] a real collision test rather than a
+        // guess: two outlined strings that overlap there are on the same pixels, not merely
+        // near each other. It takes the HANDLE's colour rather than a fixed cold, because the
+        // two are one object — a knob with its value written beside it — and the colour is the
+        // "you can no longer get back" warning, which is exactly the moment the number matters.
         surface.drawTextWithOutline(
             "%.0fm".format(sim.depth),
-            x - margin * 0.5f, depthY + h * TAPE_LABEL_FONT_FRACTION,
-            h * TAPE_LABEL_FONT_FRACTION, h, cold, xOrigin = 1f
+            labelRightX, handleY,
+            h * TAPE_LABEL_FONT_FRACTION, h, handleColor, xOrigin = 1f, yOrigin = TEXT_CENTRED_ON_Y
         )
     }
 }
