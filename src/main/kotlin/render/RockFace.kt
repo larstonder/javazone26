@@ -9,14 +9,13 @@ import no.njoh.pulseengine.core.graphics.api.TextureHandle
 import no.njoh.pulseengine.core.graphics.api.TextureWrapping
 import no.njoh.pulseengine.core.shared.utils.Logger
 import kotlin.math.ceil
-import kotlin.math.floor
 
 /**
  * The rock that bounds the play column: one vertically tiling cliff face, and the arithmetic
  * that decides how many copies of it go where.
  *
- * The art is a LEFT-hand cliff — solid stone down the first 174 of its 300 source columns, then
- * a ragged alpha edge running out to column 269. That edge is the whole point: it is the
+ * The art is a LEFT-hand cliff — solid stone down the first 396 of its 691 baked columns, then a
+ * ragged alpha edge running out to column 624. That edge is the whole point: it is the
  * silhouette the water is seen against, so it must land on the column boundary and the solid
  * body must run outward from there, off the side of the frame. See [DiveRenderer.drawColumnWalls]
  * for how the right-hand wall gets the same edge.
@@ -27,9 +26,10 @@ import kotlin.math.floor
  * `uv = texStart + texSize * fract(texCoord * texTiling)`, computing the derivatives BEFORE the
  * `fract` specifically so a tiled quad picks the right mip level at a tile edge. So one quad
  * covers the whole wall, and this file's job is only to hand it a whole number of tiles and to
- * put that quad's edges on tile boundaries IN WORLD SPACE — see [tileTopDepth]. Sizing the quad
- * to the visible rect instead would anchor the tiling phase to the CAMERA, and the rock would
- * scroll at its own rate as the diver descended, which is the one thing rock must never do.
+ * anchor that quad's top edge on a fixed WORLD depth — [WALL_TOP_DEPTH], just under the waterline,
+ * where [DiveRenderer.drawCrest] caps it. Sizing the quad to the visible rect instead would anchor
+ * the tiling phase to the CAMERA, and the rock would scroll at its own rate as the diver
+ * descended, which is the one thing rock must never do. See [tileRows] for the history.
  *
  * ## The two facts the bake decided, restated here because the numbers are copied
  *
@@ -202,11 +202,92 @@ object RockFace
         maxMipLevels = 1                    // NEVER 0 — see the class doc.
     )
 
-    /** Queues both textures for upload. Called once, from `EnPustTil.onCreate`. */
+    // --- THE CREST: what stops the wall at the waterline ---------------------------------------
+    //
+    // The tile has no top. It repeats down the column for ever and, before this, ran straight off
+    // the top of the frame — so above the waterline the cliff was just more cliff, and the owner
+    // said so: *"we still don't use the top rock to stop the rock faces at the top"*. The crest
+    // sprite is what gives the column an end, and it is the silhouette the sky sits behind.
+    //
+    // Baked to the SAME WIDTH as the wall (both 691 texels, both drawn [TILE_WIDTH_METRES]
+    // across), so the two have identical texel sizes and the join carries no scale change. Its
+    // HEIGHT is not chosen — it falls out of the art's 300x500 proportions, and it is therefore
+    // how tall the cliff turns out to be. See `tools/build_backdrop.py`'s `bake_rock_top`, which
+    // also explains why it shares the wall's gain rather than solving for its own mean.
+
+    /** The crest, in TEXELS. `RockFaceTest` re-derives both from the committed PNG's IHDR. */
+    const val TOP_TEXELS_WIDE = 691
+    const val TOP_TEXELS_TALL = 1152
+
+    /**
+     * How tall the crest is in metres: whatever keeps its texels square against the wall's.
+     * 22.49 m at the shipped 691x1152 — which, against the 24 m of sky the camera can show when
+     * the diver is at the surface, puts the summit just inside the top of the frame.
+     *
+     * DERIVED, not declared, for the reason [TILE_WIDTH_METRES] is: two numbers that must agree
+     * are one number too many, and a re-bake at a different size would otherwise stretch the crest.
+     */
+    const val TOP_HEIGHT_METRES = TILE_WIDTH_METRES * TOP_TEXELS_TALL / TOP_TEXELS_WIDE
+
+    /**
+     * How far BELOW [Tuning.SURFACE_DEPTH] the crest's bottom edge — and therefore the wall's top
+     * edge — sits.
+     *
+     * A LOOK DECISION, picked by capture. Positive means the join is under water, which is the
+     * whole point: the crest and the tile are different crops of rock and their textures do not
+     * continue into one another, so the join is a discontinuity that has to be hidden. 1.5 m puts
+     * it below the deepest trough the wave can reach ([WaterSurface.AMPLITUDE_METRES] is 0.31 m)
+     * and inside the meniscus and the near-surface haze `water.frag` draws, where nothing can be
+     * read as a line. The cliff then breaks the surface rather than being cut off by it, which is
+     * what the mockup shows.
+     *
+     * `RockFaceTest` pins the relationship to the wave rather than the number, so retuning the
+     * ripple cannot silently expose the join.
+     */
+    const val CREST_SUBMERGENCE_METRES = 1.5f
+
+    /** The depth the crest's bottom edge and the wall's top edge both sit at. */
+    const val WALL_TOP_DEPTH = Tuning.SURFACE_DEPTH + CREST_SUBMERGENCE_METRES
+
+    /** The depth of the crest's top edge — the summit. */
+    const val CREST_TOP_DEPTH = WALL_TOP_DEPTH - TOP_HEIGHT_METRES
+
+    private fun rockTexture(file: String, name: String, format: TextureFormat) = Texture(
+        "/backdrop/$file",
+        name,
+        filter = TextureFilter.LINEAR,
+        wrapping = TextureWrapping.CLAMP_TO_EDGE,
+        format = format,
+        maxMipLevels = 1                    // NEVER 0 — see the class doc.
+    )
+
+    /**
+     * The crest, and its horizontal MIRROR for the other side of the column.
+     *
+     * The wall gets its right-hand copy from a 180-degree rotation at the draw site, which is a
+     * horizontal mirror AND a vertical flip; a vertically flipped wall tile is still a wall tile,
+     * and a vertically flipped summit points downwards. There is no horizontal-only mirror
+     * available at the draw site either — `NormalMapRenderer.drawNormalMap` takes no uv arguments,
+     * so a `uMin`/`uMax` swap would mirror the albedo and leave every bump lit from the wrong
+     * side, and a negative width leaves `normalRotation` alone with the same result.
+     *
+     * So the mirror is BAKED, where the normal map's x component can be negated exactly and
+     * checked before it ships. See `tools/backdrop/mirror.py` and `RockFaceTest`, which re-derives
+     * the mirror from the committed base PNGs texel by texel.
+     */
+    val topDiffuse = rockTexture("rock-top-diffuse.png", "rock_top_diffuse", TextureFormat.SRGBA8)
+    val topNormal = rockTexture("rock-top-normal.png", "rock_top_normal", TextureFormat.RGBA8)
+    val topMirrorDiffuse = rockTexture("rock-top-mirror-diffuse.png", "rock_top_mirror_diffuse", TextureFormat.SRGBA8)
+    val topMirrorNormal = rockTexture("rock-top-mirror-normal.png", "rock_top_mirror_normal", TextureFormat.RGBA8)
+
+    private val topTextures = listOf(topDiffuse, topNormal, topMirrorDiffuse, topMirrorNormal)
+
+    /** Queues every rock texture for upload. Called once, from `EnPustTil.onCreate`. */
     fun load(engine: PulseEngine)
     {
         engine.asset.load(diffuse)
         engine.asset.load(normal)
+        topTextures.forEach { engine.asset.load(it) }
     }
 
     /** Ten seconds at 60 fps — see [DiverSprite.sheetsReady], which this mirrors. */
@@ -227,7 +308,8 @@ object RockFace
      */
     fun ready(): Boolean
     {
-        if (diffuse.handle != TextureHandle.INVALID && normal.handle != TextureHandle.INVALID)
+        if (diffuse.handle != TextureHandle.INVALID && normal.handle != TextureHandle.INVALID &&
+            topTextures.all { it.handle != TextureHandle.INVALID })
         {
             framesWithoutTextures = 0
             return true
@@ -252,27 +334,40 @@ object RockFace
     // nothing about the difference shows in a single still frame at one depth.
 
     /**
-     * The depth of the tile boundary at or above [worldTop], offset by [phase].
-     *
-     * THIS IS WHAT ANCHORS THE ROCK TO THE WORLD. The quad's top edge must sit on a multiple of
-     * [TILE_HEIGHT_METRES] so that the mapping from world depth to texture v is a function of the
-     * depth alone. Start the quad at the visible rect instead and v becomes a function of the
-     * CAMERA, so the cliff creeps upward relative to the water as the diver descends — subtle
-     * per frame, unmistakable over a dive, and invisible in a screenshot.
-     *
-     * [phase] shifts the whole lattice. It exists so the two walls can be given different phases
-     * and stop reading as an exact mirror of each other; it changes nothing else.
-     */
-    fun tileTopDepth(worldTop: Float, phase: Float = 0f): Float =
-        floor((worldTop - phase) / TILE_HEIGHT_METRES) * TILE_HEIGHT_METRES + phase
-
-    /**
-     * How many whole tiles reach from [tileTopDepth] down past [worldBottom]. At least one, so a
+     * How many whole tiles reach from [WALL_TOP_DEPTH] down past [worldBottom]. At least one, so a
      * degenerate or inverted visible rect still draws something rather than a zero-height quad.
+     *
+     * ## THE ROCK IS ANCHORED TO THE WATERLINE NOW, NOT TO A LATTICE UNDER THE CAMERA
+     *
+     * This used to be `tileRows(worldTop, worldBottom, phase)`, paired with a `tileTopDepth` that
+     * returned the tile boundary at or above the camera's top edge. That existed to solve one
+     * problem — the mapping from world depth to texture v must be a function of the DEPTH alone,
+     * or the cliff creeps upward relative to the water as the diver descends (subtle per frame,
+     * unmistakable over a dive, invisible in a screenshot) — and it solved it correctly.
+     *
+     * [WALL_TOP_DEPTH] solves it more simply and more strongly: it is a fixed WORLD constant, so
+     * `v` is a function of depth by construction rather than by rounding the camera onto a
+     * lattice. And it is the thing the crest needs anyway. The wall has to stop somewhere for the
+     * crest to cap it, and "somewhere" has to be the same depth on both sides of the column.
+     *
+     * ## What was given up: the two walls' vertical PHASE, and it was worth nothing
+     *
+     * `tileTopDepth` took a `phase` so the right wall could be offset half a tile and stop reading
+     * as an exact mirror of the left. That cannot survive a fixed top edge — a phase moves the
+     * lattice, and the crest has to sit on it. It turns out to cost nothing, which is worth
+     * writing out because it looks like a loss:
+     *
+     * The right wall is drawn rotated 180 degrees, so its v runs the other way. At depth `d` the
+     * left wall samples `fract((d - top)/H)` and the right samples `fract(-(d - top)/H)`, i.e.
+     * `1 - fract(...)`. The two coincide wherever `fract(...)` is 0 or 0.5 — every H/2 = 20 m.
+     * WITH the old half-tile phase the right wall sampled `fract(0.5 - (d - top)/H)`, which
+     * coincides with the left wherever `fract(...)` is 0.25 or 0.75 — also every 20 m. The phase
+     * moved the coincidence; it never removed one. What actually decorrelates the two walls is the
+     * rotation, which mirrors them in BOTH axes, and that is untouched.
      */
-    fun tileRows(worldTop: Float, worldBottom: Float, phase: Float = 0f): Int
+    fun tileRows(worldBottom: Float): Int
     {
-        val span = worldBottom - tileTopDepth(worldTop, phase)
+        val span = worldBottom - WALL_TOP_DEPTH
         return maxOf(1, ceil(span / TILE_HEIGHT_METRES).toInt())
     }
 

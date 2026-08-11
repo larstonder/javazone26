@@ -270,7 +270,7 @@ object DiveRenderer
         if (water != null) drawWaterSurface(surface, water, worldLeft, worldTop, worldRight, worldBottom)
         else drawSurfaceLine(surface, worldLeft, worldRight)
 
-        drawColumnWalls(surface, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
+        drawColumnWalls(surface, cam, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
         drawAirPockets(surface, sim, cam)
         drawPearls(surface, sim, cam, iridescence)
         drawAnglerfish(surface, sim, cam, iridescence)
@@ -397,6 +397,7 @@ object DiveRenderer
      */
     private fun drawColumnWalls(
         surface: Surface,
+        cam: Camera,
         normalMaps: NormalMapRenderer?,
         worldLeft: Float,
         worldTop: Float,
@@ -415,17 +416,100 @@ object DiveRenderer
         val leftBacking = -backingHalfWidth - worldLeft
         val rightBacking = worldRight - backingHalfWidth
 
+        // THE BACKING STOPS AT THE WATERLINE TOO, and that is what lets the sky exist above the
+        // cliffs. It used to run the full height of the visible rect, which was invisible while
+        // the whole frame was water and would now be a pair of opaque stone bars painted straight
+        // up through the sunset. Without the art it still runs full height — a flat slab to the
+        // top of the frame is the wall this replaced, and it is a better degradation than a frame
+        // with nothing at its edges.
+        val backingTop = if (ready) maxOf(worldTop, RockFace.WALL_TOP_DEPTH) else worldTop
+        val backingHeight = worldBottom - backingTop
+
         surface.setDrawColor(wallColor)
-        if (leftBacking > 0f) surface.fillRect(worldLeft, worldTop, leftBacking, height)
-        if (rightBacking > 0f) surface.fillRect(backingHalfWidth, worldTop, rightBacking, height)
+        if (backingHeight > 0f)
+        {
+            if (leftBacking > 0f) surface.fillRect(worldLeft, backingTop, leftBacking, backingHeight)
+            if (rightBacking > 0f) surface.fillRect(backingHalfWidth, backingTop, rightBacking, backingHeight)
+        }
 
         if (!ready) return
 
         // White and opaque: drawTexture MODULATES by the surface's current draw colour, which is
         // still wallColor from the fills above.
         surface.setDrawColor(1f, 1f, 1f, 1f)
-        if (leftSlab > 0f) drawRockWall(surface, normalMaps, leftSlab, worldTop, worldBottom, LEFT_WALL)
-        if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldTop, worldBottom, RIGHT_WALL)
+        if (leftSlab > 0f) drawRockWall(surface, normalMaps, leftSlab, worldBottom, LEFT_WALL)
+        if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldBottom, RIGHT_WALL)
+
+        // The crest, LAST, so it draws over the top of the wall it caps rather than under it.
+        if (leftSlab > 0f) drawCrest(surface, cam, normalMaps, leftSlab, LEFT_WALL)
+        if (rightSlab > 0f) drawCrest(surface, cam, normalMaps, rightSlab, RIGHT_WALL)
+    }
+
+    /**
+     * THE CLIFF'S CREST — what stops the tiling wall at the waterline, and the silhouette the sky
+     * is seen behind.
+     *
+     * The owner: *"we still don't use the top rock to stop the rock faces at the top"*. Before
+     * this the tile ran off the top of the frame, so above the waterline the cliff was simply more
+     * cliff — which read as a column of rock with no end rather than as a headland standing in the
+     * sea. The crest sprite gives the column a top; [RockFace.WALL_TOP_DEPTH] is where the wall
+     * now stops and where this starts.
+     *
+     * ## The right-hand one is a DIFFERENT TEXTURE, not a different angle
+     *
+     * The wall gets its right-hand copy from [RIGHT_WALL]'s half turn, which is a horizontal
+     * mirror and a vertical flip together. A wall tile survives being flipped vertically; a summit
+     * does not. So both crests are drawn at [LEFT_WALL] — no rotation at all — and the right one
+     * uses a texture that was mirrored IN THE BAKE, where the normal map's x component could be
+     * negated exactly (`tools/backdrop/mirror.py`, and `RockFaceTest` re-derives it from the
+     * committed base PNGs). Mirroring at the draw site is not available: `drawNormalMap` takes no
+     * uv arguments, so a uv swap would mirror the albedo and leave every bump lit from the wrong
+     * side.
+     *
+     * ## Culling
+     *
+     * [showsSquare] against the larger side, exactly as [drawDiver] does — the codebase has one
+     * answer to "is this on screen" and it is the engine's. It is conservative here (the quad is
+     * wider than it is tall on a wide panel) and conservative is the safe direction: it can keep a
+     * crest that is a metre off frame, never drop one that is on it. In practice it stops drawing
+     * about 30 m into the dive, which is most of every run.
+     *
+     * The two draws are ONE argument list written twice, exactly as [drawDiver]'s and
+     * [drawRockWall]'s are.
+     */
+    private fun drawCrest(
+        surface: Surface,
+        cam: Camera,
+        normalMaps: NormalMapRenderer?,
+        wallWidth: Float,
+        side: Float
+    )
+    {
+        val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
+        val width = columns * RockFace.TILE_WIDTH_METRES
+        val height = RockFace.TOP_HEIGHT_METRES
+
+        val outward = if (side == RIGHT_WALL) 1f else -1f
+        val centreX = outward * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
+        val centreY = RockFace.WALL_TOP_DEPTH - height * 0.5f
+
+        if (!cam.showsSquare(centreX, centreY, max(width, height))) return
+
+        val diffuse = if (side == RIGHT_WALL) RockFace.topMirrorDiffuse else RockFace.topDiffuse
+        val normal = if (side == RIGHT_WALL) RockFace.topMirrorNormal else RockFace.topNormal
+
+        surface.drawTexture(
+            diffuse,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            0f, 0f, 0f, 1f, 1f, columns.toFloat(), 1f
+        )
+
+        // The copied argument list. Same rect, same angle, same origin, same tiling.
+        normalMaps?.drawNormalMap(
+            normal,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            columns.toFloat(), 1f
+        )
     }
 
     /**
@@ -493,9 +577,12 @@ object DiveRenderer
      * count is not an option — and note the count is asked for the slab PLUS the inset, since the
      * quad now starts inside the boundary and has that much further to reach.
      *
-     * Vertically it spans [RockFace.tileRows] whole tiles from the tile boundary at or above the
-     * visible top, for the reason [RockFace.tileTopDepth] gives: that is what nails the rock to
-     * the water instead of to the camera.
+     * Vertically it starts at [RockFace.WALL_TOP_DEPTH] — a fixed WORLD depth, just under the
+     * waterline, where [drawCrest] caps it — and runs [RockFace.tileRows] whole tiles past the
+     * bottom of the frame. A fixed top edge is what nails the rock to the water rather than to the
+     * camera, and it is stronger than the tile lattice it replaced because it is a constant rather
+     * than a rounding of the camera. See [RockFace.tileRows] for what that cost (a vertical phase
+     * that provably bought nothing) and why.
      *
      * The two draws are ONE argument list written twice, exactly as [drawDiver]'s are. If you
      * change one of these numbers, change it in both.
@@ -504,14 +591,12 @@ object DiveRenderer
         surface: Surface,
         normalMaps: NormalMapRenderer?,
         wallWidth: Float,
-        worldTop: Float,
         worldBottom: Float,
         angle: Float
     )
     {
-        val phase = if (angle == RIGHT_WALL) RockFace.TILE_HEIGHT_METRES * 0.5f else 0f
         val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
-        val rows = RockFace.tileRows(worldTop, worldBottom, phase)
+        val rows = RockFace.tileRows(worldBottom)
         val width = columns * RockFace.TILE_WIDTH_METRES
         val height = rows * RockFace.TILE_HEIGHT_METRES
 
@@ -520,7 +605,7 @@ object DiveRenderer
         // The quad grows OUTWARD from its inner edge, hence the sign.
         val outward = if (angle == RIGHT_WALL) 1f else -1f
         val centreX = outward * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
-        val centreY = RockFace.tileTopDepth(worldTop, phase) + height * 0.5f
+        val centreY = RockFace.WALL_TOP_DEPTH + height * 0.5f
 
         surface.drawTexture(
             RockFace.diffuse,

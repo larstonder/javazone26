@@ -292,66 +292,34 @@ class RockFaceTest
     }
 
     /**
-     * THE TILE LATTICE IS THE WORLD'S, NOT THE CAMERA'S — the difference between rock that is
-     * part of the water column and rock that creeps upward as the diver descends. Sizing the quad
-     * to the visible rect is the obvious implementation and is exactly the bug: the texture's v
-     * origin would then be the camera's top edge, so the cliff would scroll at its own rate.
+     * THE ROCK IS ANCHORED TO THE WATERLINE, NOT TO THE CAMERA — the difference between rock that
+     * is part of the water column and rock that creeps upward as the diver descends. Sizing the
+     * quad to the visible rect is the obvious implementation and is exactly the bug: the texture's
+     * v origin would then be the camera's top edge, so the cliff would scroll at its own rate.
      * Nothing about that shows in a still frame; what it shows in is a dive.
      *
-     * The property that catches it is that the lattice is invariant under a whole-tile shift and
-     * SHIFTS BY THE SAME AMOUNT under anything else.
+     * The property that catches it is that the wall's top edge does not depend on the camera AT
+     * ALL — it is a world constant — and that the row count is the only thing the camera moves.
      */
     @Test
-    fun `the tile lattice is anchored to the world and not to the camera`()
+    fun `the wall's top edge is a world constant and the camera only changes how far down it runs`()
     {
         val h = RockFace.TILE_HEIGHT_METRES
-        for (worldTop in listOf(-24f, 0f, 7.3f, 40f, 99.9f, 136f))
+        // Several of these sit just past a tile boundary MEASURED FROM THE WALL'S TOP rather
+        // than from zero — 41 m is two tiles from 1.5 m and one tile from 0 m — because that is
+        // the only place the difference between the two shows up at all.
+        for (worldBottom in listOf(36f, 41f, 41.4f, 60f, 73.7f, 81.6f, 160f, 196f))
         {
-            val top = RockFace.tileTopDepth(worldTop)
-            assertTrue(top <= worldTop, "the quad must start at or above the visible top, got $top for $worldTop")
-            assertTrue(worldTop - top < h, "the quad must not start more than one tile above the visible top, got $top for $worldTop")
-            assertTrue(abs(top / h - floor(top / h)) < 1e-4f, "$top is not on the tile lattice")
-
-            // A whole tile of camera movement changes nothing but the offset, so the phase of the
-            // rock at any given world depth is the same before and after.
-            assertEquals(top + h, RockFace.tileTopDepth(worldTop + h), 1e-3f, "one tile of descent must move the lattice by exactly one tile")
-            // Half a tile of camera movement moves the lattice by zero or by a whole tile, never
-            // by half — which is what "the phase is a function of world depth" means.
-            val half = RockFace.tileTopDepth(worldTop + h * 0.5f)
-            assertTrue(abs(half - top) < 1e-3f || abs(half - top - h) < 1e-3f, "the lattice moved by ${half - top}, which is not a whole number of tiles")
-        }
-    }
-
-    /** The phase argument shifts the whole lattice and does nothing else — it is what stops the two walls being an exact mirror. */
-    @Test
-    fun `a phase offsets the lattice by exactly that much`()
-    {
-        val h = RockFace.TILE_HEIGHT_METRES
-        for (worldTop in listOf(-24f, 12f, 70f, 145f))
-        {
-            val phase = h * 0.5f
-            val shifted = RockFace.tileTopDepth(worldTop, phase)
-            assertTrue(abs((shifted - phase) / h - floor((shifted - phase) / h)) < 1e-4f, "$shifted is not on the phase-shifted lattice")
-            assertTrue(shifted != RockFace.tileTopDepth(worldTop, 0f) || worldTop == 0f, "a half-tile phase must actually move the lattice at $worldTop")
-        }
-    }
-
-    /**
-     * The quad has to reach past the bottom of the frame, and not by more than it must. Too few
-     * rows leaves a strip of unpainted water below the cliff; the round-up is what makes the
-     * count whole, which is what `texture.frag`'s `fract(texCoord * tiling)` needs to avoid
-     * cutting the last tile off mid-feature.
-     */
-    @Test
-    fun `the tile rows cover the visible rect and stop just past it`()
-    {
-        val h = RockFace.TILE_HEIGHT_METRES
-        for ((top, bottom) in listOf(-24f to 36f, 0f to 60f, 13.7f to 73.7f, 100f to 160f))
-        {
-            val rows = RockFace.tileRows(top, bottom)
-            val quadTop = RockFace.tileTopDepth(top)
-            assertTrue(quadTop + rows * h >= bottom, "$rows rows from $quadTop stop at ${quadTop + rows * h}, short of $bottom")
-            assertTrue(quadTop + (rows - 1) * h < bottom, "$rows rows is one more than needed to reach $bottom")
+            val rows = RockFace.tileRows(worldBottom)
+            val top = RockFace.WALL_TOP_DEPTH
+            assertTrue(
+                top + rows * h >= worldBottom,
+                "$rows rows from $top stop at ${top + rows * h}, short of $worldBottom — a strip of unpainted water under the cliff"
+            )
+            assertTrue(
+                top + (rows - 1) * h < worldBottom,
+                "$rows rows is one more than needed to reach $worldBottom"
+            )
         }
     }
 
@@ -359,8 +327,8 @@ class RockFaceTest
     @Test
     fun `the tile rows are never zero or negative`()
     {
-        assertEquals(1, RockFace.tileRows(0f, 0f), "an empty visible rect must still be one tile")
-        assertEquals(1, RockFace.tileRows(60f, 0f), "an inverted visible rect must still be one tile")
+        assertEquals(1, RockFace.tileRows(RockFace.WALL_TOP_DEPTH), "an empty visible rect must still be one tile")
+        assertEquals(1, RockFace.tileRows(-100f), "an inverted visible rect must still be one tile")
     }
 
     /**
@@ -386,13 +354,11 @@ class RockFaceTest
             val columns = RockFace.tileColumns(wall)
             assertTrue(columns >= 1, "aspect $aspect asked for $columns tiles")
             assertTrue(columns * w >= wall, "$columns tiles span ${columns * w} m, short of the ${wall} m of rock at aspect $aspect")
-            // Minimality only bites where there is rock to cover; at 4:3 there is none, and the
-            // floor of one tile is deliberate — see the assertions below.
             if (wall > 0f)
                 assertTrue((columns - 1) * w < wall, "$columns tiles is one more than needed for ${wall} m at aspect $aspect")
         }
 
-        assertEquals(1, RockFace.tileColumns(0f), "4:3 shows no rock at all and must still ask for a well-formed quad")
+        assertEquals(1, RockFace.tileColumns(0f), "a zero-width wall must still ask for a well-formed quad")
         assertEquals(1, RockFace.tileColumns(-5f), "an inverted rect must not ask for a negative number of tiles")
     }
 
@@ -412,20 +378,179 @@ class RockFaceTest
         )
     }
 
+    // --- THE CREST -----------------------------------------------------------------------------
+
+    /** The same three silent traps as the wall's declaration, on four more textures. */
+    @Test
+    fun `the crest is declared with the parameters that keep it in the diver's texture arrays`()
+    {
+        val crests = listOf(
+            "top diffuse" to RockFace.topDiffuse,
+            "top normal" to RockFace.topNormal,
+            "top mirror diffuse" to RockFace.topMirrorDiffuse,
+            "top mirror normal" to RockFace.topMirrorNormal
+        )
+        for ((name, texture) in crests)
+        {
+            assertEquals(1, texture.maxMipLevels, "$name maxMipLevels must be 1 — 0 allocates no storage at all, and the constructor's default of 5 generates mips across the never-written remainder of the array layer")
+            assertEquals(RockFace.diffuse.filter, texture.filter, "$name: a different filter means a second 251.7 MB texture array")
+            assertEquals(RockFace.diffuse.wrapping, texture.wrapping, "$name: a different wrapping means a second 251.7 MB texture array")
+        }
+        assertEquals(TextureFormat.SRGBA8, RockFace.topDiffuse.format, "the crest's albedo is sRGB-encoded and the GPU must linearize it on sample")
+        assertEquals(TextureFormat.SRGBA8, RockFace.topMirrorDiffuse.format, "the mirrored albedo must share the base's format")
+        assertEquals(TextureFormat.RGBA8, RockFace.topNormal.format, "the bake already decoded the crest's normals to linear; SRGBA8 would linearize them twice")
+        assertEquals(TextureFormat.RGBA8, RockFace.topMirrorNormal.format, "the mirrored normals must share the base's format")
+    }
+
     /**
-     * The gate that stands between an unfinished asynchronous upload and a frame in front of a
-     * queue. `AssetManager.load` only appends to a queue; the handle is replaced in `onUploaded`
-     * on the GL thread some frames later. A gate that answered yes early would hand the renderer
-     * an INVALID handle, which `texture.frag` reads as `NO_TEXTURE` and draws as a plain
-     * untextured quad — indistinguishable from the wall having no art, which is the whole failure
-     * mode this project keeps rediscovering.
-     *
-     * Called once, not in a loop: [RockFace.ready] counts consecutive misses toward a single WARN.
+     * THE CREST AND THE WALL MUST HAVE THE SAME TEXEL SIZE, or the join at the waterline carries a
+     * scale change. Both are drawn [RockFace.TILE_WIDTH_METRES] across, so equal baked WIDTHS is
+     * the whole of it — and the crest's height then decides how tall the cliff is.
      */
     @Test
-    fun `the rock is not ready before the engine has uploaded it`()
+    fun `the crest is baked to the wall's width, and its height is the art's own proportion`()
     {
-        assertTrue(!RockFace.ready(), "the readiness gate said yes with both handles still INVALID")
+        val top = pngSize(File("src/main/resources/backdrop/rock-top-diffuse.png"))
+        assertEquals(top, pngSize(File("src/main/resources/backdrop/rock-top-normal.png")), "the crest's albedo and normal map must be the same size — they are one rect submitted twice")
+        assertEquals(RockFace.TOP_TEXELS_WIDE, top.first, "the committed crest is ${top.first} texels wide, not ${RockFace.TOP_TEXELS_WIDE}")
+        assertEquals(RockFace.TOP_TEXELS_TALL, top.second, "the committed crest is ${top.second} texels tall, not ${RockFace.TOP_TEXELS_TALL}")
+
+        assertEquals(
+            RockFace.TEXELS_WIDE, RockFace.TOP_TEXELS_WIDE,
+            "the crest is not baked to the wall's width, so their texels are different sizes and the join at the waterline carries a scale change"
+        )
+        assertEquals(
+            RockFace.TOP_TEXELS_TALL.toFloat() / RockFace.TOP_TEXELS_WIDE.toFloat(),
+            RockFace.TOP_HEIGHT_METRES / RockFace.TILE_WIDTH_METRES,
+            1e-5f,
+            "the crest's world shape does not match the texture's, so the summit is drawn stretched"
+        )
+    }
+
+    /**
+     * THE JOIN IS UNDER WATER AND STAYS THERE. The crest and the tile are different crops of rock
+     * whose textures do not continue into one another, so where they meet is a discontinuity —
+     * and the only thing hiding it is that it sits below the deepest trough the wave can reach,
+     * inside the meniscus and the near-surface haze `water.frag` draws.
+     *
+     * Pinned as a RELATIONSHIP to the wave rather than as a number, so that retuning the ripple
+     * (which is a look decision somebody will make again) cannot silently lift the join into view.
+     */
+    @Test
+    fun `the wall meets the crest below the deepest trough the wave can reach`()
+    {
+        assertEquals(
+            RockFace.WALL_TOP_DEPTH, Tuning.SURFACE_DEPTH + RockFace.CREST_SUBMERGENCE_METRES, 1e-5f,
+            "the wall's top edge is no longer the crest's bottom edge, so the two either overlap or leave a gap"
+        )
+        assertTrue(
+            RockFace.WALL_TOP_DEPTH > Tuning.SURFACE_DEPTH + WaterSurface.AMPLITUDE_METRES,
+            "the join at ${RockFace.WALL_TOP_DEPTH} m is above the wave's deepest trough at ${Tuning.SURFACE_DEPTH + WaterSurface.AMPLITUDE_METRES} m — a trough would expose it"
+        )
+        assertTrue(
+            RockFace.WALL_TOP_DEPTH < WaterSurface.QUAD_BOTTOM_DEPTH,
+            "the join is deeper than the near-surface haze reaches, so nothing is covering it"
+        )
+        // ...and the summit is above the water, or the cliff does not break the surface at all.
+        assertTrue(
+            RockFace.CREST_TOP_DEPTH < Tuning.SURFACE_DEPTH - WaterSurface.AMPLITUDE_METRES,
+            "the crest's summit at ${RockFace.CREST_TOP_DEPTH} m never clears the highest wave crest, so the cliff never breaks the surface"
+        )
+        // ...and not so far above it that it can never be seen whole.
+        assertTrue(
+            RockFace.CREST_TOP_DEPTH > Framing.targetCameraDepth(Tuning.SURFACE_DEPTH),
+            "the summit at ${RockFace.CREST_TOP_DEPTH} m is above the highest the camera's top edge ever reaches, so the crest is cut off by the frame at every depth"
+        )
+    }
+
+    /**
+     * THE MIRROR IS A REAL MIRROR, RE-DERIVED FROM THE COMMITTED BASE — the one property of this
+     * bake that fails in a way that reads as bad art rather than as a bug.
+     *
+     * The right-hand crest cannot be got from a rotation (180 degrees flips a summit upside down)
+     * and cannot be got from a uv swap (`drawNormalMap` takes no uv arguments, so the albedo would
+     * mirror and the normals would not). So it is a second baked texture, and the thing that can
+     * silently go wrong in it is the normal map: flip the image and forget to negate the x
+     * component and every bump on one whole cliff is lit from the wrong side.
+     *
+     * Checked texel by texel against the base files, not against `tools/backdrop/mirror.py` — the
+     * bake's own tests already cover the function; this covers the FILES that shipped.
+     */
+    @Test
+    fun `the mirrored crest is the exact horizontal mirror of the committed base`()
+    {
+        val dir = "src/main/resources/backdrop/"
+        val baseDiffuse = ImageIO.read(File(dir + "rock-top-diffuse.png"))
+        val mirrorDiffuse = ImageIO.read(File(dir + "rock-top-mirror-diffuse.png"))
+        val baseNormal = ImageIO.read(File(dir + "rock-top-normal.png"))
+        val mirrorNormal = ImageIO.read(File(dir + "rock-top-mirror-normal.png"))
+
+        val w = baseDiffuse.width
+        val h = baseDiffuse.height
+        assertEquals(w to h, mirrorDiffuse.width to mirrorDiffuse.height, "the mirrored albedo is a different size from the base")
+        assertEquals(w to h, mirrorNormal.width to mirrorNormal.height, "the mirrored normal map is a different size from the base")
+
+        // Sampled on a coprime lattice rather than every texel: 691x1152 is 796 032 texels and
+        // four getRGB calls each is slow enough to notice in a test suite. 7 and 11 share no
+        // factor with either dimension, so the walk covers the whole image including both edges.
+        for (y in 0 until h step 11)
+        {
+            for (x in 0 until w step 7)
+            {
+                val mx = w - 1 - x
+                assertEquals(
+                    baseDiffuse.getRGB(x, y), mirrorDiffuse.getRGB(mx, y),
+                    "the mirrored albedo differs from the base at ($x, $y) -> ($mx, $y)"
+                )
+
+                val a = baseNormal.getRGB(x, y)
+                val b = mirrorNormal.getRGB(mx, y)
+                assertEquals(
+                    255 - ((a shr 16) and 0xFF), (b shr 16) and 0xFF,
+                    "the mirrored normal's x component at ($mx, $y) is not the negation of the base's at ($x, $y) — every bump on the right-hand cliff would be lit from the wrong side"
+                )
+                assertEquals((a shr 8) and 0xFF, (b shr 8) and 0xFF, "the mirrored normal's y component changed at ($mx, $y); a horizontal mirror leaves the up-down slope alone")
+                assertEquals(a and 0xFF, b and 0xFF, "the mirrored normal's z component changed at ($mx, $y); a horizontal mirror leaves the facing alone")
+                assertEquals(a ushr 24, b ushr 24, "the mirrored normal's alpha changed at ($mx, $y)")
+            }
+        }
+    }
+
+    /**
+     * The same reflectance-floor measurement as the wall's, on the crest — checked SEPARATELY
+     * rather than assumed to follow, because it is a different crop of rock with a different
+     * distribution and the bake gives it the wall's gain rather than solving for its own.
+     */
+    @Test
+    fun `every visible texel of the committed crest clears the GI reflectance floor`()
+    {
+        for (name in listOf("rock-top-diffuse.png", "rock-top-mirror-diffuse.png"))
+        {
+            val image = ImageIO.read(File("src/main/resources/backdrop/$name"))
+            var worst = Float.MAX_VALUE
+            var worstAt = ""
+            var counted = 0
+            for (y in 0 until image.height)
+            {
+                for (x in 0 until image.width)
+                {
+                    val argb = image.getRGB(x, y)
+                    if ((argb ushr 24) == 0) continue
+                    counted++
+                    val length = DiveRenderer.reflectanceLength(
+                        ((argb shr 16) and 0xFF) / 255f,
+                        ((argb shr 8) and 0xFF) / 255f,
+                        (argb and 0xFF) / 255f
+                    )
+                    if (length < worst) { worst = length; worstAt = "($x, $y)" }
+                }
+            }
+            assertTrue(counted > 0, "$name has no visible texels at all")
+            assertTrue(
+                worst >= DiveRenderer.GI_REFLECTANCE_FLOOR,
+                "the darkest of $counted visible texels in $name, at $worstAt, has linear length $worst — under the GI reflectance floor of ${DiveRenderer.GI_REFLECTANCE_FLOOR}, so the shader will replace that patch of cliff with flat grey"
+            )
+        }
     }
 
     /** Width and height from the IHDR chunk, at its fixed offset. No image library, no pixels. */
