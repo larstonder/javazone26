@@ -345,6 +345,36 @@ object DiveRenderer
      * Note this is now stated in metres against the visible rect rather than in pixels against
      * the screen, and it is the same statement: the slab exists only where there is frame left
      * over outside the column.
+     *
+     * ## THE BACKING IS CUT BACK OFF THE RAGGED EDGE, AND THAT WAS A SHIPPED DEFECT
+     *
+     * The owner, looking at a capture: *"we should show water behind the alpha of the rocks.
+     * Currently it's black."* He was right, and the cause was entirely here rather than in the
+     * lighting. `8258eb6` kept the flat slab from `0f07303` as a backing across the WHOLE wall and
+     * then drew the cliff over it, on the reasoning that "the walls are opaque, so they confine
+     * the backdrop to the column with no clip test". That reasoning held for a flat slab and
+     * stopped holding the moment the wall became a texture with an alpha cutout: the slab was
+     * still opaque, so it covered the water [drawZoneBands] had already laid down full-width, and
+     * what showed through the cliff's notches was [wallColor] — not water.
+     *
+     * MEASURED, at 12 m and 16:9 (3200x1800), mean over a 40-row band across the boundary:
+     *
+     *     x = column boundary (water)     RGB (0.00, 3.00, 30.88)
+     *     x = 1.3 m outside it (backing)  RGB (0.00, 0.00,  0.00)
+     *     x = 4.0 m outside it (backing)  RGB (0.00, 0.00,  0.00)
+     *
+     * — a hard vertical step from water to literal zero, at exactly the column boundary and
+     * nowhere else, which is a giveaway that it is an ALBEDO edge and not a light-map one: the
+     * light map knows nothing about `Tuning.COLUMN_HALF_WIDTH`. [wallColor]'s linear blue is
+     * 0.0273 against the shallows' 0.212, so the same light map over water instead of over stone
+     * is worth ~7.8x in the channel that carries this scene.
+     *
+     * So the backing now stops at [RockFace.BACKING_HALF_WIDTH] — outward of every texel of the
+     * innermost tile that is not opaque in every row. Outward of that it is provably invisible
+     * and still does its other two jobs (the joins between tiles on a wide panel, and the frames
+     * before the upload lands); inward of it the zone bands show through the alpha, which is what
+     * the owner asked for. When the texture is NOT ready the backing covers the whole wall again,
+     * unchanged — a flat slab is the right degradation, an empty frame edge is not.
      */
     private fun drawColumnWalls(
         surface: Surface,
@@ -358,15 +388,19 @@ object DiveRenderer
         val height = worldBottom - worldTop
         val leftSlab = -Tuning.COLUMN_HALF_WIDTH - worldLeft
         val rightSlab = worldRight - Tuning.COLUMN_HALF_WIDTH
+        val ready = RockFace.ready()
 
-        // The backing, first and opaque. It is what shows through the cliff's transparent
-        // notches, what covers any frame left over outside the tiles on a very wide panel, and
-        // what the wall degrades to for the frames before the texture has uploaded.
+        // How far from the axis the opaque backing may begin. Without the art it is the column
+        // boundary itself, i.e. exactly the slab `0f07303` shipped.
+        val backingHalfWidth = if (ready) RockFace.BACKING_HALF_WIDTH else Tuning.COLUMN_HALF_WIDTH
+        val leftBacking = -backingHalfWidth - worldLeft
+        val rightBacking = worldRight - backingHalfWidth
+
         surface.setDrawColor(wallColor)
-        if (leftSlab > 0f) surface.fillRect(worldLeft, worldTop, leftSlab, height)
-        if (rightSlab > 0f) surface.fillRect(Tuning.COLUMN_HALF_WIDTH, worldTop, rightSlab, height)
+        if (leftBacking > 0f) surface.fillRect(worldLeft, worldTop, leftBacking, height)
+        if (rightBacking > 0f) surface.fillRect(backingHalfWidth, worldTop, rightBacking, height)
 
-        if (!RockFace.ready()) return
+        if (!ready) return
 
         // White and opaque: drawTexture MODULATES by the surface's current draw colour, which is
         // still wallColor from the fills above.
@@ -421,13 +455,24 @@ object DiveRenderer
      * only, as the mockup does — silently breaks the cue, and the failure is a player wrestling
      * with a stick they now believe is faulty.
      *
+     * WHICH IS WHY THE QUAD IS ANCHORED ON [RockFace.QUAD_INNER_HALF_WIDTH] AND NOT ON THE
+     * BOUNDARY ITSELF. The last 67 of the tile's 691 texel columns hold no alpha at all, so a quad
+     * whose u = 1 edge sat on the boundary put the cliff's furthest-reaching texel 1.31 m short of
+     * it. That was invisible while an opaque slab filled the gap and becomes a uniform channel of
+     * un-enterable water the moment the water shows through — i.e. removing the slab would have
+     * WEAKENED the very cue this method exists for. Shifting the quad in by exactly that empty
+     * margin restores it and then some: the promontories touch the boundary, the bays between them
+     * are water, and because the margin really is empty no rock is ever drawn inside the column.
+     *
      * ## Everything else here is width and rounding
      *
      * [wallWidth] is how much frame is left outside the column on this side, which is zero at 4:3
      * (the visible half-width is exactly 40 m there) and grows with the panel's aspect ratio. The
-     * quad is a whole number of [RockFace.TILE_WIDTH_METRES] wide, anchored on the boundary and
-     * running OUTWARD, so the surplus spills off the side of the frame where nothing can see the
-     * join. See [RockFace.tileColumns] for why a fractional count is not an option.
+     * quad is a whole number of [RockFace.TILE_WIDTH_METRES] wide, anchored on
+     * [RockFace.QUAD_INNER_HALF_WIDTH] and running OUTWARD, so the surplus spills off the side of
+     * the frame where nothing can see the join. See [RockFace.tileColumns] for why a fractional
+     * count is not an option — and note the count is asked for the slab PLUS the inset, since the
+     * quad now starts inside the boundary and has that much further to reach.
      *
      * Vertically it spans [RockFace.tileRows] whole tiles from the tile boundary at or above the
      * visible top, for the reason [RockFace.tileTopDepth] gives: that is what nails the rock to
@@ -446,16 +491,16 @@ object DiveRenderer
     )
     {
         val phase = if (angle == RIGHT_WALL) RockFace.TILE_HEIGHT_METRES * 0.5f else 0f
-        val columns = RockFace.tileColumns(wallWidth)
+        val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
         val rows = RockFace.tileRows(worldTop, worldBottom, phase)
         val width = columns * RockFace.TILE_WIDTH_METRES
         val height = rows * RockFace.TILE_HEIGHT_METRES
 
         // Centres, because a rotated quad's (x, y) has to mean its middle for the rotation to be
         // about that middle — the same CENTRE_ORIGIN convention every other object here uses.
-        // The quad grows OUTWARD from the column boundary, hence the sign.
+        // The quad grows OUTWARD from its inner edge, hence the sign.
         val outward = if (angle == RIGHT_WALL) 1f else -1f
-        val centreX = outward * (Tuning.COLUMN_HALF_WIDTH + width * 0.5f)
+        val centreX = outward * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
         val centreY = RockFace.tileTopDepth(worldTop, phase) + height * 0.5f
 
         surface.drawTexture(

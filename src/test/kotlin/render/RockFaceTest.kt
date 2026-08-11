@@ -163,6 +163,135 @@ class RockFaceTest
     }
 
     /**
+     * THE ALPHA PROFILE, READ OFF THE COMMITTED FILE.
+     *
+     * [RockFace.OPAQUE_TEXEL_COLUMNS] and [RockFace.ALPHA_TEXEL_COLUMNS] are what decide where the
+     * flat backing may start and where the quad's inner edge goes, i.e. they are the whole of the
+     * fix for the owner's *"we should show water behind the alpha of the rocks. Currently it's
+     * black."* Both are properties of the ART, so a re-bake — a different `--rock-height`, or the
+     * owner redrawing the cliff with a longer ragged edge — moves them, and nothing about the
+     * resulting wall says so: it just quietly goes back to painting stone where the sea should be,
+     * or starts drawing rock inside the play column.
+     */
+    @Test
+    fun `the alpha profile matches the committed texture`()
+    {
+        val image = ImageIO.read(diffusePng)
+        val alpha = Array(image.width) { x ->
+            var min = 255
+            var max = 0
+            for (y in 0 until image.height)
+            {
+                val a = image.getRGB(x, y) ushr 24
+                if (a < min) min = a
+                if (a > max) max = a
+            }
+            min to max
+        }
+
+        val firstNotSolid = (0 until image.width).first { alpha[it].first < 255 }
+        val pastLastVisible = (0 until image.width).last { alpha[it].second > 0 } + 1
+
+        assertEquals(
+            firstNotSolid, RockFace.OPAQUE_TEXEL_COLUMNS,
+            "column $firstNotSolid is the first that is not opaque at every depth of the tile — the backing may not reach past it, or it shows through the cliff's notches instead of the water"
+        )
+        assertEquals(
+            pastLastVisible, RockFace.ALPHA_TEXEL_COLUMNS,
+            "the last texel with any alpha is in column ${pastLastVisible - 1}, so ${image.width - pastLastVisible} columns of the tile are empty"
+        )
+        assertTrue(
+            RockFace.OPAQUE_TEXEL_COLUMNS < RockFace.ALPHA_TEXEL_COLUMNS,
+            "the solid body must end before the ragged edge does"
+        )
+    }
+
+    /**
+     * WHERE THE ROCK LOOKS LIKE IT IS, IS WHERE THE DIVER ACTUALLY STOPS — the property
+     * `drawColumnWalls` was written for, expressed against the art rather than against a comment.
+     *
+     * The cliff's furthest-reaching texel must land ON [Tuning.COLUMN_HALF_WIDTH], neither short
+     * of it (a channel of water the stick will not enter — the failure the wall exists to prevent,
+     * and what removing the opaque backing would have reintroduced) nor past it (rock drawn over
+     * water the diver can swim through).
+     *
+     * Both halves are killed by mutation: anchoring the quad on the boundary itself, as the wall
+     * did before the backing was cut back, leaves the reach 1.31 m short.
+     */
+    @Test
+    fun `the cliff's furthest reach lands exactly where the simulation stops the diver`()
+    {
+        val reach = RockFace.QUAD_INNER_HALF_WIDTH +
+            RockFace.TILE_WIDTH_METRES * (RockFace.TEXELS_WIDE - RockFace.ALPHA_TEXEL_COLUMNS) / RockFace.TEXELS_WIDE
+
+        assertEquals(
+            Tuning.COLUMN_HALF_WIDTH, reach, 1e-3f,
+            "the cliff reaches to |x| = $reach but the diver is stopped at ${Tuning.COLUMN_HALF_WIDTH}"
+        )
+    }
+
+    /**
+     * NO ROCK INSIDE THE PLAY COLUMN. The quad is shifted inward by the empty margin behind the
+     * ragged edge, so the shift is only safe for as long as that margin really is empty — read off
+     * the committed file, not asserted from the constant that was derived from it.
+     *
+     * A texel here would be rock drawn over water the diver can occupy, which is the same class of
+     * lie as the channel above, pointing the other way.
+     */
+    @Test
+    fun `the inward shift draws no rock inside the play column`()
+    {
+        val image = ImageIO.read(diffusePng)
+        val perTexel = RockFace.TILE_WIDTH_METRES / RockFace.TEXELS_WIDE
+        for (x in 0 until image.width)
+        {
+            // The innermost tile: u = (x + 1) / width is the texel's far edge, and the quad runs
+            // from QUAD_INNER_HALF_WIDTH outward, so |worldX| falls as u rises.
+            val worldX = RockFace.QUAD_INNER_HALF_WIDTH + (image.width - x - 1) * perTexel
+            if (worldX >= Tuning.COLUMN_HALF_WIDTH) continue
+            for (y in 0 until image.height)
+                assertEquals(
+                    0, image.getRGB(x, y) ushr 24,
+                    "texel ($x, $y) lands at |x| = $worldX, inside the ${Tuning.COLUMN_HALF_WIDTH} m column, and is not transparent"
+                )
+        }
+    }
+
+    /**
+     * THE OWNER'S DEFECT, AS A TEST. *"We should show water behind the alpha of the rocks.
+     * Currently it's black."*
+     *
+     * [DiveRenderer.drawColumnWalls] lays an opaque [DiveRenderer.wallColor] backing down before
+     * the cliff. That backing is what the player saw through every notch — measured at 12 m as a
+     * hard step from RGB (0, 3, 30.9) inside the boundary to (0, 0, 0) outside it — so it may not
+     * reach any texel that is not opaque at EVERY depth of the tile. Beyond that column it is
+     * provably invisible and still covers the joins between tiles and the pre-upload frames.
+     *
+     * Read off the file rather than off [RockFace.OPAQUE_TEXEL_COLUMNS], so that this stays a
+     * statement about the art even if that constant is edited.
+     */
+    @Test
+    fun `the flat backing never reaches a texel the water should show through`()
+    {
+        val image = ImageIO.read(diffusePng)
+        val perTexel = RockFace.TILE_WIDTH_METRES / RockFace.TEXELS_WIDE
+
+        // The lowest-numbered column that is not opaque at every depth is also the FURTHEST from
+        // the axis, because u rises inward — so it is the only one the backing has to clear.
+        val firstNotSolid = (0 until image.width).first { x ->
+            (0 until image.height).any { (image.getRGB(x, it) ushr 24) != 255 }
+        }
+        val outerEdge = RockFace.QUAD_INNER_HALF_WIDTH + (image.width - firstNotSolid) * perTexel
+
+        // A tenth of a millimetre of slack, because the constant and this line divide by 691 in a
+        // different order and may differ in the last bit. Nothing at that scale can be seen.
+        assertTrue(
+            RockFace.BACKING_HALF_WIDTH >= outerEdge - 1e-4f,
+            "column $firstNotSolid is not solid at every depth and reaches out to |x| = $outerEdge, but the backing starts at ${RockFace.BACKING_HALF_WIDTH} — stone would show through the cliff there instead of water"
+        )
+    }
+
+    /**
      * THE TILE LATTICE IS THE WORLD'S, NOT THE CAMERA'S — the difference between rock that is
      * part of the water column and rock that creeps upward as the diver descends. Sizing the quad
      * to the visible rect is the obvious implementation and is exactly the bug: the texture's v
@@ -250,7 +379,10 @@ class RockFaceTest
         val w = RockFace.TILE_WIDTH_METRES
         for (aspect in listOf(4f / 3f, 16f / 10f, 16f / 9f, 21f / 9f, 32f / 9f))
         {
-            val wall = Framing.VISIBLE_DEPTH_METRES * aspect * 0.5f - Tuning.COLUMN_HALF_WIDTH
+            // The slab PLUS the inward shift, which is what `drawRockWall` actually asks for: the
+            // quad starts inside the boundary now, so it has that much further to reach.
+            val wall = Framing.VISIBLE_DEPTH_METRES * aspect * 0.5f - Tuning.COLUMN_HALF_WIDTH +
+                RockFace.EDGE_INSET_METRES
             val columns = RockFace.tileColumns(wall)
             assertTrue(columns >= 1, "aspect $aspect asked for $columns tiles")
             assertTrue(columns * w >= wall, "$columns tiles span ${columns * w} m, short of the ${wall} m of rock at aspect $aspect")

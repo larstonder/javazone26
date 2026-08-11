@@ -107,6 +107,68 @@ object RockFace
      */
     const val TILE_WIDTH_METRES = TILE_HEIGHT_METRES * TEXELS_WIDE.toFloat() / TEXELS_TALL.toFloat()
 
+    // --- The cliff's ALPHA PROFILE, and what the wall may paint behind it ----------------------
+    //
+    // These two numbers were not needed while the wall was backed by an opaque slab across its
+    // whole width. They became load-bearing the moment that slab was cut back so the water shows
+    // through the cliff's notches — see [DiveRenderer.drawColumnWalls], which is where the owner's
+    // "it's black behind the rock" defect actually lived. `RockFaceTest` re-derives both from the
+    // committed PNG, so a re-bake cannot leave them stale.
+
+    /**
+     * The first texel column that is NOT opaque in every single row: 396 of 691, u = 0.573.
+     *
+     * Everything to the left of it is solid stone at every depth of the tile, so a flat backing
+     * drawn under it can never be seen. Everything to the right is the ragged edge, where the
+     * backing IS seen — and where it must therefore not be drawn, because what belongs behind a
+     * cliff standing in the sea is the sea.
+     */
+    const val OPAQUE_TEXEL_COLUMNS = 396
+
+    /**
+     * One past the last texel column holding any alpha at all: 624 of 691, u = 0.903.
+     *
+     * The remaining 67 columns of the tile are completely empty. Anchoring the quad's inner edge
+     * on the column boundary — which is what the wall did until now — therefore left a 1.31 m
+     * strip of nothing between the furthest reach of the rock and the place the simulation stops
+     * the diver. That strip was invisible only because the opaque backing filled it in; take the
+     * backing away and it becomes a uniform channel of water the diver cannot enter, which is
+     * precisely the "stops dead in open water with no visual reason" failure the wall exists to
+     * prevent. [QUAD_INNER_HALF_WIDTH] removes it.
+     */
+    const val ALPHA_TEXEL_COLUMNS = 624
+
+    /**
+     * How far the quad's inner edge sits INSIDE [Tuning.COLUMN_HALF_WIDTH], so that the cliff's
+     * furthest-reaching texel lands exactly on the boundary the diver is stopped at. 1.31 m.
+     *
+     * No rock is ever drawn inside the column: [ALPHA_TEXEL_COLUMNS] is one past the last texel
+     * with any alpha, so the whole of the shifted overlap is empty. What moves is only the
+     * silhouette, and it moves the right way — the promontories now touch the wall the diver
+     * feels, and the bays between them are water, which is what a cliff in the sea looks like.
+     */
+    const val EDGE_INSET_METRES = TILE_WIDTH_METRES * (TEXELS_WIDE - ALPHA_TEXEL_COLUMNS) / TEXELS_WIDE
+
+    /** Where the cliff quad's inner edge sits, as a distance from the column's axis. */
+    const val QUAD_INNER_HALF_WIDTH = Tuning.COLUMN_HALF_WIDTH - EDGE_INSET_METRES
+
+    /**
+     * How much of the innermost tile is not solid at every depth: 5.76 m, the ragged edge plus the
+     * empty margin behind it.
+     */
+    const val RAGGED_METRES = TILE_WIDTH_METRES * (TEXELS_WIDE - OPAQUE_TEXEL_COLUMNS) / TEXELS_WIDE
+
+    /**
+     * The distance from the column's axis at which the flat backing may begin — i.e. outward of
+     * every texel of the innermost tile that is not opaque.
+     *
+     * Outward of this the cliff is solid in every row, so the backing is provably invisible and
+     * exists only to cover the joins BETWEEN tiles (a wide panel needs more than one) and the
+     * frames before the texture has uploaded. Inward of it, the water drawn by
+     * [DiveRenderer.drawZoneBands] is what shows through the alpha.
+     */
+    const val BACKING_HALF_WIDTH = QUAD_INNER_HALF_WIDTH + RAGGED_METRES
+
     /**
      * Albedo. `SRGBA8`: the bake writes sRGB-encoded pixels and the GPU linearizes on sample,
      * which is what the GI multiply expects. Its darkest texel clears
