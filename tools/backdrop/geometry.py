@@ -65,6 +65,21 @@ def fit_height(src_w: int, src_h: int, height: int) -> tuple:
     return max(1, int(round(src_w * height / src_h))), height
 
 
+def fit_width(src_w: int, src_h: int, width: int) -> tuple:
+    """
+    Scale to exactly `width` columns, keeping the source aspect - the transpose of
+    `fit_height`, and the one the cliff TOP needs.
+
+    The top is sized from its width rather than its height because it has to be exactly
+    as wide as the wall it caps: both are drawn `RockFace.TILE_WIDTH_METRES` across, so
+    equal baked widths is what makes their texels the same size. Its height then falls
+    out of the art's proportions, which is how tall the cliff turns out to be.
+    """
+    if src_w < 1 or src_h < 1 or width < 1:
+        raise ValueError(f"bad size {src_w}x{src_h} -> width {width}")
+    return width, max(1, int(round(src_h * width / src_w)))
+
+
 def fit_max_dim(src_w: int, src_h: int, max_dim: int) -> tuple:
     """Scale so the LARGEST side is exactly `max_dim`, keeping the source aspect."""
     if src_w < 1 or src_h < 1 or max_dim < 1:

@@ -7,6 +7,8 @@ Bake the column's rock face and the parallax silhouettes into committed textures
 SOURCE ART PROVENANCE
     assets/rock/diffuse.png        300x1000 RGBA 8-bit, sRGB (gAMA 0.45455)
     assets/rock/normal.png         300x1000 RGBA 8-bit, sRGB-ENCODED tangent normals
+    assets/rock/top_diffuse.png    300x500  RGBA 8-bit, the cliff's summit
+    assets/rock/top_normal.png     300x500  RGBA 8-bit, sRGB-ENCODED tangent normals
     assets/silhouettes/1.png       2000x2000 RGBA
     assets/silhouettes/2.png       3000x3000 RGBA
     assets/silhouettes/3.png       3000x1000 RGBA
@@ -15,7 +17,7 @@ SOURCE ART PROVENANCE
     OUTPUT is committed, exactly as for the diver's sheets - see
     docs/superpowers/specs/2026-08-07-diver-spritesheet-bake-design.md S7.
 
-THE FOUR DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
+THE FIVE DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
 
 1. THE ROCK IS NOT A 1000-ROW TILE. Its wrap period is 889 and the remaining 111 rows
    are the overlap to blend with. Butt-joining the file as delivered repeats a hard
@@ -44,6 +46,14 @@ THE FOUR DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
    are baked as white RGB + the source alpha, so `Backdrop`'s per-layer draw colour is
    the whole of their appearance and can be tuned without a re-bake.
 
+5. THE CLIFF TOP IS SIZED FROM ITS WIDTH, SHARES THE WALL'S GAIN, AND IS BAKED
+   TWICE. It is drawn edge to edge with the wall at the waterline, so equal baked
+   WIDTHS is what makes their texels the same size and the WALL'S OWN gain and ambient
+   are what stop a brightness step appearing along the join. The second bake is its
+   horizontal mirror, for the other side of the column: the wall gets its mirror from a
+   180-degree rotation at the draw site, and 180 degrees flips a summit upside down.
+   See bake_rock_top and backdrop/mirror.py.
+
 Not a decision, a measurement: the rock's albedo is lifted so it clears the GI
 reflectance floor. 44.2% of its opaque texels are under it as delivered. See
 backdrop/reflectance.py.
@@ -58,7 +68,7 @@ from PIL import Image, PngImagePlugin
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from backdrop import geometry, reflectance, tile
+from backdrop import geometry, mirror, reflectance, tile
 from spritesheet.colour import linear_to_srgb, resize_plane, srgb_to_linear, to_u8
 # The same alpha-weighted resize the diver's bake uses, for the same reason: the rock's
 # transparent texels are not uniformly black (they run to RGB 53) and its ragged inner
@@ -79,6 +89,14 @@ OUT_DIR = REPO / "src" / "main" / "resources" / "backdrop"
 # loadAll, so this is belt and braces - but the belt is one rename away from failing.
 ROCK_DIFFUSE_OUT = "rock-diffuse.png"
 ROCK_NORMAL_OUT = "rock-normal.png"
+# The cliff top, and its horizontal mirror for the other side of the column. All four
+# hyphenated for the same reason: `_normal` with an UNDERSCORE trips the auto-loader.
+ROCK_TOP_OUT = {
+    "diffuse": "rock-top-diffuse.png",
+    "normal": "rock-top-normal.png",
+    "mirror_diffuse": "rock-top-mirror-diffuse.png",
+    "mirror_normal": "rock-top-mirror-normal.png",
+}
 
 DEFAULT_ROCK_HEIGHT = 2048
 # Anything in (1024, 2048] joins the existing 2048 arrays; the bound is STRICT at the
@@ -138,13 +156,38 @@ def write_png(path: pathlib.Path, rgba: np.ndarray, meta: dict) -> None:
     )
 
 
+# How far the diffuse's alpha and the normal map's alpha may disagree, per texel.
+#
+# The check behind it is the one that catches a SLID CROP: the two maps are drawn as one
+# rect submitted twice, so if the artist exported them from different framings the
+# lighting slides off the rock by however far they moved. That failure moves the alpha
+# EDGE, which is a step of up to 255 across hundreds of texels - it cannot hide inside a
+# one-LSB tolerance.
+#
+# What does hide inside one LSB is eight-bit export noise, which is what the cliff top
+# actually has: 3 texels of 150 000 differ, every one of them by exactly 1. Demanding
+# bit equality there would be demanding the artist's exporter be deterministic across
+# two files, which is not a property anyone promised. The wall still passes at 0.
+MAX_ALPHA_MISMATCH = 1
+
+
+def require_matching_alpha(name: str, diffuse: np.ndarray, normal: np.ndarray) -> None:
+    """Both maps must be the same crop - see MAX_ALPHA_MISMATCH for what that means exactly."""
+    if diffuse.shape != normal.shape:
+        raise SourceError(f"{name} diffuse {diffuse.shape} != normal {normal.shape}")
+    delta = np.abs(diffuse[..., 3].astype(int) - normal[..., 3].astype(int))
+    worst = int(delta.max())
+    if worst > MAX_ALPHA_MISMATCH:
+        raise SourceError(
+            f"{name} diffuse and normal alpha differ by up to {worst} over "
+            f"{int((delta > MAX_ALPHA_MISMATCH).sum())} texels; the crop would slide"
+        )
+
+
 def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
     diffuse = load_rgba(ROCK_DIR / "diffuse.png")
     normal = load_rgba(ROCK_DIR / "normal.png")
-    if diffuse.shape != normal.shape:
-        raise SourceError(f"rock diffuse {diffuse.shape} != normal {normal.shape}")
-    if np.abs(diffuse[..., 3].astype(int) - normal[..., 3].astype(int)).max() != 0:
-        raise SourceError("rock diffuse and normal alpha differ; the crop would slide")
+    require_matching_alpha("rock", diffuse, normal)
 
     src_h, src_w = diffuse.shape[:2]
     period = period_override or tile.find_wrap_period(diffuse.astype(np.float64))
@@ -243,6 +286,96 @@ def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
         "period": period,
         "size": (out_w, out_h),
         "gain": gain,
+        "ambient": ambient,
+    }
+
+
+def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
+    """
+    The cliff TOP: the summit that caps each wall at the waterline, and its horizontal
+    mirror for the other side of the column.
+
+    THREE DECISIONS, EACH FOR A REASON THE WALL'S BAKE DOES NOT SHARE.
+
+    1. IT IS SIZED FROM ITS WIDTH, NOT ITS HEIGHT. The top is drawn exactly as wide as
+       the wall tile (`RockFace.TILE_WIDTH_METRES`), so baking it to the wall's own
+       output width is what makes their texels the same size and keeps the join
+       invisible. Its height then follows from the art's 300x500 proportions and
+       DECIDES how tall the cliff is - it is a consequence of the drawing, not a number
+       anybody picked.
+
+    2. IT INHERITS THE WALL'S GAIN AND AMBIENT RATHER THAN SOLVING FOR ITS OWN MEAN.
+       `bake_rock` solves a gain so the wall's mean luminance lands on a multiple of
+       `DiveRenderer.wallColor`'s. Doing that again here would give the top a different
+       gain, because it is a different crop of rock with a different mean - and the two
+       are drawn edge to edge at the waterline, where a brightness step between them is
+       a horizontal line across the cliff. The same affine lift on both is what makes
+       the join continuous by construction. The top's own resulting mean is printed, so
+       the difference is measured rather than assumed away.
+
+    3. IT IS BAKED TWICE, THE SECOND TIME MIRRORED. See `backdrop/mirror.py`: the wall
+       gets its right-hand copy from a 180-degree rotation at the draw site, which is a
+       horizontal mirror AND a vertical flip. A summit cannot be flipped vertically, and
+       there is no horizontal-only mirror available at the draw site that also
+       transforms the normals - so it is done here, where the negation of the normal's
+       x component is exact and testable.
+
+    NOT baked as a tile and NOT wrap-blended: it is drawn once, at the top of the wall,
+    and has no seam to itself. That also means its height need not equal the array size
+    the way `TEXELS_TALL` does - `vMax` only matters where `v` wraps, and this `v` runs
+    0 to 1 exactly once.
+    """
+    diffuse = load_rgba(ROCK_DIR / "top_diffuse.png")
+    normal = load_rgba(ROCK_DIR / "top_normal.png")
+    require_matching_alpha("rock top", diffuse, normal)
+
+    src_h, src_w = diffuse.shape[:2]
+    out_w, out_h = geometry.fit_width(src_w, src_h, width)
+    bucket = geometry.bucket_for(max(out_w, out_h))
+    print(f"rock top source {src_w}x{src_h} -> {out_w}x{out_h}, bucket {bucket}, "
+          f"reuses existing 2048 array: {geometry.reuses_array(max(out_w, out_h), 2048)}")
+
+    alpha = diffuse[..., 3] / 255.0
+
+    linear = srgb_to_linear(diffuse[..., :3] / 255.0)
+    resized, resized_alpha, _ = _alpha_weighted_resize(linear, alpha, (out_w, out_h))
+    resized = np.clip(resized, 0.0, None)   # LANCZOS undershoot, before the lift - see bake_rock
+    lifted = reflectance.lift(resized, ambient, gain)
+    diffuse_out = np.dstack([to_u8(linear_to_srgb(lifted)), to_u8(resized_alpha)])
+
+    written = srgb_to_linear(diffuse_out[..., :3] / 255.0)
+    opaque = resized_alpha > 0.5
+    lengths = reflectance.linear_length(written[opaque])
+    below = int((lengths < reflectance.GI_REFLECTANCE_FLOOR).sum())
+    wall_linear = srgb_to_linear(np.array(reflectance.WALL_COLOR_SRGB))
+    print(f"         reflectance: the WALL's gain {gain:.3f} and ambient "
+          f"(|.| {reflectance.linear_length(ambient):.5f}), so the join cannot step")
+    print(f"         baked   linear length min {lengths.min():.5f} "
+          f"median {np.median(lengths):.5f} max {lengths.max():.5f}; "
+          f"{below} of {lengths.size} texels under the {reflectance.GI_REFLECTANCE_FLOOR} floor")
+    print(f"         baked   mean luminance {reflectance.luminance(written[opaque]).mean():.5f} "
+          f"against wallColor's {reflectance.luminance(wall_linear):.5f}")
+    if below:
+        raise SourceError(
+            f"{below} baked rock-top texels are still under the GI reflectance floor; "
+            f"raise AMBIENT_FRACTION"
+        )
+
+    vectors = decode_normals(normal[..., :3])
+    resized_n, resized_alpha_n, covered = _alpha_weighted_resize(vectors, alpha, (out_w, out_h))
+    length = np.linalg.norm(resized_n, axis=-1, keepdims=True)
+    unit = np.where(length > 1e-6, resized_n / np.maximum(length, 1e-6), np.array([0.0, 0.0, 1.0]))
+    unit = np.where(covered[..., None], unit, np.array([0.0, 0.0, 1.0]))
+    normal_out = np.dstack([to_u8((unit + 1.0) * 0.5), to_u8(resized_alpha_n)])
+    baked_v = (normal_out[..., :3] / 255.0) * 2.0 - 1.0
+    print(f"         normals mean |v| {np.linalg.norm(baked_v[opaque], axis=-1).mean():.4f}")
+
+    return {
+        "diffuse": diffuse_out,
+        "normal": normal_out,
+        "mirror_diffuse": mirror.mirror_diffuse(diffuse_out),
+        "mirror_normal": mirror.mirror_normal(normal_out),
+        "size": (out_w, out_h),
     }
 
 
@@ -263,7 +396,7 @@ def bake_silhouettes(max_dim: int) -> list:
     return out
 
 
-def kotlin_snippet(rock_w: int, rock_h: int) -> str:
+def kotlin_snippet(rock_w: int, rock_h: int, top_w: int, top_h: int) -> str:
     """
     The call site to copy verbatim. Argument order is (format, maxMipLevels) and
     maxMipLevels is 1, never 0 - the same two silent-and-fatal facts the diver's bake
@@ -279,8 +412,17 @@ Kotlin - copy verbatim:
         filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
         format = TextureFormat.RGBA8, maxMipLevels = 1)
 
+    Texture("/backdrop/rock-top-diffuse.png", "rock_top_diffuse",       // and -mirror-
+        filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
+        format = TextureFormat.SRGBA8, maxMipLevels = 1)
+    Texture("/backdrop/rock-top-normal.png", "rock_top_normal",         // and -mirror-
+        filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
+        format = TextureFormat.RGBA8, maxMipLevels = 1)
+
     const val ROCK_TEXELS_WIDE = {rock_w}
     const val ROCK_TEXELS_TALL = {rock_h}      // == the 2048 array size, so vMax is exactly 1.0
+    const val TOP_TEXELS_WIDE  = {top_w}       // == ROCK_TEXELS_WIDE, so the texels match at the join
+    const val TOP_TEXELS_TALL  = {top_h}       // decides how tall the cliff is, in metres
 
 FILTER, WRAPPING AND maxMipLevels MUST MATCH THE DIVER'S SHEETS EXACTLY.
 TextureBank.getOrCreateTextureArrayFor reuses an array only when format, filter,
@@ -295,6 +437,11 @@ GL_INVALID_VALUE - no storage allocated, no error logged."""
 
 def bake(rock_height: int, silhouette_max: int, period_override, luminance_factor: float) -> int:
     rock = bake_rock(rock_height, period_override, luminance_factor)
+    # The top is sized from the WALL's baked width, not from an argument: equal widths
+    # is what makes the two textures' texels the same size when both are drawn
+    # TILE_WIDTH_METRES across, and it is not a number anybody should be able to get
+    # wrong from the command line.
+    top = bake_rock_top(rock["size"][0], rock["gain"], rock["ambient"])
     layers = bake_silhouettes(silhouette_max)
 
     fingerprint = hashlib.sha256()
@@ -303,16 +450,20 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     meta = {
         "ept:rock_period": rock["period"],
         "ept:rock_size": "x".join(str(n) for n in rock["size"]),
+        "ept:rock_top_size": "x".join(str(n) for n in top["size"]),
         "ept:silhouette_max": silhouette_max,
         "ept:source_sha256": fingerprint.hexdigest()[:16],
     }
 
     write_png(OUT_DIR / ROCK_DIFFUSE_OUT, rock["diffuse"], meta)
     write_png(OUT_DIR / ROCK_NORMAL_OUT, rock["normal"], meta)
+    for key, name in ROCK_TOP_OUT.items():
+        write_png(OUT_DIR / name, top[key], meta)
     for index, rgba in layers:
         write_png(OUT_DIR / f"silhouette-{index}.png", rgba, meta)
-    print(f"\nwrote {OUT_DIR}/{{{ROCK_DIFFUSE_OUT}, {ROCK_NORMAL_OUT}, silhouette-1..3.png}}")
-    print(kotlin_snippet(*rock["size"]))
+    print(f"\nwrote {OUT_DIR}/{{{ROCK_DIFFUSE_OUT}, {ROCK_NORMAL_OUT}, "
+          f"{', '.join(ROCK_TOP_OUT.values())}, silhouette-1..3.png}}")
+    print(kotlin_snippet(*rock["size"], *top["size"]))
     return 0
 
 

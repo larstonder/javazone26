@@ -1,8 +1,8 @@
 import pytest
 
 from backdrop.geometry import (
-    array_bytes, bucket_for, fit_height, fit_max_dim, reuses_array, texels_per_metre,
-    tiles_across,
+    array_bytes, bucket_for, fit_height, fit_max_dim, fit_width, reuses_array,
+    texels_per_metre, tiles_across,
 )
 
 
@@ -73,3 +73,19 @@ def test_texels_per_metre_is_the_sampling_density_the_seam_argument_rests_on():
     assert texels_per_metre(2048, 40.0) == pytest.approx(51.2)
     with pytest.raises(ValueError):
         texels_per_metre(2048, 0.0)
+
+
+def test_fit_width_hits_the_width_exactly_and_derives_the_height():
+    # The cliff top's actual case: it must come out exactly as wide as the wall's baked
+    # 691, because both are drawn TILE_WIDTH_METRES across and unequal widths would mean
+    # unequal texel sizes on the two halves of one cliff.
+    assert fit_width(300, 500, 691) == (691, 1152)
+    assert fit_width(300, 889, 691) == (691, 2048)   # the wall, the other way round
+    assert fit_width(4, 2, 10) == (10, 5)
+
+
+
+def test_fit_width_refuses_a_degenerate_request():
+    for args in ((0, 500, 691), (300, 0, 691), (300, 500, 0)):
+        with pytest.raises(ValueError):
+            fit_width(*args)
