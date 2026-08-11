@@ -8,19 +8,33 @@ Read `CLAUDE.md` first — it covers the architecture, the coordinate spaces, th
 
 ---
 
-## 0. THE OPEN QUESTION — settle this before any lighting or albedo work
+## 0. SETTLED — the GI composite is MULTIPLICATIVE
 
-**Does `GlobalIlluminationSystem` composite `mainSurface` additively or multiplicatively?**
+This was the open question at the top of this document. It is answered. **`GlobalIlluminationSystem` composites `mainSurface` MULTIPLICATIVELY, with a reflectance floor on our albedo.** Settled 2026-08-11 by decompiling `pulse-engine-0.13.0.jar`. Nothing below needs re-measuring; read it and move on.
 
-Two measured findings disagree, and several designs rest on the answer. An agent stalled mid-investigation.
+**The two "contradictory" findings were both correct, about different stages.** That is why it stayed open: each side of the argument was verifiable, so each agent that looked confirmed whichever half it looked at first.
 
-**Evidence for ADDITIVE.** `pulseengine/shaders/lighting/global/final.frag` ends `fragColor = vec4(base + light, 1.0)` with `baseTex` bound to `mainSurface` — confirmed by reading the shader text. `GlobalIlluminationSystem` installs `GiAo`, `GiBounce`, `GiFinal`, `GiInterior`, `GiJfa`, `GiJfaSeed`, `GiRadianceCascades`, `GiSdf` — confirmed by disassembly, and **no `MultiplyEffect` among them**.
+**The multiply, cited so it cannot be reopened.** `GlobalIlluminationSystem.onUpdate` — **not `onCreate`**, which is the whole reason the earlier disassembly found "no `MultiplyEffect` among them" — constructs `MultiplyEffect("gi_blend_effect", 15, "gi_light_final", minReflectance)` (constructor descriptor `(Ljava/lang/String;ILjava/lang/String;F)V`) and passes it to `Surface.addPostProcessingEffect` on `gfx.getSurface(targetSurface)`. `targetSurface` is initialised to the literal string `"main"` in the system's constructor. A later branch in the same method re-pushes the live value via `MultiplyEffect.setMinReflectance`. `MultiplyEffect.applyEffect` binds `tex0` from `textures.get(0)` — the effect's own input, i.e. `mainSurface`'s render texture — and `tex1` from `getSurface("gi_light_final")`. `pulseengine/shaders/effects/texture_multiply_blend.frag` is:
 
-**Evidence for MULTIPLICATIVE.** The 94.5 m seam (fixed in `0f07303`) was traced to `minReflectance`, and the decisive experiment was setting `minReflectance = 0` with nothing else changed: max row-to-row jump 2.333 → 0.333, seam gone. `minReflectance` appears in exactly one shader in the entire engine — `effects/texture_multiply_blend.frag`, which is `c0.rgb * c1.rgb` with a path-to-white floor. If nothing multiplies `mainSurface`, that experiment should have done nothing.
+```glsl
+if (length(c0.rgb) < minReflectance)   // "Creates a path-to-white if albedo is 100% black"
+    c0.rgb = vec3(minReflectance);
+fragColor = vec4(c0.rgb * c1.rgb, c0.a);
+```
 
-**How to settle it in one capture:** draw a bright constant colour across the frame at a depth where the light map is near zero — 150 m, no pearls nearby. Bright out means additive; black out means multiplicative. Report the pixel values.
+so the floor applies to **c0 = `mainSurface`'s albedo**, which is what we draw.
 
-**Why it matters.** `CLAUDE.md` states the multiply as fact. The reverted rim light (`d6faaa5`) rests on it — its whole argument was that an outline cannot work because albedo is multiplied toward nothing at depth. `e45fdbe` (stopping a pearl's albedo down by its own emission) only makes sense under one reading. Whichever is true, **correct `CLAUDE.md` once, from evidence**, and note it in the design spec's §17 amendment log. Do not let each future agent rediscover it.
+**Why `final.frag` said otherwise, and why it is not a contradiction.** `pulseengine/shaders/lighting/global/final.frag` does end `fragColor = vec4(base + light, 1.0)` — at line **59**, not 57. But `GiFinal` is added as a post-processing effect on the **`gi_light_final` surface**, created a few instructions earlier in the same method, so its `baseTex` (bound from `textures.get(0)`, like every `BaseEffect` input) is that surface's own texture and **never `mainSurface`**. The `gi_local_scene` name `GiFinal` is constructed with is bound to a *different* uniform, `localSceneTex`. `gi_light_final` is named by no other class in the entire jar and nothing draws into it: it exists solely to host `GiFinal` and be sampled as `tex1` by the multiply. **The addition assembles the light map; the multiply puts it on the world.** The §0 error was assuming `baseTex` was `mainSurface`.
+
+**Corroboration already in the tree, consistent with the multiply.** `DiveRenderer.GI_REFLECTANCE_FLOOR`'s doc already describes the `MultiplyEffect` correctly and records the decisive `minReflectance = 0` experiment (94.5 m seam, max row-to-row jump 2.333 → 0.333). `floorBlueForReflectance` only means anything under a multiply. And a 105 m capture reads `(2,0,0)`/`(4,1,0)`/`(8,2,0)` in open water on post-composite `mainSurface` — **zero blue**, while `zoneBlueAt` is explicitly held above the floor. `base + light` cannot produce that; `albedo × a near-black light map` is exactly that.
+
+**What this settles downstream.**
+- **`CLAUDE.md` was right** and now carries the citation above, in its platform constraints, together with an explicit note that `final.frag`'s `base + light` is the light-map assembly and that `GiFinal.baseTex` is not `mainSurface`. Recorded in the design spec's §17 amendment log too.
+- **The reverted rim light (`d6faaa5`) stands.** Its argument — an outline cannot work as albedo because albedo is multiplied toward nothing at depth — is the correct one. Do not rebuild it as albedo.
+- **`e45fdbe`** (stopping a pearl's albedo down by its own emission) is the right shape of fix, and generalises: anything that emits and is also drawn must have its albedo paid for.
+- **§3.2's reflectance floor** is a floor on *what we draw*, not a curiosity — measure new art against it.
+- **Task 2.1's dependency on this section is resolved in favour of the multiplicative diagnosis.** Take that branch: masking the flashlight off the diver is the same problem `e45fdbe` solved for pearls, and the same fix may apply.
+- **`LightShafts.kt` and `shaders/godrays.frag`** were built on the additive reading and still argue it in their comments; they are being corrected separately as part of a behaviour fix. `render/LightEmitter.kt`'s HISTORY heading has already been corrected, and its two recorded findings — RGB-vs-alpha for an emitter seen from inside, and the `SHAFT_ALPHA_CEILING` window — are unaffected either way, being about a `drawLight` emitter upstream of any composite.
 
 ---
 
@@ -56,7 +70,7 @@ The torch light renders over the diver's body — the flickering pool sits on hi
 
 The emitter is 1.2 m at 0.40 × `DIVER_HEIGHT_METRES` forward along the heading (`5c5377d`) — i.e. on his mask, deliberately.
 
-**Depends on §0.** If the composite is multiplicative, this is the same problem `e45fdbe` solved for pearls (stop the albedo down by the light it emits) and the same fix may apply. If additive, the diagnosis is different and needs redoing.
+**§0 is settled and it is multiplicative**, so this is the same problem `e45fdbe` solved for pearls — stop the albedo down by the light it emits — and the same fix may apply. The additive branch of that fork is dead; do not redo the diagnosis under it.
 
 **Do not retry moving or hollowing the emitter.** `LightEmitter`'s class doc records the disproof: with `radius = 0`, `sampleScene` skips the distance term, so irradiance at the centre of a ring equals that inside a disc at *any* hole radius. An annulus was built, measured and reverted.
 
@@ -142,7 +156,7 @@ Mip decisions are per-asset, not a house default: the diver's sheet uses 1 becau
 
 Albedo below `0.02` linear length is replaced with flat grey. This produced the 94.5 m seam. **45.3% of the rock's source texels came in under it** and needed an ambient lift in the bake. Measure any new art against `DiveRenderer.GI_REFLECTANCE_FLOOR` and report the distribution.
 
-(Its exact mechanism is entangled with §0 — resolve that first.)
+(Its exact mechanism is §0, now settled: the floor is applied to `c0`, *our* albedo, inside the `MultiplyEffect` that composites the light map onto `mainSurface`.)
 
 ### 3.3 Emitters are visible regions
 

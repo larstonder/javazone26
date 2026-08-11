@@ -24,36 +24,59 @@ import dive.Tuning
  *    column, so every crest is a different width and every gap a different size, and there is
  *    nothing to author unevenly because nothing is even to begin with.
  *
- * ## WHY IT IS NOT A LIGHT ANY MORE, AND WHAT THAT COST
+ * ## WHY IT IS NOT A LIGHT ANY MORE — AND A CORRECTION, BECAUSE THE FIRST ANSWER WAS WRONG
  *
  * `f2f2eaa` made the shafts GI lights on the argument, repeated in CLAUDE.md, that
- * `GlobalIlluminationSystem` MULTIPLIES `mainSurface` by the light map, so albedo painted there
- * would be crushed to nothing exactly where the water is dark. **That argument is false, and the
- * engine's own shader says so:**
+ * `GlobalIlluminationSystem` MULTIPLIES `mainSurface` by the light map. `8fcaa98` then made them
+ * albedo strips on the argument that CLAUDE.md was wrong and the composite is ADDITIVE, citing:
  *
  * ```
- * pulseengine/shaders/lighting/global/final.frag:57   fragColor = vec4(base + light, 1.0);
+ * pulseengine/shaders/lighting/global/final.frag:59   fragColor = vec4(base + light, 1.0);
  * ```
  *
- * The composite is ADDITIVE. `base` is `mainSurface`'s own texture (bound by `GiFinal`) and the
- * light map is ADDED to it, which is also the only reading under which `e45fdbe` ("stop a pearl's
- * albedo down by its own light so the material survives it") makes sense — under a multiply,
- * lowering the albedo would have made the pearl dimmer, not more legible. So albedo drawn to
- * `mainSurface` survives into the deep at exactly the opacity it was drawn with. Nothing needed
- * escaping; the shafts are drawn where everything else in the world is drawn.
+ * **That correction was itself wrong, and this paragraph is the retraction.** The composite is
+ * MULTIPLICATIVE; CLAUDE.md was right all along. Settled 2026-08-11 by disassembling
+ * `pulse-engine-0.13.0.jar`, and the two readings turn out to be true of different stages:
  *
- * The consequence, which is real and should be heard rather than discovered: **the shafts no
- * longer interact with the light map at all.** They are not occluded by rock, they cast nothing
- * on the diver, and they do not light a pearl that passes through them. For a volumetric shaft
- * that is arguably correct — what you are looking at is scattering in the water between you and
- * the scene, which is in front of all of it — and it is what the owner's reference plainly is.
- * What is given up is the one thing the light version had: a shaft could brighten what stood
- * inside it. Nothing in the game depended on that.
+ *  - `GlobalIlluminationSystem.onUpdate` — NOT its constructor, which is why disassembling only
+ *    the setup path misses it — builds `MultiplyEffect("gi_blend_effect", 15, "gi_light_final",
+ *    minReflectance)` and passes it to `Surface.addPostProcessingEffect` on
+ *    `gfx.getSurface(targetSurface)`, where `targetSurface` is the literal string `"main"`.
+ *  - `MultiplyEffect` binds `tex0` from its own input `textures[0]` (mainSurface's render
+ *    texture) and `tex1` from the named texture. `effects/texture_multiply_blend.frag` is
+ *    `fragColor = vec4(c0.rgb * c1.rgb, c0.a)`, with the `minReflectance` floor applied to `c0`
+ *    — i.e. to mainSurface's ALBEDO. That is `DiveRenderer.GI_REFLECTANCE_FLOOR`, which has
+ *    documented this correctly in this same source tree the whole time.
+ *  - `final.frag`'s `base + light` is real, but `GiFinal` is a post-processing effect on the
+ *    **`gi_light_final` surface**, so its `baseTex` — bound, like every such effect, from
+ *    `textures[0]` — is that surface's own texture and never mainSurface. (The `gi_local_scene`
+ *    name `GiFinal` is constructed with goes to a *different* uniform, `localSceneTex`.) Those
+ *    lines assemble the light map; the `MultiplyEffect` above then multiplies it into
+ *    mainSurface. Reading `baseTex` as mainSurface is the whole of the error.
  *
- * Because there is no light-map coupling left, **the depth ramp is now the only thing keeping the
- * deep dark**, and it is unchanged: `DiveLighting.shaftRampForDepth` is still
- * `ambientGreen(d) / ambientGreen(0)`, times the geometric tail below. `LightShaftsTest` fails if
- * the Abyss stops being exactly zero (spec 11, 6b).
+ * Confirmed against a capture as well as against the jar: at 105 m, open water on mainSurface
+ * post-composite reads `(2,0,0)` / `(4,1,0)` / `(8,2,0)` — **zero blue** — while
+ * `DiveRenderer.zoneBlueAt` explicitly holds the authored water blue above the reflectance floor
+ * at every depth. Under `base + light` that authored navy would be a floor visible everywhere.
+ *
+ * ## WHAT THAT MEANS FOR THIS FILE, NOW THAT THE PREMISE IS THE OTHER WAY ROUND
+ *
+ * The DECISION still stands — these are albedo strips, not lights — but for a different and
+ * better reason than the one that was written down. The bands are multiplied by the light map,
+ * so a band is dim exactly where the water around it is dim and can never be a bright stripe
+ * painted over black. That is the coupling `f2f2eaa` wanted from `drawLight`, obtained without
+ * paying `LightEmitter`'s emitter-is-a-visible-region problem.
+ *
+ * What is genuinely given up is narrower than the retracted paragraph claimed: the shafts still
+ * do not OCCLUDE, do not cast on the diver, and do not light a pearl that passes through, because
+ * they are not in the light map — they are lit BY it. Nothing in the game depended on any of that.
+ *
+ * And the depth ramp is not, as was claimed, "the only thing keeping the deep dark" — the multiply
+ * darkens them too, so the two now compound. The ramp is kept anyway and unchanged
+ * (`DiveLighting.shaftRampForDepth` is still `ambientGreen(d) / ambientGreen(0)`, times the
+ * geometric tail below) because it is the guard rail that makes the Abyss exactly zero by
+ * GEOMETRY — no strip is submitted at all — which is a promise a multiply cannot make.
+ * `LightShaftsTest` fails if the Abyss stops being exactly zero (spec 11, 6b).
  *
  * ## THIS IS A FIELD, NOT A SET OF SHAFTS, AND OTHER EFFECTS CAN SAMPLE IT
  *
@@ -282,6 +305,81 @@ object LightShafts
 
     /** How wide the overlay is: the water column and nothing else — the rock walls are not water. */
     fun halfWidth() = Tuning.COLUMN_HALF_WIDTH
+
+    /**
+     * How many metres before the column's edge the bands start fading out, so that [halfWidth]'s
+     * boundary is not a visible straight line down the water.
+     *
+     * ## THIS FIXED A SEAM THAT WAS MEASURED, NOT GUESSED
+     *
+     * `98bbcb0` shipped the overlay with no lateral fade at all: the strips simply stopped at
+     * +-[halfWidth]. That reads as a hard vertical edge down both sides of the frame, and the
+     * play column ends up looking like a lit rectangle pasted over darker water. It is invisible
+     * in the 1200x900 dev window because [Framing.VISIBLE_DEPTH_METRES] is 60 m, so at 4:3 the
+     * visible width is exactly 60 * 4/3 = 80 m = the full column and both edges sit precisely on
+     * the screen border. At 16:9 — which is what a booth display almost certainly is — there are
+     * 13 m of water outside the column on each side and the seam is one of the first things the
+     * eye lands on.
+     *
+     * Measured on a 3200x1800 capture at 20 m, scanning for the largest single-pixel step along
+     * each row (`wide20-0.png`, mainSurface post-composite):
+     *
+     * ```
+     *   depth ~ 9 m   step 15 at x=399->400   (0,3,25) -> (7,9,23)
+     *   depth ~16 m   step 36 at x=399->400   (0,3,26) -> (19,17,23)
+     *   depth ~26 m   step 16 at x=399->400   (0,2,20) -> (8,9,19)
+     *   depth ~36 m   step  5                  (no longer at the boundary)
+     *   depth ~46 m   step  3                  (gone)
+     * ```
+     *
+     * x=399.5 of 3200 is world -40.0 m, i.e. exactly `Tuning.COLUMN_HALF_WIDTH`, and the step
+     * decays with depth in step with [tailFade] and dies with it — which is what identifies the
+     * shafts as the cause rather than the light map. The same scan on a 105 m capture finds no
+     * step at the boundary at all. The step is warm-positive INSIDE the column (red and green
+     * gain, blue does not), which is this overlay's tint and nothing else's.
+     *
+     * ## WHY A FADE AND NOT A WIDER QUAD
+     *
+     * The other way to remove the edge is to draw the bands across the whole visible width. That
+     * is rejected on [halfWidth]'s own grounds — the rock walls are not water — and it would put
+     * bright bands over the cliff face, where the thing being lit is stone and the shaft would be
+     * scattering in front of it rather than in it. Fading instead says something true: the cliff
+     * shades the water beside it, so there is less light in the last few metres before the wall.
+     *
+     * ## WHY 10 m, AND WHY IT IS ITS OWN CONSTANT
+     *
+     * Long enough that no band is cut mid-crest: the narrowest of the four periods is 8 m (see
+     * [period]), so a fade shorter than that could still end a crest abruptly. Short enough to
+     * leave 60 of the column's 80 m at full strength. It is deliberately NOT [SURFACE_FADE_METRES]
+     * reused, even though both are 10: they answer different questions (how light enters the water
+     * versus how the wall shades it) and either may be re-tuned without the other.
+     */
+    const val WALL_FADE_METRES = 10f
+
+    /**
+     * `1` across the middle of the column, falling to `0` at +-[halfWidth]. **The same arithmetic
+     * `godrays.frag` performs** on `abs(vWorld.x)`, and duplicated for the reason [bandSum]'s doc
+     * gives: GLSL cannot be unit-tested, and the property that actually matters here — that this
+     * reaches exactly zero at the boundary, so there is nothing left to make an edge out of — is
+     * a property of this function.
+     *
+     * Same smoothstep shape as [tailFade] and [bandMask].
+     */
+    fun wallFade(x: Float): Float
+    {
+        val t = ((halfWidth() - kotlin.math.abs(x)) / (halfWidth() - wallFadeStart())).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
+    /**
+     * The `|x|` at which [wallFade] leaves 1 and starts falling — the shader's `wallFade.x`.
+     *
+     * Exists so that this subtraction happens exactly ONCE. `ShaftRenderer` uploads it and
+     * [wallFade] divides by it, and those are the GLSL and Kotlin halves of the same curve; a
+     * second derivation of `halfWidth() - WALL_FADE_METRES` at the upload site is the shape of
+     * the bug `6ea1f53` shipped, where two places computed the same thing and one of them drifted.
+     */
+    fun wallFadeStart() = halfWidth() - WALL_FADE_METRES
 
     // ---- The animation clock ------------------------------------------------------------------
 

@@ -110,6 +110,46 @@ class GodRayShaderTest
         }
     }
 
+    /**
+     * BOTH OF THE OVERLAY'S GEOMETRIC EDGES ARE FADED, AND THE UNIFORM TEST ABOVE CANNOT SEE IT.
+     *
+     * The strips are a rect, so they have four hard edges and every one of them is a straight
+     * line across the water unless something fades it. `surfaceFade` handles the top, the depth
+     * ramp handles the bottom (`LightShafts.tailFade`), and `wallFade` handles the two sides —
+     * that last one only since the seam was measured, at 36/255 at exactly world -40.0 m.
+     *
+     * The declared-versus-uploaded test above passes on a uniform that is declared, uploaded and
+     * then never read: it matches on the declaration text. A `wallFade` that stopped being
+     * multiplied into the output alpha would restore the seam with every test in this file still
+     * green, which is precisely the silent-regression shape this suite exists to prevent. So the
+     * assertion here is on the OUTPUT expression rather than on the declaration.
+     *
+     * Deliberately structural rather than an exact-text pin: it requires the fade terms to reach
+     * `fragColor`'s alpha, and does not care how they are spelled or in what order they multiply.
+     */
+    @Test
+    fun `every edge of the overlay's geometry is faded in the output alpha`()
+    {
+        val alphaExpression = Regex("""fragColor\s*=\s*vec4\(([^;]*)\)\s*;""")
+            .find(frag)
+            ?.groupValues?.get(1)
+
+        assertTrue(alphaExpression != null, "godrays.frag no longer assigns fragColor as a vec4(...)")
+
+        listOf(
+            "band" to "the band mask — without it the whole column is a flat wash of tint",
+            "entry" to "the surface fade — the bands get a hard bright cap on the waterline",
+            "walls" to "the wall fade — the column's side edges become vertical lines down the frame",
+            "vRamp" to "the depth ramp — the guard rail that keeps the deep dark (spec 11, 6b)"
+        ).forEach { (term, why) ->
+            assertTrue(
+                alphaExpression.contains(term),
+                "godrays.frag computes '$term' but does not multiply it into fragColor's alpha. " +
+                "That term is $why"
+            )
+        }
+    }
+
     @Test
     fun `the two stages agree on their interface`()
     {

@@ -179,6 +179,7 @@ class ShaftRenderer(private val config: SurfaceConfigInternal) : BatchRenderer()
         program.setUniform("apex", LightShafts.APEX_X, LightShafts.APEX_HEIGHT_METRES)
         program.setUniform("bandEdges", LightShafts.BAND_THRESHOLD, LightShafts.BAND_PEAK)
         program.setUniform("surfaceFade", LightShafts.SURFACE_FADE_METRES)
+        program.setUniform("wallFade", LightShafts.wallFadeStart(), LightShafts.halfWidth())
 
         drawInstancedQuads(instanceBuffer, instanceLayout, program, drawCount, startIndex)
         vao.release()
@@ -228,7 +229,7 @@ class ShaftRenderer(private val config: SurfaceConfigInternal) : BatchRenderer()
         /** Every uniform the renderer uploads. Checked against the GLSL by the same test. */
         val UNIFORMS = listOf(
             "viewProjection", "bandFrequency", "bandAmplitude", "bandPhase",
-            "tint", "apex", "bandEdges", "surfaceFade"
+            "tint", "apex", "bandEdges", "surfaceFade", "wallFade"
         )
 
         /**

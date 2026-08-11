@@ -240,9 +240,24 @@ object LightEmitter
      * # THE SHAFT EMITTER IS GONE, AND THESE TWO FINDINGS ARE WHY IT MUST NOT BE REBUILT BLIND
      *
      * `f2f2eaa` drew the god rays as real GI lights emitting from a second generated texture that
-     * lived here. They are now albedo strips on `mainSurface` through `shaders/godrays.frag` —
-     * `LightShafts` has the owner's brief and the correction to CLAUDE.md ("GI multiplies
-     * mainSurface" is false; `final.frag:57` is `base + light`) that made that possible.
+     * lived here. They are now albedo strips on `mainSurface` through `shaders/godrays.frag`;
+     * `LightShafts` has the owner's brief for that move.
+     *
+     * THE JUSTIFICATION THIS COMMENT USED TO CARRY FOR THAT MOVE WAS WRONG, and is corrected here
+     * rather than deleted because it is exactly the sort of thing that gets re-derived. It claimed
+     * CLAUDE.md's "GI multiplies `mainSurface`" was false, on the evidence that `final.frag` ends
+     * `base + light`. Settled on 2026-08-11 by decompiling `pulse-engine-0.13.0.jar`: **the
+     * composite is a MULTIPLY**. `GlobalIlluminationSystem.onUpdate` — not `onCreate`, which is why
+     * reading only the surface-setup path misses it — installs
+     * `MultiplyEffect("gi_blend_effect", 15, "gi_light_final", minReflectance)` on
+     * `gfx.getSurface(targetSurface)`, and `targetSurface` is initialised to `"main"`;
+     * `MultiplyEffect` binds `tex0` from its own input (that surface, i.e. `mainSurface`) and `tex1`
+     * from the `gi_light_final` surface. The `base + light` line is real — it is line 59, not 57 —
+     * but it is the light map ASSEMBLING ITSELF: `GiFinal` is a post-processing effect on the
+     * `gi_light_final` surface and its `baseTex` is that surface's own texture, not `mainSurface`.
+     * Two true statements about two different stages. CLAUDE.md's platform constraints carry the
+     * full citation. **Neither of the two findings below depends on which it is** — both are about
+     * what a `drawLight` emitter looks like from the inside, upstream of any composite.
      *
      * So nothing below is live code any more. It is recorded because both findings were expensive,
      * neither is discoverable from the API, and anyone who ever makes a shaft a `drawLight` again

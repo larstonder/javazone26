@@ -8,13 +8,19 @@
 //
 // #version 330 core, not higher: macOS caps OpenGL at 4.1.
 //
-// WHY THIS IS ALBEDO ON `main` AND NOT A LIGHT. GI's composite is ADDITIVE —
-// `pulseengine/shaders/lighting/global/final.frag:57` is `fragColor = vec4(base + light, 1.0)`,
-// with `base` bound to mainSurface's own texture by GiFinal — so albedo drawn here is NOT
-// multiplied toward nothing in the deep, which is what CLAUDE.md's "GI multiplies mainSurface"
-// claim would predict and what made the previous two passes use drawLight. See LightShafts's
-// class doc for the full correction and for what is given up (these no longer interact with the
-// light map at all: no occlusion by rock, no lighting of a pearl that passes through).
+// WHY THIS IS ALBEDO ON `main` AND NOT A LIGHT. Not because the composite is additive — an
+// earlier version of this header said so and it is FALSE. `GlobalIlluminationSystem` adds a
+// `MultiplyEffect("gi_blend_effect", 15, "gi_light_final", minReflectance)` to mainSurface, so
+// what lands on screen is `mainSurface.rgb * lightMap.rgb`. (`lighting/global/final.frag`'s
+// `base + light` is real but is the light map ASSEMBLING itself: GiFinal binds its `baseTex`
+// from the GI local-scene surface, not from mainSurface.) See LightShafts's class doc.
+//
+// So these bands ARE multiplied by the light map, which is what the alternative — a drawLight
+// emitter — was reaching for anyway. What that buys, and it is not nothing: a band is dim where
+// the water around it is dim, so it can never be a bright stripe painted over black. What it
+// costs is that the depth ramp is now doing work the multiply already does; see
+// LightShafts.tailFade for why the ramp is nonetheless kept (it is the guard rail that makes the
+// Abyss exactly zero by geometry, which a multiply cannot promise).
 
 #version 330 core
 
@@ -34,6 +40,7 @@ uniform vec4 bandPhase;       // base phase + drift * the animation clock, advan
 uniform vec2 apex;            // (x, height above the surface) — the convergence
 uniform vec2 bandEdges;       // (threshold, peak) of the band mask's smoothstep
 uniform float surfaceFade;    // metres over which the bands come up to full below the waterline
+uniform vec2 wallFade;        // (|x| where the fade begins, |x| where it reaches zero) in metres
 
 // The band colour: LINEAR rgb, with alpha the peak opacity. A uniform and NOT the surface's
 // packed draw colour — godrays.vert says why, and it is a leak that shipped a wrong frame once.
@@ -60,5 +67,12 @@ void main()
     // surface reads as a spotlight aimed down rather than as light entering the water.
     float entry = smoothstep(0.0, surfaceFade, vWorld.y);
 
-    fragColor = vec4(tint.rgb, tint.a * band * entry * vRamp);
+    // The same treatment for the column's SIDE edges, which are otherwise a hard vertical line
+    // down both sides of the frame — the strips simply stop at +-COLUMN_HALF_WIDTH. Measured at
+    // 20 m as a 36/255 single-pixel step at exactly world -40.0 m. Mirrors
+    // `LightShafts.wallFade`, which is the testable copy; `1 - smoothstep` rather than a
+    // reversed smoothstep so the argument order matches the uniform's (start, end) naming.
+    float walls = 1.0 - smoothstep(wallFade.x, wallFade.y, abs(vWorld.x));
+
+    fragColor = vec4(tint.rgb, tint.a * band * entry * walls * vRamp);
 }

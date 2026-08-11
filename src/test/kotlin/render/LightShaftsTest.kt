@@ -386,4 +386,86 @@ class LightShaftsTest
             "too dark for anything to show against"
         )
     }
+
+    /**
+     * THE COLUMN'S SIDE EDGES, WHICH ARE THE HORIZONTAL TWIN OF THE TAIL CASE ABOVE.
+     *
+     * The overlay's geometry stops dead at `+-halfWidth()`. `98bbcb0` shipped with nothing fading
+     * it there, and the result is a hard vertical line down both sides of the frame: measured on a
+     * 3200x1800 capture at 20 m as a 36/255 single-pixel step at exactly world -40.0 m, decaying
+     * with depth in step with the shafts themselves and absent entirely at 105 m.
+     *
+     * Every assertion below is written against the property, not the number:
+     *
+     *  - **zero AT the boundary** is the one that removes the seam. Anything non-zero there is an
+     *    edge, however small — the neighbouring pixel outside has no overlay at all.
+     *  - **one at the fade's start** is the other end of the same requirement: a fade that begins
+     *    at 0.9 just moves the step inward instead of removing it.
+     *  - **monotone** — this is a fade, and a smoothstep that had picked up a sign error would
+     *    still hit both endpoints.
+     *  - **at least the narrowest band period wide** is [LightShafts.WALL_FADE_METRES]'s stated
+     *    reason for being 10 and not 2: a fade shorter than the narrowest crest can still cut one
+     *    abruptly, which is the artefact in miniature.
+     *  - **a minority of the column** guards the other direction. Nothing stops someone "fixing"
+     *    the seam by fading across the whole 40 m, which would dim the shafts everywhere.
+     *
+     * The shader performs this same arithmetic on `abs(vWorld.x)`; `GodRayShaderTest` asserts it
+     * is uploaded and consumed, which is the half that cannot be checked from here.
+     */
+    @Test
+    fun `the bands fade out before the column's edge, so its boundary is not a visible line`()
+    {
+        val halfWidth = LightShafts.halfWidth()
+
+        assertEquals(
+            0f, LightShafts.wallFade(halfWidth), 0f,
+            "the bands are still at ${LightShafts.wallFade(halfWidth)} of full opacity where the " +
+            "overlay's geometry ends, so the column's edge is a hard vertical line down the frame"
+        )
+        assertEquals(
+            0f, LightShafts.wallFade(-halfWidth), 0f,
+            "the fade is not symmetric — the left-hand edge of the column still steps"
+        )
+        assertEquals(
+            1f, LightShafts.wallFade(0f), 1e-4f,
+            "the fade dims the middle of the column, where there is no edge to hide"
+        )
+        assertEquals(
+            1f, LightShafts.wallFade(halfWidth - LightShafts.WALL_FADE_METRES), 1e-4f,
+            "the fade does not start from full strength, so it trades the edge at the column " +
+            "boundary for a smaller one at the point the fade begins"
+        )
+
+        // Monotone across the whole half-width: a fade, not a ripple.
+        var previous = LightShafts.wallFade(0f)
+        var x = 0f
+        while (x <= halfWidth)
+        {
+            val here = LightShafts.wallFade(x)
+            assertTrue(
+                here <= previous + 1e-6f,
+                "the fade rises again at x = $x m ($previous -> $here); it is not monotone, so " +
+                "there is a bright ring inside the column edge rather than a fade to it"
+            )
+            assertEquals(
+                here, LightShafts.wallFade(-x), 1e-6f,
+                "the fade differs between +$x m and -$x m; the column is symmetric and the two " +
+                "walls must be too"
+            )
+            previous = here
+            x += 0.25f
+        }
+
+        val narrowestPeriod = (0 until LightShafts.bandCount).minOf { LightShafts.period(it) }
+        assertTrue(
+            LightShafts.WALL_FADE_METRES >= narrowestPeriod,
+            "the fade is ${LightShafts.WALL_FADE_METRES} m against a narrowest band period of " +
+            "$narrowestPeriod m, so a crest can still be cut off mid-band at the column edge"
+        )
+        assertTrue(
+            LightShafts.WALL_FADE_METRES < halfWidth * 0.5f,
+            "the fade eats ${LightShafts.WALL_FADE_METRES} m of a ${halfWidth} m half-width, so " +
+            "most of the column is being dimmed to hide an edge at the very end of it"
+        )
+    }
 }
