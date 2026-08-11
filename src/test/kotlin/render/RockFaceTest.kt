@@ -428,6 +428,75 @@ class RockFaceTest
     }
 
     /**
+     * THE CREST IS ONE SUMMIT, DRAWN ONCE, AND THE CLIFF TOP CONTINUES FROM ITS SHOULDER.
+     *
+     * `98bbcb0` drew it with the wall's argument list, `tileColumns(wallWidth)` copies across —
+     * correct for a repeating wall tile, wrong for a headland's end. It put one identical spire
+     * every [RockFace.TILE_WIDTH_METRES] with open sky between them; measured on a 3456x1218
+     * capture at 0 m, the rock/sky transitions down the left wall landed at world -79.2, -65.7 and
+     * -52.2 m, a pitch of 13.50 m against the tile's 13.496.
+     *
+     * Two things have to hold for the fixed version, and neither is visible in one file alone:
+     *
+     *  - the crest is drawn at its own art's proportions and is exactly one tile wide, so it
+     *    neither repeats nor stretches as the display gets wider;
+     *  - the flat cliff top begins exactly where the sprite's outward edge ends, at exactly the
+     *    depth the art is opaque to at that edge. Either being off leaves a step in the skyline —
+     *    a notch of sky, or a shelf standing proud of the summit.
+     *
+     * [RockFace.TOP_SHOULDER_TEXEL_ROW] is re-derived from BOTH committed PNGs here rather than
+     * trusted, so a re-bake or a redrawn summit fails this instead of quietly leaving that step.
+     * That the base and the mirror agree is also one more independent check on the mirror.
+     */
+    @Test
+    fun `the crest is one tile wide and the flat cliff top starts exactly at its shoulder`()
+    {
+        assertEquals(
+            RockFace.TILE_WIDTH_METRES, RockFace.CREST_WIDTH_METRES, 1e-5f,
+            "the crest is ${RockFace.CREST_WIDTH_METRES} m across against a tile's " +
+            "${RockFace.TILE_WIDTH_METRES} m — it is being stretched or repeated, and repeating a " +
+            "summit draws a row of identical spires one tile apart"
+        )
+        assertEquals(
+            RockFace.CREST_WIDTH_METRES, RockFace.CREST_OUTER_HALF_WIDTH - RockFace.QUAD_INNER_HALF_WIDTH, 1e-5f,
+            "the flat cliff top does not begin where the crest sprite ends, so the skyline has a " +
+            "gap of sky or a doubled shoulder at the join"
+        )
+
+        val dir = "src/main/resources/backdrop/"
+        val cases = listOf(
+            "rock-top-diffuse.png" to 0,                            // outward edge of the LEFT art
+            "rock-top-mirror-diffuse.png" to RockFace.TOP_TEXELS_WIDE - 1  // ...and of the mirror
+        )
+        cases.forEach { (name, column) ->
+            val image = ImageIO.read(File(dir + name))
+            val firstOpaqueRow = (0 until image.height).firstOrNull { y ->
+                (image.getRGB(column, y) ushr 24 and 0xFF) > 128
+            }
+            assertEquals(
+                RockFace.TOP_SHOULDER_TEXEL_ROW, firstOpaqueRow,
+                "$name is opaque from row $firstOpaqueRow at its outward edge (column $column), " +
+                "not ${RockFace.TOP_SHOULDER_TEXEL_ROW} — RockFace.CREST_SHOULDER_DEPTH is derived " +
+                "from that row, so the flat cliff top no longer meets the summit's shoulder"
+            )
+        }
+
+        assertEquals(
+            RockFace.CREST_TOP_DEPTH +
+                RockFace.TOP_HEIGHT_METRES * RockFace.TOP_SHOULDER_TEXEL_ROW / RockFace.TOP_TEXELS_TALL,
+            RockFace.CREST_SHOULDER_DEPTH, 1e-5f,
+            "the shoulder depth is not derived from the art's own profile"
+        )
+        assertTrue(
+            RockFace.CREST_SHOULDER_DEPTH > RockFace.CREST_TOP_DEPTH &&
+                RockFace.CREST_SHOULDER_DEPTH < RockFace.WALL_TOP_DEPTH,
+            "the cliff top at ${RockFace.CREST_SHOULDER_DEPTH} m is not between the summit " +
+            "(${RockFace.CREST_TOP_DEPTH} m) and the waterline join (${RockFace.WALL_TOP_DEPTH} m), " +
+            "so it either stands above the peak it is meant to continue or is drowned by it"
+        )
+    }
+
+    /**
      * THE JOIN IS UNDER WATER AND STAYS THERE. The crest and the tile are different crops of rock
      * whose textures do not continue into one another, so where they meet is a discontinuity —
      * and the only thing hiding it is that it sits below the deepest trough the wave can reach,

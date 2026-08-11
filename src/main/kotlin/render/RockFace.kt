@@ -252,6 +252,55 @@ object RockFace
     /** The depth of the crest's top edge — the summit. */
     const val CREST_TOP_DEPTH = WALL_TOP_DEPTH - TOP_HEIGHT_METRES
 
+    /**
+     * # THE CREST IS ONE SUMMIT AND IT MUST BE DRAWN EXACTLY ONCE
+     *
+     * `98bbcb0` drew it with the wall's own argument list, `tileColumns(wallWidth)` copies across.
+     * That is right for the wall, whose art is a repeating tile, and wrong for this, whose art is
+     * a HEADLAND'S END: solid rock at its outward edge, falling away to a ragged inner edge and
+     * then to nothing by texel column 513 of 691. Repeating it produces one identical spire per
+     * [TILE_WIDTH_METRES] with open sky between them — a picket fence, not a cliff.
+     *
+     * MEASURED on a 3456x1218 capture at 0 m, which shows four copies per side. The rock/sky
+     * transitions down the left wall land at world x = -79.2, -65.7 and -52.2 m: a pitch of
+     * exactly 13.50 m, against [TILE_WIDTH_METRES] = 13.496. Nothing else in the frame has that
+     * period. It is worse the wider the display, and the 4:3 dev window hid it almost entirely
+     * (the whole wall is off-frame there), which is how it shipped.
+     *
+     * So the crest is drawn ONCE, [CREST_WIDTH_METRES] across, anchored on the same inner edge the
+     * wall's innermost tile uses. Outward of that, the cliff top is filled flat to
+     * [CREST_SHOULDER_DEPTH] — see [DiveRenderer.drawColumnWalls]. Flat is honest here rather than
+     * lazy: above the waterline the cliff is a SILHOUETTE against the sunset. Measured over the
+     * crest's own rock in that capture, mean RGB (2.3, 1.3, 5.8) against a sky of (50, 10, 37) —
+     * the texture up there is already invisible, so the fill cannot be told from it.
+     */
+    const val CREST_WIDTH_METRES = TILE_WIDTH_METRES
+
+    /** Where the crest sprite's outward edge sits, and therefore where the flat cliff top begins. */
+    const val CREST_OUTER_HALF_WIDTH = QUAD_INNER_HALF_WIDTH + CREST_WIDTH_METRES
+
+    /**
+     * The first texel row of the crest that is opaque at its OUTWARD edge column — 120 of 1152.
+     *
+     * Column 0 of `rock-top-diffuse.png`, and column 690 of the mirrored copy; `RockFaceTest`
+     * re-derives both from the committed PNGs, and that they agree is one more check that the
+     * mirror is exact. It is the height the headland stands at where it leaves the sprite, so it
+     * is what [CREST_SHOULDER_DEPTH] has to be for the flat top to meet the art without a step.
+     */
+    const val TOP_SHOULDER_TEXEL_ROW = 120
+
+    /**
+     * The depth of the cliff top OUTWARD of the crest sprite: the summit's shoulder, continued off
+     * the side of the frame.
+     *
+     * Derived from [TOP_SHOULDER_TEXEL_ROW] rather than authored, so that a re-bake at a different
+     * size or a redrawn summit moves the flat top with the art instead of leaving a step at the
+     * join. -18.66 m at the shipped crop, i.e. the headland stands about two diver-heights out of
+     * the water where it runs off frame, against the summit's 21 m.
+     */
+    const val CREST_SHOULDER_DEPTH =
+        CREST_TOP_DEPTH + TOP_HEIGHT_METRES * TOP_SHOULDER_TEXEL_ROW / TOP_TEXELS_TALL
+
     private fun rockTexture(file: String, name: String, format: TextureFormat) = Texture(
         "/backdrop/$file",
         name,

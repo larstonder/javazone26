@@ -432,6 +432,33 @@ object DiveRenderer
             if (rightBacking > 0f) surface.fillRect(backingHalfWidth, backingTop, rightBacking, backingHeight)
         }
 
+        // THE CLIFF TOP OUTWARD OF THE CREST — the headland continuing off the side of the frame.
+        //
+        // The crest sprite is ONE summit, [RockFace.CREST_WIDTH_METRES] across (see that constant
+        // for the picket fence that came of drawing it any other way). Everything outward of it
+        // between [RockFace.CREST_SHOULDER_DEPTH] and the waterline was therefore open sky, which
+        // is why the cliffs read as free-standing sea stacks instead of as the walls of a column.
+        //
+        // Flat rather than textured, and that is a measurement rather than a shortcut: above the
+        // waterline the cliff is a silhouette against the sunset — mean RGB (2.3, 1.3, 5.8) over
+        // the crest's own rock in the 0 m capture, against a sky of (50, 10, 37). There is no
+        // texture visible up there to match. Drawn BEFORE the crest so the summit's ragged
+        // profile sits over it, and it inherits `wallColor` from the fills above.
+        if (ready)
+        {
+            val topOfHeadland = maxOf(worldTop, RockFace.CREST_SHOULDER_DEPTH)
+            val headlandHeight = RockFace.WALL_TOP_DEPTH - topOfHeadland
+            val leftHeadland = -RockFace.CREST_OUTER_HALF_WIDTH - worldLeft
+            val rightHeadland = worldRight - RockFace.CREST_OUTER_HALF_WIDTH
+            if (headlandHeight > 0f)
+            {
+                if (leftHeadland > 0f)
+                    surface.fillRect(worldLeft, topOfHeadland, leftHeadland, headlandHeight)
+                if (rightHeadland > 0f)
+                    surface.fillRect(RockFace.CREST_OUTER_HALF_WIDTH, topOfHeadland, rightHeadland, headlandHeight)
+            }
+        }
+
         if (!ready) return
 
         // White and opaque: drawTexture MODULATES by the surface's current draw colour, which is
@@ -441,8 +468,8 @@ object DiveRenderer
         if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldBottom, RIGHT_WALL)
 
         // The crest, LAST, so it draws over the top of the wall it caps rather than under it.
-        if (leftSlab > 0f) drawCrest(surface, cam, normalMaps, leftSlab, LEFT_WALL)
-        if (rightSlab > 0f) drawCrest(surface, cam, normalMaps, rightSlab, RIGHT_WALL)
+        if (leftSlab > 0f) drawCrest(surface, cam, normalMaps, LEFT_WALL)
+        if (rightSlab > 0f) drawCrest(surface, cam, normalMaps, RIGHT_WALL)
     }
 
     /**
@@ -481,12 +508,10 @@ object DiveRenderer
         surface: Surface,
         cam: Camera,
         normalMaps: NormalMapRenderer?,
-        wallWidth: Float,
         side: Float
     )
     {
-        val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
-        val width = columns * RockFace.TILE_WIDTH_METRES
+        val width = RockFace.CREST_WIDTH_METRES
         val height = RockFace.TOP_HEIGHT_METRES
 
         val outward = if (side == RIGHT_WALL) 1f else -1f
@@ -498,17 +523,22 @@ object DiveRenderer
         val diffuse = if (side == RIGHT_WALL) RockFace.topMirrorDiffuse else RockFace.topDiffuse
         val normal = if (side == RIGHT_WALL) RockFace.topMirrorNormal else RockFace.topNormal
 
+        // TILING IS 1, AND THAT IS THE WHOLE OF THIS SPRITE'S CONTRACT — see
+        // RockFace.CREST_WIDTH_METRES. The wall's identical-looking call passes `columns` here
+        // because a wall tile repeats; a summit does not, and repeating it drew a picket fence of
+        // spires one TILE_WIDTH_METRES apart. Do not "fix" a bare frame edge by putting a count
+        // back: what continues the cliff outward is the flat top in [drawColumnWalls].
         surface.drawTexture(
             diffuse,
             centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
-            0f, 0f, 0f, 1f, 1f, columns.toFloat(), 1f
+            0f, 0f, 0f, 1f, 1f, 1f, 1f
         )
 
         // The copied argument list. Same rect, same angle, same origin, same tiling.
         normalMaps?.drawNormalMap(
             normal,
             centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
-            columns.toFloat(), 1f
+            1f, 1f
         )
     }
 
