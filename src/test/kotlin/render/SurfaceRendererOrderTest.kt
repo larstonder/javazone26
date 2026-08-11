@@ -41,11 +41,31 @@ import kotlin.test.assertTrue
  * Anything that draws in FRONT of the world — the god rays, and anything like them later —
  * belongs after it.
  *
- * WHAT IT DOES NOT COVER, so nobody assumes more: it says nothing about the ORDER OF THE OTHER
- * renderers relative to each other, and nothing about a fourth one added in a different file.
- * `IridescenceRenderer` is attached after `DiveLighting.setup` today and the pearls it draws are
- * therefore behind the shafts' depth in the same way — that is the shafts agent's design, was
- * true before this test existed, and is deliberately not asserted here.
+ * ## THE PEARLS WERE IN EXACTLY THAT POSITION, AND IT WAS NOT DESIGN
+ *
+ * An earlier version of this doc said: *"`IridescenceRenderer` is attached after
+ * `DiveLighting.setup` today and the pearls it draws are therefore behind the shafts' depth in
+ * the same way — that is the shafts agent's design, was true before this test existed, and is
+ * deliberately not asserted here."*
+ *
+ * It was the same bug, on the objects the whole game is about. Measured on a pinned 30 m frame at
+ * four pearls' own centre pixels, against the same build with the shafts skipped:
+ *
+ * ```
+ *   depth    with god rays          without
+ *   15.8 m   RGBA(0, 8, 21, 255)    RGBA(137, 109, 18, 255)
+ *   19.8 m   RGBA(0, 9, 23, 255)    RGBA(160, 122, 14, 255)
+ *   27.8 m   RGBA(0, 9, 20, 255)    RGBA(196, 160, 28, 255)
+ * ```
+ *
+ * Every pearl above `LightShafts.END_DEPTH_METRES` was erased — not dimmed, replaced by plain
+ * water at full alpha. Only its GI light survived, on a different surface with a different depth
+ * buffer, so a shallow pearl read as a soft glow with no body. That looks like art, which is why
+ * it shipped and why this doc rationalised it.
+ *
+ * So the rule covers both, and the general form is the one to keep: ANYTHING THAT IS PART OF THE
+ * WORLD IS ATTACHED BEFORE `DiveLighting.setup`; only things that draw in FRONT of the world go
+ * after it. A fifth renderer added in a different file still is not covered here.
  */
 class SurfaceRendererOrderTest
 {
@@ -62,6 +82,40 @@ class SurfaceRendererOrderTest
         assertTrue(
             water < lighting,
             "WaterRenderer is attached AFTER DiveLighting.setup, which attaches ShaftRenderer. Batch renderers are flushed in the order they were ADDED and every one of them writes depth, so the shafts' quads will already have written theirs and every water fragment under a shaft will fail GL_LEQUAL. Measured: the sea vanishes from 0 m to 8.2 m with no error and no log line. See this test's class doc"
+        )
+    }
+
+    /**
+     * THE PEARLS ARE PART OF THE WORLD TOO — the same rule, and the failure is worse.
+     *
+     * The sea vanishing is a look bug. The pearls vanishing is the GAME vanishing: every one
+     * above `LightShafts.END_DEPTH_METRES` was depth-rejected by the shaft quads, leaving only
+     * its GI light — a different surface with a different depth buffer — as a soft glow with no
+     * body.
+     *
+     * Asserted on the WORLD surface's instance specifically. The HUD's instance is on another
+     * surface with its own depth buffer and its order there is irrelevant, so matching the
+     * argument rather than just the method name is what makes this a real test: attaching only
+     * the HUD's copy early would otherwise satisfy it.
+     */
+    @Test
+    fun `the world's iridescence renderer is attached before anything that draws in front of the world`()
+    {
+        val code = File("src/main/kotlin/EnPustTil.kt").readText()
+
+        val pearls = code.indexOf("IridescenceRenderer.addTo(engine.gfx.mainSurface)")
+        val lighting = code.indexOf("DiveLighting.setup(engine)")
+
+        assertTrue(pearls >= 0, "EnPustTil.onCreate no longer attaches IridescenceRenderer to the WORLD surface at all")
+        assertTrue(lighting >= 0, "EnPustTil.onCreate no longer calls DiveLighting.setup — re-read this test before deleting it")
+        assertTrue(
+            pearls < lighting,
+            "IridescenceRenderer is attached to mainSurface AFTER DiveLighting.setup, which attaches ShaftRenderer. " +
+            "Batch renderers are flushed in the order they were ADDED and every one writes depth, including for its " +
+            "transparent fragments, so every pearl above LightShafts.END_DEPTH_METRES fails GL_LEQUAL behind a shaft " +
+            "quad. Measured at a pearl's own centre pixel at 19.8 m: RGBA(0, 9, 23, 255) with the god rays against " +
+            "RGBA(160, 122, 14, 255) without them — erased, not dimmed, with only its GI light left to look at. " +
+            "See this test's class doc"
         )
     }
 }

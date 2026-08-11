@@ -545,6 +545,36 @@ class EnPustTil : PulseEngineGame()
         // WORLD. Anything that draws in FRONT of the world belongs after it here.
         // `SurfaceRendererOrderTest` fails the build if this call moves below `DiveLighting.setup`.
         WaterRenderer.addTo(engine.gfx.mainSurface)
+
+        // AND SO ARE THE PEARLS, for exactly the same reason and at exactly the same cost.
+        //
+        // This used to be attached below, after `DiveLighting.setup`, which put it after
+        // `ShaftRenderer` in the flush order — the identical mistake the sea's comment above
+        // describes, on the objects the whole game is about. `SurfaceRendererOrderTest`'s class
+        // doc even recorded that the pearls were in that position and reasoned it was "the shafts
+        // agent's design", so it deliberately did not assert it. It was not design.
+        //
+        // MEASURED, on a pinned 30 m frame, at four pearls' own centre pixels, against the same
+        // build with the shafts skipped:
+        //
+        //     depth    with god rays        without
+        //     15.8 m   RGBA(0, 8, 21, 255)  RGBA(137, 109, 18, 255)
+        //     16.3 m   RGBA(1, 11, 24, 251) RGBA(155, 119, 15, 255)
+        //     19.8 m   RGBA(0, 9, 23, 255)  RGBA(160, 122, 14, 255)
+        //     27.8 m   RGBA(0, 9, 20, 255)  RGBA(196, 160, 28, 255)
+        //
+        // Not dimmed — GONE, replaced by plain water, with full alpha. Every pearl above
+        // `LightShafts.END_DEPTH_METRES` was being depth-rejected by the shaft quads, which write
+        // depth for every fragment including the transparent ones. What survived is the pearl's
+        // GI LIGHT, which is on a different surface with a different depth buffer, so a shallow
+        // pearl read as a soft blurry glow with no body — which looks like art, and is how this
+        // shipped. Pearls below 50 m were untouched (no strip is submitted there), so the frame
+        // showed crisp pearls deep and vague blobs shallow.
+        //
+        // `ShaftRenderer`'s own doc says the strips should be "hazing them very slightly rather
+        // than being occluded by them". That is what this ordering buys; the depth cursor already
+        // puts the strips in front, so they now blend over the pearls instead of erasing them.
+        IridescenceRenderer.addTo(engine.gfx.mainSurface)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
 
@@ -649,11 +679,11 @@ class EnPustTil : PulseEngineGame()
         // deliberately NOT a `PostProcessingEffect`, which would be a whole-screen filter
         // rather than a per-object surface property.
         //
-        // Attached AFTER DiveLighting.setup so that GI's own surfaces already exist and this
-        // cannot be confused for one of them; the engine defers the actual `init` to the top of
-        // the next frame either way (`SurfaceImpl.addRenderer` queues it), which is why both
+        // Only the HUD's instance is attached here. THE WORLD'S IS ATTACHED WITH THE WORLD, next
+        // to WaterRenderer and BEFORE DiveLighting.setup — see there for why, and
+        // `SurfaceRendererOrderTest` for the rule. The engine defers the actual `init` to the top
+        // of the next frame either way (`SurfaceImpl.addRenderer` queues it), which is why both
         // call sites tolerate a null renderer for one frame.
-        IridescenceRenderer.addTo(engine.gfx.mainSurface)
         IridescenceRenderer.addTo(hudSurface)
 
         // THE SKY, ON A SURFACE OF ITS OWN AND BEHIND THE WORLD — see `render/Sky.kt`, which has
