@@ -178,13 +178,46 @@ object Sky
     }
 
     /**
+     * How deep the sky is painted: past the lowest trough the wave table can produce, and no
+     * further. See [render].
+     */
+    val BOTTOM_DEPTH = Tuning.SURFACE_DEPTH + WaterSurface.AMPLITUDE_METRES + WaterSurface.EDGE_MARGIN_METRES
+
+    /**
      * Draw the sky onto its own surface.
      *
-     * It stops at [WaterSurface.QUAD_BOTTOM_DEPTH] rather than at the waterline, and that is the
-     * point rather than an approximation: everything from the highest crest down to that depth is
-     * painted by [WaterRenderer]'s alpha ramp on `main`, so the sky has to exist BEHIND all of it
-     * for the ramp to have anything to ramp against. Below that depth `main` is opaque and this
-     * would be invisible, so it is not drawn.
+     * It stops at [BOTTOM_DEPTH] — past the lowest trough by [WaterSurface.EDGE_MARGIN_METRES] and
+     * nothing more. The sky has to exist behind the pixels [WaterRenderer]'s alpha ramp runs
+     * through, because that is what the ramp ramps AGAINST; those pixels are the ones the wavy
+     * boundary itself crosses, so they live within [WaterSurface.AMPLITUDE_METRES] of the
+     * waterline. Everywhere below that, `water.frag` writes alpha 1 — "this quad is either water
+     * or it is not, and the only place it is partly water is the pixel the boundary runs through"
+     * — so `main` is opaque and a sky behind it cannot be seen.
+     *
+     * ## IT USED TO STOP AT [WaterSurface.QUAD_BOTTOM_DEPTH], 7.31 m, AND THAT WAS VISIBLE
+     *
+     * The old reasoning took the whole of the water quad as needing a backdrop. Only the alpha
+     * ramp does; the other 7 m of that quad is the UNDERSIDE COLOUR fade, which is opaque and
+     * needs nothing behind it. Those 7 m of unnecessary opaque sunset were harmless right up until
+     * something else stopped `main` being opaque underwater — and `8fcaa98`'s god rays do exactly
+     * that, because the surface blends with straight alpha (`glBlendFunc(GL_SRC_ALPHA,
+     * GL_ONE_MINUS_SRC_ALPHA)` applies to the alpha channel too), so a strip drawn at src alpha
+     * `a` leaves `a^2 + dst*(1 - a)` behind it. Measured on a pinned 20 m frame: `main`'s alpha
+     * inside a shaft is **191**, against 255 in the water beside it.
+     *
+     * The sunset then showed THROUGH the water in every band, down to exactly 7.31 m, where it
+     * stopped dead — a hard horizontal line cutting every god ray at a fixed world depth,
+     * measured at **91/255** at x = -6.25 m. It reads as the shafts being warm near the surface,
+     * which is why it survived review: it looks like art.
+     *
+     * Two defects meet here and this fixes the one that can be fixed safely. The other — that a
+     * batch renderer on `main` can silently punch holes in the world's alpha — is a shared-state
+     * hazard of the same family as `ShaftRenderer.setTint`'s, and it is NOT fixed: `BlendFunction`
+     * is per-surface and batch renderers flush at frame end in add order, so a shaft-only
+     * `ADDITIVE` (which would preserve destination alpha) cannot currently be scoped to them.
+     * What this change removes is anything for those holes to reveal: below [BOTTOM_DEPTH] there
+     * is no sky, and the shafts' own `surfaceFade` holds their alpha near zero above it
+     * (`smoothstep(0, 10, 0.61)` = 0.01), so the two windows do not overlap.
      *
      * Costs nothing once the diver is deeper than that: the whole band is above the visible rect,
      * [stripCount] returns 0 and this method issues no draws at all. That is the common case — the
@@ -197,7 +230,7 @@ object Sky
         val worldLeft = topLeft.x
         val worldTop = topLeft.y
         val width = bottomRight.x - worldLeft
-        val bottom = min(bottomRight.y, WaterSurface.QUAD_BOTTOM_DEPTH)
+        val bottom = min(bottomRight.y, BOTTOM_DEPTH)
 
         val count = stripCount(worldTop, bottom)
         for (i in 0 until count)
