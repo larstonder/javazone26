@@ -178,6 +178,48 @@ object DiveRenderer
      */
     internal val wallColor = Color(0.22f, 0.20f, 0.18f)
 
+    /**
+     * How much brighter the BAKED ROCK is than [wallColor] — 2.0, and it is the bake's number, not
+     * one of ours. `tools/build_backdrop.py`'s `LUMINANCE_FACTOR` is the target the rock's gain is
+     * solved for: "target luminance 2.00*wallColor", and the run prints the result it reaches
+     * (`baked mean luminance 0.06815 against wallColor's 0.03408`).
+     *
+     * `RockFaceTest` re-reads it out of `build_backdrop.py` rather than trusting this copy, the
+     * same way the texel counts are re-derived from the committed PNG's IHDR. Two numbers that
+     * must agree are one number too many.
+     */
+    internal const val ROCK_LUMINANCE_FACTOR = 2.0f
+
+    /**
+     * The flat stand-in for rock ABOVE the waterline, outward of the crest sprite — and the whole
+     * of it is that it must not be [wallColor].
+     *
+     * ## A ONE-PIXEL SEAM, MEASURED
+     *
+     * The headland fill (see [drawColumnWalls]) abuts the tiling wall along the whole of
+     * [RockFace.WALL_TOP_DEPTH], from the crest's outward edge to the side of the frame. Drawn in
+     * `wallColor` it was HALF the brightness of the rock underneath it, because the bake solves
+     * the rock's mean to [ROCK_LUMINANCE_FACTOR] times that colour — so the join was a horizontal
+     * step running the full width of the fill. The owner: *"there is still like a 1 pixel seam
+     * between the sides of the screen and the tops"*. Captured at 0 m and 2.84:1, at world
+     * -75.3 m: `(0, 0, 0)` above the join against `(1, 3, 6)` below it.
+     *
+     * `wallColor` is right where it is used BELOW the waterline — there it shows through the
+     * cliff's alpha notches and stands in for the unlit gap between tiles, not for rock.
+     *
+     * ## WHY THE EXPOSURE GOES THROUGH [exposed]
+     *
+     * The factor is a ratio of LINEAR luminances, and `setDrawColor` packs an sRGB byte that
+     * `texture.vert` decodes with the ~2.4 power curve. Multiplying the sRGB value by 2 would
+     * scale the linear value by far more than 2. [exposed] does the round trip, and is already
+     * the answer to this exact mistake for the pearls.
+     */
+    internal val headlandColor = Color(
+        exposed(wallColor.red, ROCK_LUMINANCE_FACTOR),
+        exposed(wallColor.green, ROCK_LUMINANCE_FACTOR),
+        exposed(wallColor.blue, ROCK_LUMINANCE_FACTOR)
+    )
+
     // THE INNER FACE IS GONE, AND IT SHOULD NOT COME BACK. `0f07303` painted a 0.7 m wide
     // lighter strip (`wallEdgeColor`, `WALL_EDGE_METRES`) down the inside of each slab, because a
     // flat slab of one colour still read as a bar wherever the light map fell to nothing — the
@@ -446,6 +488,11 @@ object DiveRenderer
         // profile sits over it, and it inherits `wallColor` from the fills above.
         if (ready)
         {
+            // [headlandColor], NOT wallColor — see that property for the seam this fixes. The
+            // draw colour is restored to wallColor afterwards because the crest and wall draws
+            // below set their own, and because leaving it changed is the shared-state hazard
+            // ShaftRenderer.setTint already cost this project a measurement.
+            surface.setDrawColor(headlandColor)
             val topOfHeadland = maxOf(worldTop, RockFace.CREST_SHOULDER_DEPTH)
             val headlandHeight = RockFace.WALL_TOP_DEPTH - topOfHeadland
             val leftHeadland = -RockFace.CREST_OUTER_HALF_WIDTH - worldLeft

@@ -519,6 +519,101 @@ class RockFaceTest
     }
 
     /**
+     * THE CLIFF TOP MUST BE AS BRIGHT AS THE CLIFF, OR THE JOIN IS A LINE.
+     *
+     * Above the waterline, outward of the crest sprite, [DiveRenderer.drawColumnWalls] fills flat.
+     * That fill abuts the tiling wall along the whole of [RockFace.WALL_TOP_DEPTH], from the
+     * crest's outward edge to the side of the frame — so if the two are not the same brightness,
+     * the join is a horizontal step the full width of the fill.
+     *
+     * They were not. The fill used `wallColor`, and the bake solves the ROCK's mean to
+     * `LUMINANCE_FACTOR` times that colour — so the fill was exactly half as bright. Captured at
+     * 0 m and 2.84:1, at world -75.3 m: (0, 0, 0) above the join against (1, 3, 6) below it.
+     *
+     * The factor is READ OUT OF THE BAKE here, not copied: `tools/build_backdrop.py` owns it, and
+     * a re-tune there that did not reach `DiveRenderer` would put the seam straight back with
+     * every other test still green. Same reason the texel counts are re-derived from the PNG.
+     */
+    @Test
+    fun `the flat cliff top carries the same luminance the bake gives the rock`()
+    {
+        val bake = File("tools/build_backdrop.py").readText()
+        val declared = Regex("""^LUMINANCE_FACTOR\s*=\s*([0-9.]+)""", RegexOption.MULTILINE)
+            .find(bake)?.groupValues?.get(1)?.toFloat()
+
+        assertTrue(declared != null, "tools/build_backdrop.py no longer declares LUMINANCE_FACTOR at the top level")
+        assertEquals(
+            declared, DiveRenderer.ROCK_LUMINANCE_FACTOR, 1e-4f,
+            "the bake targets ${declared}x wallColor for the rock's mean luminance but DiveRenderer " +
+            "believes ${DiveRenderer.ROCK_LUMINANCE_FACTOR}x — the flat cliff top and the tiling wall " +
+            "meet along the whole waterline, so the difference is a horizontal seam there"
+        )
+
+        // ...and the colour really carries it, in the LINEAR space the ratio is stated in. An sRGB
+        // multiply would overshoot by the ~2.4 power curve, which is the mistake `exposed` exists
+        // to prevent and is invisible in a ratio of the packed bytes.
+        val linear = { c: Float -> DiveRenderer.srgbToLinear(c) }
+        listOf(
+            "red" to (DiveRenderer.wallColor.red to DiveRenderer.headlandColor.red),
+            "green" to (DiveRenderer.wallColor.green to DiveRenderer.headlandColor.green),
+            "blue" to (DiveRenderer.wallColor.blue to DiveRenderer.headlandColor.blue)
+        ).forEach { (name, pair) ->
+            val (wall, headland) = pair
+            assertEquals(
+                linear(wall) * DiveRenderer.ROCK_LUMINANCE_FACTOR, linear(headland), 1e-4f,
+                "the cliff top's $name is not ${DiveRenderer.ROCK_LUMINANCE_FACTOR}x the wall's in LINEAR space"
+            )
+        }
+        assertTrue(
+            DiveRenderer.headlandColor.red > DiveRenderer.wallColor.red,
+            "the cliff top is no brighter than wallColor, so it is still half the rock's luminance"
+        )
+    }
+
+    /**
+     * ...AND THE DRAW SITE ACTUALLY USES IT. A SOURCE SCAN, for the reason
+     * `SurfaceRendererOrderTest` is one: the invariant is which draw colour is in force when two
+     * `fillRect` calls run, and there is no way to observe that without a GL context.
+     *
+     * This exists because the value test above could not fail on its own. Reverting the draw site
+     * to `wallColor` — the exact regression that produced the seam — left `headlandColor` correctly
+     * computed and unused, and every other case green. A colour that is right and not used is the
+     * same picture as a colour that is wrong.
+     */
+    @Test
+    fun `the headland fill is drawn in the headland colour and not the wall's`()
+    {
+        val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+
+        val setsHeadland = code.indexOf("setDrawColor(headlandColor)")
+        val fillsHeadland = code.indexOf("surface.fillRect(RockFace.CREST_OUTER_HALF_WIDTH")
+
+        assertTrue(
+            setsHeadland >= 0,
+            "DiveRenderer never sets headlandColor as the draw colour, so the flat cliff top is " +
+            "drawn in whatever was left in force — wallColor from the backing fills, which is half " +
+            "the rock's luminance and puts a seam along the whole waterline join"
+        )
+        assertTrue(fillsHeadland >= 0, "DiveRenderer no longer fills the headland outward of the crest — re-read this test before deleting it")
+        assertTrue(
+            setsHeadland < fillsHeadland,
+            "headlandColor is set AFTER the headland is filled, so the fill still takes the " +
+            "previous draw colour. setDrawColor is shared surface state; the call has to precede " +
+            "the fill it is for"
+        )
+
+        // Nothing may reset the colour in between. `setDrawColor` is shared state and the backing
+        // fills above set wallColor, so a third call slipped between these two would silently
+        // restore exactly the bug.
+        val between = code.substring(setsHeadland + "setDrawColor(headlandColor)".length, fillsHeadland)
+        assertTrue(
+            !between.contains("setDrawColor"),
+            "another setDrawColor runs between headlandColor being set and the headland being " +
+            "filled, so the fill does not get it: ${between.trim().lines().firstOrNull { it.contains("setDrawColor") }}"
+        )
+    }
+
+    /**
      * THE JOIN IS UNDER WATER AND STAYS THERE. The crest and the tile are different crops of rock
      * whose textures do not continue into one another, so where they meet is a discontinuity —
      * and the only thing hiding it is that it sits below the deepest trough the wave can reach,
