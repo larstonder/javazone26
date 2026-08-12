@@ -62,6 +62,15 @@ THE FIVE DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
    Both now come from the bake, so each side of the column is one consistent horizontal
    mirror of the other, top and side together.
 
+7. THE ROCK THAT REACHES THE FRAME EDGE IS A DIFFERENT TEXTURE FROM THE ROCK THAT
+   MAKES THE SILHOUETTE. The wall art is not uniform across a tile - 43% of its width
+   is empty or ragged - so tiling it outward from a fixed anchor makes what lands at
+   the frame edge a function of `(visibleHalfWidth - anchor) mod TILE_WIDTH_METRES`,
+   and it measured EMPTY at 16:9, the likeliest booth panel. `crop_body` cuts the
+   wall's opaque interior out of the LIFTED output and mirror-doubles it, so there is
+   one texture that is solid at every texel and tiles horizontally by reflection. See
+   crop_body, which has the measurements.
+
 Not a decision, a measurement: the rock's albedo is lifted so it clears the GI
 reflectance floor. 44.2% of its opaque texels are under it as delivered. See
 backdrop/reflectance.py.
@@ -111,6 +120,13 @@ ROCK_TOP_OUT = {
     "normal": "rock-top-normal.png",
     "mirror_diffuse": "rock-top-mirror-diffuse.png",
     "mirror_normal": "rock-top-mirror-normal.png",
+}
+# The cliff BODY - the opaque-at-every-texel interior of the wall, mirror-doubled so it
+# tiles horizontally. ONE pair, not two: it is its own horizontal mirror, so the same
+# texture serves both sides of the column. See crop_body. Hyphenated, same rule.
+ROCK_BODY_OUT = {
+    "diffuse": "rock-body-diffuse.png",
+    "normal": "rock-body-normal.png",
 }
 
 DEFAULT_ROCK_HEIGHT = 2048
@@ -386,6 +402,137 @@ def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
     }
 
 
+def first_not_solid_column(rgba: np.ndarray) -> int:
+    """
+    The lowest texel column at or past the wrap border that is NOT alpha 255 in every row.
+
+    Derived from the array rather than hard-coded (it is 396 on the art as delivered) because
+    the whole point of `crop_body` is that its output is opaque at every texel; a number typed
+    here would be a second copy of a property of the ART, and a redrawn cliff or a different
+    `--rock-height` would leave it stale silently - the crop would simply start including the
+    ragged edge, and the frame edge would start showing water again at some window widths.
+
+    Counted from BORDER_TEXEL_COLUMNS, not from 0: the bake forces column 0 fully transparent
+    (see clear_wrap_border), so "solid at every row" cannot begin before column 1.
+    """
+    solid = (rgba[..., 3] == 255).all(axis=0)
+    for x in range(BORDER_TEXEL_COLUMNS, rgba.shape[1]):
+        if not solid[x]:
+            return x
+    raise SourceError(
+        "no column of the baked wall is transparent anywhere - the cliff has no ragged edge, "
+        "so there is nothing to crop the solid body out of"
+    )
+
+
+def crop_body(diffuse_out: np.ndarray, normal_out: np.ndarray) -> dict:
+    """
+    THE CLIFF BODY: the wall's opaque interior, mirror-doubled, for tiling outward to the
+    frame edge at any aspect ratio.
+
+    ## WHAT IT IS FOR
+
+    The wall's own art is not uniform across a tile. Going outward from a tile's inner end it
+    is EMPTY for 67 texel columns, RAGGED for the next 228, and only then solid for the
+    remaining 396. Tiling that art outward from a fixed anchor therefore makes what lands at
+    the FRAME EDGE a function of `(visibleHalfWidth - anchor) mod TILE_WIDTH_METRES` - and
+    43% of that period is not solid. Measured on the code this replaces, at the frame edge:
+
+        4:3  no rock at all | 16:10 solid | 16:9 EMPTY | 21:9 RAGGED | 32:9 EMPTY
+
+    16:9 is the likeliest booth panel. Five successive commits moved the anchor or swapped
+    the mirror; each of them relocated the hole rather than closing it, because a modulus
+    cannot be closed by choosing a phase. The structural fix is two different textures: the
+    wall's own art drawn ONCE per side for the ragged silhouette, and THIS - opaque at every
+    texel - tiled outward from just inside it, with a whole-tile count rounded UP. Coverage
+    then holds by construction of `ceil`, with no modulus left in the derivation.
+
+    ## WHY IT IS MIRROR-DOUBLED
+
+    The art has NO horizontal wrap period to find: `tile.find_wrap_period` scores its best
+    candidate at 22.1/255 against an interior adjacency of 1.26/255 - a ratio of 17.5x, where
+    the vertical direction (which the wall does tile in) manages 1.5x. So a butt join of the
+    crop against itself is a hard vertical line every tile.
+
+    `[C | mirror(C)]` buys four things at once, and each of them is load-bearing:
+
+      1. it tiles horizontally with a seam that is an exact REFLECTION rather than a step -
+         the last column of one copy is the mirror of the first column of the next;
+      2. it is its own horizontal mirror, so ONE pair serves both sides of the column
+         (2 array layers, not 4) - `RockFaceTest` asserts that on the committed file;
+      3. its join with the wall's edge art is an exact reflection too, because
+         `RockFace.BODY_INNER_HALF_WIDTH` puts the body's inner edge exactly one texel inward
+         of the edge tile's outward end, i.e. against the edge art's own column
+         BORDER_TEXEL_COLUMNS, which is precisely this texture's outermost column;
+      4. it inherits the wall's v phase for free - the crop takes whole columns, all 2048
+         rows, so the vertical wrap blend `bake_rock` solved for is untouched.
+
+    ## CROPPED FROM THE BAKE'S OUTPUT, NOT FROM THE SOURCE
+
+    `diffuse_out`/`normal_out` are the LIFTED, resized arrays `bake_rock` is about to write.
+    Cropping them costs no second resample (a second LANCZOS pass over an already-resampled
+    image is a second set of ringing artefacts) and inherits the wall's gain and ambient
+    EXACTLY - so the body and the wall it abuts cannot differ in brightness, which is the
+    same class of defect as the flat cliff top being half the rock's luminance (`41849a7`).
+    """
+    # The bound comes from the ALBEDO and is applied to both, rather than being solved
+    # separately for each: the two are drawn as one rect submitted twice, so a crop that
+    # differed between them would slide the lighting off the rock. If the normal map is not
+    # solid that far - the resize can leave the two alphas a bit apart even though
+    # `require_matching_alpha` bounds the SOURCE's disagreement at one LSB - the opacity check
+    # below is what catches it, and that is the check worth having: it states the property the
+    # body exists for rather than a relationship between two intermediate numbers.
+    first = first_not_solid_column(diffuse_out)
+
+    crop_diffuse = diffuse_out[:, BORDER_TEXEL_COLUMNS:first, :]
+    crop_normal = normal_out[:, BORDER_TEXEL_COLUMNS:first, :]
+    for name, arr in (("diffuse", crop_diffuse), ("normal", crop_normal)):
+        holes = int((arr[..., 3] != 255).sum())
+        if holes:
+            raise SourceError(
+                f"{holes} texels of the cropped rock body {name} are not fully opaque; the "
+                f"body is what guarantees rock at the frame edge, so a single transparent "
+                f"texel in it is a hole in that guarantee"
+            )
+
+    body_diffuse = np.ascontiguousarray(
+        np.concatenate([crop_diffuse, mirror.mirror_diffuse(crop_diffuse)], axis=1)
+    )
+    body_normal = np.ascontiguousarray(
+        np.concatenate([crop_normal, mirror.mirror_normal(crop_normal)], axis=1)
+    )
+
+    h, w = body_diffuse.shape[:2]
+    bucket = geometry.bucket_for(max(w, h))
+    print(f"rock body columns [{BORDER_TEXEL_COLUMNS}, {first}) of {diffuse_out.shape[1]}, "
+          f"mirror-doubled -> {w}x{h}, bucket {bucket}, reuses existing 2048 array: "
+          f"{geometry.reuses_array(max(w, h), 2048)}")
+    print(f"         every texel opaque: "
+          f"{bool((body_diffuse[..., 3] == 255).all() and (body_normal[..., 3] == 255).all())}; "
+          f"self-mirroring albedo: {bool((body_diffuse == body_diffuse[:, ::-1, :]).all())}")
+
+    written = srgb_to_linear(body_diffuse[..., :3] / 255.0)
+    lengths = reflectance.linear_length(written)
+    below = int((lengths < reflectance.GI_REFLECTANCE_FLOOR).sum())
+    print(f"         baked   linear length min {lengths.min():.5f} "
+          f"median {np.median(lengths):.5f} max {lengths.max():.5f}; "
+          f"{below} of {lengths.size} texels under the {reflectance.GI_REFLECTANCE_FLOOR} floor")
+    print(f"         baked   mean luminance {reflectance.luminance(written).mean():.5f} "
+          f"(the WALL's own gain and ambient, cropped - not solved again)")
+    if below:
+        raise SourceError(
+            f"{below} baked rock-body texels are under the GI reflectance floor; "
+            f"raise AMBIENT_FRACTION"
+        )
+
+    return {
+        "diffuse": body_diffuse,
+        "normal": body_normal,
+        "size": (w, h),
+        "columns": (BORDER_TEXEL_COLUMNS, first),
+    }
+
+
 def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
     """
     The cliff TOP: the summit that caps each wall at the waterline, and its horizontal
@@ -495,7 +642,7 @@ def bake_silhouettes(max_dim: int) -> list:
     return out
 
 
-def kotlin_snippet(rock_w: int, rock_h: int, top_w: int, top_h: int) -> str:
+def kotlin_snippet(rock_w: int, rock_h: int, top_w: int, top_h: int, body_w: int, body_h: int) -> str:
     """
     The call site to copy verbatim. Argument order is (format, maxMipLevels) and
     maxMipLevels is 1, never 0 - the same two silent-and-fatal facts the diver's bake
@@ -518,10 +665,19 @@ Kotlin - copy verbatim:
         filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
         format = TextureFormat.RGBA8, maxMipLevels = 1)
 
+    Texture("/backdrop/rock-body-diffuse.png", "rock_body_diffuse",     // NO mirror: it is
+        filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,   // its own
+        format = TextureFormat.SRGBA8, maxMipLevels = 1)                // horizontal mirror
+    Texture("/backdrop/rock-body-normal.png", "rock_body_normal",
+        filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
+        format = TextureFormat.RGBA8, maxMipLevels = 1)
+
     const val ROCK_TEXELS_WIDE = {rock_w}
     const val ROCK_TEXELS_TALL = {rock_h}      // == the 2048 array size, so vMax is exactly 1.0
     const val TOP_TEXELS_WIDE  = {top_w}       // == ROCK_TEXELS_WIDE, so the texels match at the join
     const val TOP_TEXELS_TALL  = {top_h}       // decides how tall the cliff is, in metres
+    const val BODY_TEXELS_WIDE = {body_w}      // == 2 * (OPAQUE_TEXEL_COLUMNS - BORDER_TEXEL_COLUMNS)
+    const val BODY_TEXELS_TALL = {body_h}      // == ROCK_TEXELS_TALL, so the body keeps the wall's v phase
 
 FILTER, WRAPPING AND maxMipLevels MUST MATCH THE DIVER'S SHEETS EXACTLY.
 TextureBank.getOrCreateTextureArrayFor reuses an array only when format, filter,
@@ -541,6 +697,9 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     # TILE_WIDTH_METRES across, and it is not a number anybody should be able to get
     # wrong from the command line.
     top = bake_rock_top(rock["size"][0], rock["gain"], rock["ambient"])
+    # From the WALL'S OWN OUTPUT arrays, not from the source art: no second resample, and the
+    # gain and ambient are inherited exactly rather than solved again. See crop_body.
+    body = crop_body(rock["diffuse"], rock["normal"])
     layers = bake_silhouettes(silhouette_max)
 
     fingerprint = hashlib.sha256()
@@ -558,11 +717,17 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
         write_png(OUT_DIR / name, rock[key], meta)
     for key, name in ROCK_TOP_OUT.items():
         write_png(OUT_DIR / name, top[key], meta)
+    # The SAME meta as everything else, deliberately: the body is a crop of the wall, so it
+    # carries the wall's provenance, and adding a key of its own here would rewrite the
+    # metadata of all eight existing PNGs and lose the "a re-bake is a no-op" property.
+    for key, name in ROCK_BODY_OUT.items():
+        write_png(OUT_DIR / name, body[key], meta)
     for index, rgba in layers:
         write_png(OUT_DIR / f"silhouette-{index}.png", rgba, meta)
     print(f"\nwrote {OUT_DIR}/{{{', '.join(ROCK_OUT.values())}, "
-          f"{', '.join(ROCK_TOP_OUT.values())}, silhouette-1..3.png}}")
-    print(kotlin_snippet(*rock["size"], *top["size"]))
+          f"{', '.join(ROCK_TOP_OUT.values())}, {', '.join(ROCK_BODY_OUT.values())}, "
+          f"silhouette-1..3.png}}")
+    print(kotlin_snippet(*rock["size"], *top["size"], *body["size"]))
     return 0
 
 
