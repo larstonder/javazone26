@@ -82,4 +82,42 @@ class FramingTest
         assertTrue(top < diverDepth, "camera top must be shallower than the diver")
         assertEquals(Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_SCREEN_FRACTION, diverDepth - top, 0.001f)
     }
+
+    /**
+     * THE CAP IS EXACTLY ONE CLIFF AT EACH END, WHICH IS THE REQUIREMENT ITSELF.
+     *
+     * The owner, after five failed attempts at the symptom: *"for each aspect ratio we should only
+     * ever see exactly one rock cliff on each end of the screen"*. `CameraRig` caps the visible
+     * width at [Framing.VISIBLE_WIDTH_METRES], and every other test here asserts the RELATIONSHIP
+     * — that the frame shows that much and no more. None of them pins the number to one cliff.
+     *
+     * Written because widening the cap to two cliffs a side survived every other case: the frame
+     * dutifully showed the wider cap, the arithmetic stayed self-consistent, and the repetition
+     * came straight back. A test that only checks "the frame shows the constant" cannot notice the
+     * constant being wrong.
+     *
+     * Derived from the rock's own tile width, so a re-bake at a different size moves the cap with
+     * it rather than leaving this stale.
+     */
+    @Test
+    fun `the visible width is the play column plus exactly one cliff at each end`()
+    {
+        val oneCliffEachEnd = 2f * (dive.Tuning.COLUMN_HALF_WIDTH + RockFace.TILE_WIDTH_METRES)
+        assertEquals(
+            oneCliffEachEnd, Framing.VISIBLE_WIDTH_METRES, 1e-4f,
+            "the frame is capped at ${Framing.VISIBLE_WIDTH_METRES} m against ${oneCliffEachEnd} m for " +
+            "the column plus one cliff a side — anything wider is the cliff tile repeating, which is " +
+            "the whole defect this cap exists to make impossible"
+        )
+
+        // ...and the design aspect that falls out of it must still leave 16:9 in the unchanged
+        // regime. If a re-bake ever pushes it below 16:9, the commonest panel silently starts
+        // losing depth, and that is a gameplay change nobody asked for.
+        val designAspect = Framing.VISIBLE_WIDTH_METRES / Framing.VISIBLE_DEPTH_METRES
+        assertTrue(
+            designAspect >= 16f / 9f,
+            "the design aspect is $designAspect, below 16:9 (${16f / 9f}) — a 16:9 booth panel would " +
+            "start being scaled by WIDTH and would show less than ${Framing.VISIBLE_DEPTH_METRES} m of water"
+        )
+    }
 }

@@ -27,8 +27,44 @@ package render
  */
 object Framing
 {
-    /** How much of the water column is visible at once. Also sets the descent scroll rate. */
+    /**
+     * How much of the water column is visible at once, on any display AT OR BELOW the design
+     * aspect. Also sets the descent scroll rate. See [VISIBLE_WIDTH_METRES] for what happens
+     * above it, and why that had to become a maximum rather than a promise.
+     */
     const val VISIBLE_DEPTH_METRES = 60f
+
+    /**
+     * The MOST water that may be visible horizontally: the play column plus exactly one cliff at
+     * each side, 106.99 m.
+     *
+     * ## WHY THERE IS A CAP AT ALL
+     *
+     * [CameraRig] used to scale on HEIGHT alone, so a wider display simply revealed more water
+     * sideways. Outside `Tuning.COLUMN_HALF_WIDTH` that water is rock, and the cliff art is one
+     * 13.5 m tile — so a wide panel showed the tile repeated. `RockFace.bodyDiffuse` is a
+     * mirror-doubled crop, which makes the repeat seamless but does not make it invisible: at the
+     * owner's 2.389 the body needs two tiles a side, i.e. FOUR reflections of the same crop on
+     * screen, and it reads as wallpaper. His words: *"for each aspect ratio we should only ever
+     * see exactly one rock cliff on each end of the screen"*.
+     *
+     * ## WHY THIS NUMBER
+     *
+     * `2 * (COLUMN_HALF_WIDTH + RockFace.TILE_WIDTH_METRES)` = 106.99 m, which is an aspect of
+     * 1.783 against [VISIBLE_DEPTH_METRES]. **16:9 is 1.778.** So the commonest panel already sits
+     * a hair inside the cap and is completely unaffected — the cap only bites above it, which is
+     * exactly where the repeat begins. That coincidence is why this is the right constant and not
+     * a taste decision; `FramingTest` pins it to the rock's own tile width so a re-bake at a
+     * different size moves it rather than leaving it stale.
+     *
+     * ## WHAT IT COSTS, SAID PLAINLY
+     *
+     * Above 1.783 the scale is driven by width, so the visible DEPTH shrinks: 45.9 m at 21:9,
+     * 44.8 m at the owner's 2.389, 30.1 m at 32:9. That is a gameplay change on those displays —
+     * how far ahead you can see is how far ahead you can plan — and it was put to the owner as
+     * exactly that trade before it was made. It is a no-op at 16:9 and below.
+     */
+    const val VISIBLE_WIDTH_METRES = 2f * (dive.Tuning.COLUMN_HALF_WIDTH + RockFace.TILE_WIDTH_METRES)
 
     /** Where the camera tries to keep the diver vertically. */
     const val DIVER_SCREEN_FRACTION = 0.4f

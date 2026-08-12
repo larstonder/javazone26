@@ -78,15 +78,36 @@ import no.njoh.pulseengine.core.graphics.api.CameraInternal
 object CameraRig
 {
     /**
-     * Screen pixels per world metre for a world surface [surfaceHeight] pixels tall.
+     * Screen pixels per world metre for a world surface [surfaceWidth] x [surfaceHeight] pixels.
      *
-     * HEIGHT, never width and never a pixel count -- the booth display's aspect ratio is not
-     * known in advance, so a fraction of the height is the only size that means the same
-     * thing on every panel. A wider display then simply reveals more water sideways, which
-     * is a presentation difference; a taller one would reveal more DEPTH, which would be a
-     * gameplay difference, and is exactly what this constant scale prevents.
+     * ## IT IS THE LARGER OF TWO FITS, AND IT USED TO BE ONLY THE FIRST
+     *
+     * `surfaceHeight / VISIBLE_DEPTH_METRES` is the original: a fraction of the HEIGHT is the only
+     * size that means the same thing on every panel, so exactly 60 m of water was visible
+     * vertically everywhere and a wider display simply revealed more water sideways. That second
+     * half is what broke. Outside `Tuning.COLUMN_HALF_WIDTH` the extra water is ROCK, and the
+     * cliff art is one 13.5 m tile, so a wide panel showed it repeated -- four reflections a side
+     * at the owner's 2.389. See [Framing.VISIBLE_WIDTH_METRES].
+     *
+     * So the width now has a fit of its own and the LARGER wins, which caps how much world is on
+     * screen horizontally:
+     *
+     *  - at or below the design aspect of 1.783 the height fit is larger, nothing changes at all,
+     *    and 60 m of depth is still visible. **16:9 is 1.778, so the commonest panel is a no-op.**
+     *  - above it the width fit takes over: exactly the column plus one cliff a side is visible,
+     *    and the visible DEPTH shrinks (45.9 m at 21:9, 30.1 m at 32:9).
+     *
+     * `max`, not `min`. `min` is the engine `Camera` entity's contain fit, which this file exists
+     * to avoid: it would show LESS than 60 m of depth on a panel NARROWER than the design aspect,
+     * which is the gameplay regression reason 1 in the class doc rejects. `max` is a cover fit --
+     * it never takes depth away below the design aspect, only above it.
+     *
+     * Still no pixel counts anywhere: both terms are a surface dimension over a constant in metres.
      */
-    fun pixelsPerMetre(surfaceHeight: Float) = surfaceHeight / Framing.VISIBLE_DEPTH_METRES
+    fun pixelsPerMetre(surfaceWidth: Float, surfaceHeight: Float) = maxOf(
+        surfaceHeight / Framing.VISIBLE_DEPTH_METRES,
+        surfaceWidth / Framing.VISIBLE_WIDTH_METRES
+    )
 
     /** Screen x that world x = 0 is pinned to: the horizontal centre of the frame. */
     fun originX(surfaceWidth: Float) = surfaceWidth * 0.5f
@@ -140,12 +161,13 @@ object CameraRig
     /**
      * The camera-level form of [apply], taking its target and its size explicitly so it can be
      * exercised against a real `DefaultCamera` in `CameraRigTest` without a live engine. The
-     * two-argument size is what keeps `CameraRigTest` honest about aspect ratios; it is also
-     * the one line in this file that must go on reading the HEIGHT (see [pixelsPerMetre]).
+     * two-argument size is what keeps `CameraRigTest` honest about aspect ratios, and since
+     * [pixelsPerMetre] now reads BOTH dimensions it is no longer merely a testing affordance --
+     * the scale genuinely depends on the aspect.
      */
     fun applyTo(camera: Camera, surfaceWidth: Float, surfaceHeight: Float, cameraDepth: Float)
     {
-        val s = pixelsPerMetre(surfaceHeight)
+        val s = pixelsPerMetre(surfaceWidth, surfaceHeight)
         camera.scale.set(s, s, 1f)
         camera.rotation.set(0f, 0f, 0f)
         camera.origin.set(originX(surfaceWidth), ORIGIN_Y, 0f)

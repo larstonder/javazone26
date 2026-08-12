@@ -8,6 +8,7 @@ import org.joml.Vector3f
 import org.joml.Vector4f
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.test.assertNotEquals
 
 /**
@@ -58,7 +59,7 @@ class CameraRigTest
      */
     private fun screenPos(w: Float, h: Float, camDepth: Float, worldX: Float, worldY: Float): Vector2f
     {
-        val s = CameraRig.pixelsPerMetre(h)
+        val s = CameraRig.pixelsPerMetre(w, h)
         val ox = CameraRig.originX(w)
         val oy = CameraRig.ORIGIN_Y
         val m = Matrix4f()
@@ -91,24 +92,59 @@ class CameraRigTest
     // moves this pin on every non-square entry. Reduce DISPLAYS to a single aspect ratio and
     // this test rejoins the class of suites the class doc's §3.1 reference describes.
     @Test
-    fun `exactly the visible depth of water fits between the top and bottom edges`()
+    fun `the frame shows the visible depth, or the visible width, whichever binds`()
     {
         for ((w, h) in DISPLAYS)
             for (camDepth in CAMERA_DEPTHS)
             {
-                val p = screenPos(w, h, camDepth, 0f, camDepth + Framing.VISIBLE_DEPTH_METRES)
+                val aspect = w / h
+                val bottomEdgeDepth = camDepth + visibleDepthAt(aspect)
+                val p = screenPos(w, h, camDepth, 0f, bottomEdgeDepth)
                 assertEquals(w * 0.5f, p.x, TOLERANCE, "x at ${w}x$h, camera at $camDepth m")
-                assertEquals(h, p.y, TOLERANCE, "the bottom edge is not ${Framing.VISIBLE_DEPTH_METRES} m " +
-                             "below the camera at ${w}x$h, camera at $camDepth m")
+                assertEquals(
+                    h, p.y, TOLERANCE,
+                    "the bottom edge is not ${visibleDepthAt(aspect)} m below the camera at ${w}x$h " +
+                    "(aspect $aspect), camera at $camDepth m"
+                )
+
+                // ...and the other half of the same invariant: the width never exceeds the cap.
+                // Half the cap must land AT or BEYOND the right edge — i.e. the frame never
+                // reveals more than VISIBLE_WIDTH_METRES of world. At the design aspect it lands
+                // exactly on the edge; narrower, further past it.
+                val right = screenPos(w, h, camDepth, Framing.VISIBLE_WIDTH_METRES * 0.5f, camDepth)
+                assertTrue(
+                    right.x >= w - TOLERANCE,
+                    "more than ${Framing.VISIBLE_WIDTH_METRES} m of world is visible across ${w}x$h — " +
+                    "the cliff art is one ${RockFace.TILE_WIDTH_METRES} m tile, so the surplus is a repeat"
+                )
             }
     }
+
+    /**
+     * What the frame shows vertically at [aspect], which is no longer a constant.
+     *
+     * At or below [DESIGN_ASPECT] the height fit binds and it is exactly
+     * [Framing.VISIBLE_DEPTH_METRES], as it always was. Above it the width fit binds — the frame
+     * is capped at the column plus one cliff a side — and the depth falls off as
+     * `designAspect / aspect`. Derived here rather than copied from `CameraRig` so the two are
+     * independent statements of the same rule; a change to one has to be made deliberately in both.
+     */
+    private fun visibleDepthAt(aspect: Float): Float =
+        if (aspect <= DESIGN_ASPECT) Framing.VISIBLE_DEPTH_METRES
+        else Framing.VISIBLE_WIDTH_METRES / aspect
 
     // Killed by: flip the sign of CameraRig.positionY -> every depth maps to the wrong screen row
     // except the one where `depth - camDepth` happens to be zero.
     @Test
     fun `the mapping is numerically identical to the transform it replaces`()
     {
-        for ((w, h) in DISPLAYS)
+        // ONLY where the HEIGHT fit binds. The migration was defined to be a no-op on screen and
+        // still is at and below DESIGN_ASPECT, which is every panel the game was built against —
+        // 16:9 included. Above it the width cap deliberately changes the scale, so the
+        // pre-migration formula is no longer the reference and asserting it would be asserting the
+        // bug. `the frame shows the visible depth, or the visible width, whichever binds` is what
+        // covers the wide regime.
+        for ((w, h) in DISPLAYS.filter { (dw, dh) -> dw / dh <= DESIGN_ASPECT })
             for (camDepth in CAMERA_DEPTHS)
                 for (x in WORLD_XS)
                     for (depth in WORLD_DEPTHS)
@@ -157,14 +193,17 @@ class CameraRigTest
                 val camera = DefaultCamera.createOrthographic(w.toInt(), h.toInt())
                 CameraRig.snapTo(camera, w, h, camDepth)
 
+                // Whatever the frame shows at this aspect — see visibleDepthAt. What is being
+                // asserted here is that frame 1 shows it, not what "it" is.
+                val depthShown = visibleDepthAt(w / h)
                 val top = interpolatedScreenPos(camera, 0f, camDepth)
-                val bottom = interpolatedScreenPos(camera, 0f, camDepth + Framing.VISIBLE_DEPTH_METRES)
+                val bottom = interpolatedScreenPos(camera, 0f, camDepth + depthShown)
 
                 val where = "at ${w}x$h, camera at $camDepth m"
                 assertEquals(w * 0.5f, top.x, TOLERANCE, "the camera's world point is not centred on frame 1 $where")
                 assertEquals(0f, top.y, TOLERANCE, "the camera's world point is not at the top edge on frame 1 $where")
                 assertEquals(h, bottom.y, TOLERANCE,
-                             "frame 1 does not show ${Framing.VISIBLE_DEPTH_METRES} m of water $where — the " +
+                             "frame 1 does not show $depthShown m of water $where — the " +
                              "engine's fixed-step snapshot was left at the constructed identity")
             }
     }
@@ -229,6 +268,13 @@ class CameraRigTest
          * (The plan's prose also claims 16:10; the list it specifies does not contain one, and
          * the list is reproduced here verbatim rather than quietly extended.)
          */
+        /**
+         * The aspect at which the two fits in [CameraRig.pixelsPerMetre] are equal — 1.7832.
+         * Below it the height binds and 60 m of depth is visible; above it the width binds and
+         * the depth falls off. 16:9 is 1.7778, so the commonest panel sits just inside it.
+         */
+        val DESIGN_ASPECT = Framing.VISIBLE_WIDTH_METRES / Framing.VISIBLE_DEPTH_METRES
+
         val DISPLAYS = listOf(
             1200f to 900f,    // 4:3   — narrower than the column
             1600f to 900f,    // 16:9  — the booth's likely shape

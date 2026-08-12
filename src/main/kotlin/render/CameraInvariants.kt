@@ -122,22 +122,42 @@ object CameraInvariants
             return found
         }
 
-        // RULE 2 — exactly VISIBLE_DEPTH_METRES of water is visible, whatever the display is.
-        if (abs(visibleDepth - Framing.VISIBLE_DEPTH_METRES) > VISIBLE_DEPTH_TOLERANCE_METRES)
+        // RULE 2 — the frame shows VISIBLE_DEPTH_METRES of water, OR VISIBLE_WIDTH_METRES of it
+        // across, whichever binds. Two regimes, because `CameraRig.pixelsPerMetre` is the LARGER
+        // of a height fit and a width fit:
+        //
+        //   at or below the design aspect (1.783) the height binds -> exactly 60 m of depth,
+        //   which is what this rule checked unconditionally before the cap existed;
+        //   above it the width binds -> exactly 106.99 m across, and the depth falls off.
+        //
+        // Checking the old rule on a wide panel would warn once a second, at the booth, about the
+        // cap working correctly. See [Framing.VISIBLE_WIDTH_METRES].
+        val screenAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
+        val designAspect = Framing.VISIBLE_WIDTH_METRES / Framing.VISIBLE_DEPTH_METRES
+        if (screenAspect <= designAspect)
         {
-            found += "rule 2: $visibleDepth m of water is visible, expected " +
-                     "${Framing.VISIBLE_DEPTH_METRES} m — how far ahead the player can see is a gameplay " +
-                     "constant, so the world camera's scale is wrong"
+            if (abs(visibleDepth - Framing.VISIBLE_DEPTH_METRES) > VISIBLE_DEPTH_TOLERANCE_METRES)
+            {
+                found += "rule 2: $visibleDepth m of water is visible at aspect $screenAspect, expected " +
+                         "${Framing.VISIBLE_DEPTH_METRES} m — below the design aspect the height fit binds, " +
+                         "and how far ahead the player can see is a gameplay constant, so the scale is wrong"
+            }
+        }
+        else if (abs(visibleWidth - Framing.VISIBLE_WIDTH_METRES) > VISIBLE_DEPTH_TOLERANCE_METRES)
+        {
+            found += "rule 2: $visibleWidth m of water is visible across at aspect $screenAspect, expected " +
+                     "${Framing.VISIBLE_WIDTH_METRES} m — above the design aspect the width fit binds, and " +
+                     "surplus width is cliff art repeating"
         }
 
         // RULE 3 — the visible world rect has the screen's aspect, i.e. nothing is stretched.
         val worldAspect = visibleWidth / visibleDepth
-        val screenAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
         if (abs(worldAspect - screenAspect) > screenAspect * ASPECT_TOLERANCE_FRACTION)
         {
             found += "rule 3: the visible world rect's aspect is $worldAspect but the surface's is " +
-                     "$screenAspect — the world is being stretched, or pixels-per-metre was derived from " +
-                     "the surface width instead of its height"
+                     "$screenAspect — the world is being stretched. Both terms of " +
+                     "CameraRig.pixelsPerMetre are uniform in x and y, so a mismatch means one of them " +
+                     "was applied to a single axis"
         }
 
         return found
