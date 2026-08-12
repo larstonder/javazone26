@@ -211,7 +211,10 @@ class RockFaceTest
             min to max
         }
 
-        val firstNotSolid = (0 until image.width).first { alpha[it].first < 255 }
+        // FROM THE BORDER, not from column 0: the bake forces the first
+        // RockFace.BORDER_TEXEL_COLUMNS transparent so a quad edge's extrapolated `fract`
+        // wrap lands on nothing. See that constant.
+        val firstNotSolid = (RockFace.BORDER_TEXEL_COLUMNS until image.width).first { alpha[it].first < 255 }
         val pastLastVisible = (0 until image.width).last { alpha[it].second > 0 } + 1
 
         assertEquals(
@@ -300,7 +303,7 @@ class RockFaceTest
 
         // The lowest-numbered column that is not opaque at every depth is also the FURTHEST from
         // the axis, because u rises inward — so it is the only one the backing has to clear.
-        val firstNotSolid = (0 until image.width).first { x ->
+        val firstNotSolid = (RockFace.BORDER_TEXEL_COLUMNS until image.width).first { x ->
             (0 until image.height).any { (image.getRGB(x, it) ushr 24) != 255 }
         }
         val outerEdge = RockFace.QUAD_INNER_HALF_WIDTH + (image.width - firstNotSolid) * perTexel
@@ -486,9 +489,12 @@ class RockFaceTest
         )
 
         val dir = "src/main/resources/backdrop/"
+        // JUST INSIDE THE WRAP BORDER on each side. The bake clears column 0 of the base (and
+        // therefore column 690 of the mirror), so the outward-most column that still carries the
+        // summit's profile is one texel in. See RockFace.BORDER_TEXEL_COLUMNS.
         val cases = listOf(
-            "rock-top-diffuse.png" to 0,                            // outward edge of the LEFT art
-            "rock-top-mirror-diffuse.png" to RockFace.TOP_TEXELS_WIDE - 1  // ...and of the mirror
+            "rock-top-diffuse.png" to RockFace.BORDER_TEXEL_COLUMNS,
+            "rock-top-mirror-diffuse.png" to RockFace.TOP_TEXELS_WIDE - 1 - RockFace.BORDER_TEXEL_COLUMNS
         )
         cases.forEach { (name, column) ->
             val image = ImageIO.read(File(dir + name))
@@ -586,7 +592,9 @@ class RockFaceTest
         val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
 
         val setsHeadland = code.indexOf("setDrawColor(headlandColor)")
-        val fillsHeadland = code.indexOf("surface.fillRect(RockFace.CREST_OUTER_HALF_WIDTH")
+        // `innerEdge`, not CREST_OUTER_HALF_WIDTH: the fill starts CLIFF_TOP_OVERLAP_METRES inward
+        // so its own quad edge lands on solid crest rather than on the transparent wrap border.
+        val fillsHeadland = code.indexOf("surface.fillRect(innerEdge")
 
         assertTrue(
             setsHeadland >= 0,

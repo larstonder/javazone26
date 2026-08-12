@@ -521,13 +521,20 @@ object DiveRenderer
             val headlandHeight = RockFace.WALL_TOP_DEPTH - topOfHeadland
             if (headlandHeight > 0f)
             {
+                // BOTH the fill and the textured band start inward of the crest's outward edge,
+                // so that BOTH their quad edges land on solid stone instead of on the 1-texel
+                // transparent border — see RockFace.CLIFF_TOP_OVERLAP_METRES. Moving only the band
+                // left the fill's own edge showing at exactly CREST_OUTER_HALF_WIDTH: measured
+                // RGBA(0, 0, 0, 64) left and (0, 0, 0, 128) right, unchanged by the band's move,
+                // which is what identified the fill rather than the band as their source.
                 surface.setDrawColor(headlandColor)
-                val leftHeadland = -RockFace.CREST_OUTER_HALF_WIDTH - worldLeft
-                val rightHeadland = worldRight - RockFace.CREST_OUTER_HALF_WIDTH
+                val innerEdge = RockFace.CREST_OUTER_HALF_WIDTH - RockFace.CLIFF_TOP_OVERLAP_METRES
+                val leftHeadland = -innerEdge - worldLeft
+                val rightHeadland = worldRight - innerEdge
                 if (leftHeadland > 0f)
                     surface.fillRect(worldLeft, topOfHeadland, leftHeadland, headlandHeight)
                 if (rightHeadland > 0f)
-                    surface.fillRect(RockFace.CREST_OUTER_HALF_WIDTH, topOfHeadland, rightHeadland, headlandHeight)
+                    surface.fillRect(innerEdge, topOfHeadland, rightHeadland, headlandHeight)
 
                 surface.setDrawColor(1f, 1f, 1f, 1f)
                 if (leftHeadland > 0f) drawCliffTop(surface, normalMaps, leftHeadland, topOfHeadland, LEFT_SIDE)
@@ -760,7 +767,10 @@ object DiveRenderer
         // And where the frame ends before the crest does, [wallWidth] is negative, this is never
         // called, and the summit is simply seen against the sky. That is the common case on a
         // display narrower than about 1.75:1.
-        val centreX = side * (RockFace.CREST_OUTER_HALF_WIDTH + width * 0.5f)
+        // Started INWARD of the crest's outward edge so this quad's own edge sliver lands on solid
+        // stone rather than on the 1-texel transparent border — see RockFace.CLIFF_TOP_OVERLAP_METRES.
+        val innerEdge = RockFace.CREST_OUTER_HALF_WIDTH - RockFace.CLIFF_TOP_OVERLAP_METRES
+        val centreX = side * (innerEdge + width * 0.5f)
         val centreY = RockFace.WALL_TOP_DEPTH - height * 0.5f
         val rows = cliffTopVerticalTiles(height)
 

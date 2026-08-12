@@ -122,8 +122,76 @@ object RockFace
      * drawn under it can never be seen. Everything to the right is the ragged edge, where the
      * backing IS seen — and where it must therefore not be drawn, because what belongs behind a
      * cliff standing in the sea is the sea.
+     *
+     * Counted from [BORDER_TEXEL_COLUMNS], not from column 0: the bake forces that first column
+     * fully transparent, so "solid at every row" begins one texel in.
      */
     const val OPAQUE_TEXEL_COLUMNS = 396
+
+    /**
+     * How many texel columns at `u = 0` the bake forces fully transparent — 1.
+     *
+     * ## IT EXISTS TO KILL A ONE-PIXEL LINE DOWN EVERY CLIFF EDGE
+     *
+     * `texture.frag` resolves tiling as `uv = texStart + texSize * fract(texCoord * texTiling)`.
+     * Where a quad's edge cuts THROUGH a pixel, that pixel's centre lies outside the quad, so the
+     * interpolated `texCoord.u` extrapolates just past 1.0 — and `fract` of that is ~0, which
+     * samples the `u = 0` column. On this art that column was solid stone, so every quad edge drew
+     * one partially-covered pixel of opaque rock where the art is fully transparent.
+     *
+     * Measured on the world surface at 3200x1800, in the sky above the waterline:
+     * `RGBA(0, 0, 0, 64)` at the left crest's inner edge, `(0, 0, 0, 53)` at the right's,
+     * `(0, 0, 0, 167)` at the cliff-top band's. Against the sunset that is a visible hairline down
+     * each cliff — which is what the owner had been pointing at across several rounds.
+     *
+     * ## HOW IT WAS PINNED DOWN, SINCE TWO EARLIER DIAGNOSES WERE WRONG
+     *
+     *  - skipping the crest draw removed its two lines and left the band's;
+     *  - moving the crest quad 3 m — exactly 90 px, so the sub-pixel phase did not change — moved
+     *    them 3 m with BYTE-IDENTICAL alpha;
+     *  - nudging `uTiling` below the integer changed nothing, ruling out a plain `fract(1.0) = 0`;
+     *  - insetting `uMax` by a whole texel changed nothing, ruling out a tap past the texture
+     *    array's sub-rectangle — the trap [TEXELS_TALL] documents for `v`;
+     *  - nudging the quad by HALF A PIXEL removed the lines entirely, which is what identifies
+     *    partial pixel coverage as the trigger.
+     *
+     * A half-pixel nudge is not available as a fix: world geometry is in metres, `CameraRig` owns
+     * the only metre-to-pixel conversion, and the booth's resolution is unknown. Making the
+     * wrapped-to column transparent fixes it at every resolution at once.
+     *
+     * ONLY THE BASE TEXTURES CARRY IT. Each mirror's `u = 0` is the base's `u = 690`, already
+     * inside the transparent margin — the wall's last 67 columns and the crest's last 177 hold no
+     * alpha at all — and the mirrors are derived from these outputs, so they inherit the border at
+     * `u = 690`, where it costs nothing.
+     *
+     * It costs one texel column, 0.0195 m of world at [TILE_WIDTH_METRES], about 0.6 px at 1080p.
+     * On the wall that lands on every horizontal tile join, where the flat backing sits behind it
+     * by construction; on the crest it lands where the cliff-top band is drawn behind it, which is
+     * the same rock.
+     */
+    const val BORDER_TEXEL_COLUMNS = 1
+
+    /**
+     * How far INWARD of [CREST_OUTER_HALF_WIDTH] the cliff-top band starts, so that its own edge
+     * is hidden under solid crest — 0.5 m.
+     *
+     * The band and the flat fill behind it both used to begin exactly at [CREST_OUTER_HALF_WIDTH],
+     * which is also the crest sprite's outward edge. That was invisible only while the crest was
+     * opaque right up to that edge; [BORDER_TEXEL_COLUMNS] made its outermost column transparent,
+     * and the band's own quad-edge sliver started showing through the 1-texel gap. Measured:
+     * `RGBA(0, 0, 0, 64)` appeared at -52.200 m where nothing had been before.
+     *
+     * Half a metre is 26 texels — comfortably past the one-texel border, and comfortably inside
+     * the summit's solid run, which is 513 of 691 columns (10.0 m) from its outward edge. So the
+     * band's edge lands on opaque stone at every depth of the band, and the crest is drawn after
+     * it.
+     *
+     * WHAT IT GIVES UP: the band no longer shares the wall's horizontal tile lattice, so their
+     * vertical joins do not line up across [WALL_TOP_DEPTH]. That join is already a texture
+     * discontinuity — the crest is a different crop of rock entirely — and it is hidden the same
+     * way, by [CREST_SUBMERGENCE_METRES] putting it below the deepest trough the wave can reach.
+     */
+    const val CLIFF_TOP_OVERLAP_METRES = 0.5f
 
     /**
      * One past the last texel column holding any alpha at all: 624 of 691, u = 0.903.
@@ -308,14 +376,19 @@ object RockFace
     const val CREST_OUTER_HALF_WIDTH = QUAD_INNER_HALF_WIDTH + CREST_WIDTH_METRES
 
     /**
-     * The first texel row of the crest that is opaque at its OUTWARD edge column — 120 of 1152.
+     * The first texel row of the crest that is opaque at its outward-most column that still
+     * carries art — 121 of 1152.
      *
-     * Column 0 of `rock-top-diffuse.png`, and column 690 of the mirrored copy; `RockFaceTest`
-     * re-derives both from the committed PNGs, and that they agree is one more check that the
-     * mirror is exact. It is the height the headland stands at where it leaves the sprite, so it
-     * is what [CREST_SHOULDER_DEPTH] has to be for the flat top to meet the art without a step.
+     * Column [BORDER_TEXEL_COLUMNS] of `rock-top-diffuse.png`, and the matching column in from the
+     * far side of the mirrored copy; `RockFaceTest` re-derives both from the committed PNGs, and
+     * that they agree is one more check that the mirror is exact. It is the height the headland
+     * stands at where it leaves the sprite, so it is what [CREST_SHOULDER_DEPTH] has to be for the
+     * cliff-top band to meet the art without a step.
+     *
+     * It was 120 — column 0 — until the bake started clearing that column to kill the quad-edge
+     * hairline. One row of 1152 is 0.02 m of world, so the band moved by less than a pixel.
      */
-    const val TOP_SHOULDER_TEXEL_ROW = 120
+    const val TOP_SHOULDER_TEXEL_ROW = 121
 
     /**
      * The depth of the cliff top OUTWARD of the crest sprite: the summit's shoulder, continued off

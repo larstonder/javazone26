@@ -147,6 +147,53 @@ MAX_SEAM_RATIO = 1.5
 LUMINANCE_FACTOR = 2.0
 
 
+# How many texel columns at u = 0 the bake forces fully transparent. See clear_wrap_border.
+BORDER_TEXEL_COLUMNS = 1
+
+
+def clear_wrap_border(rgba: np.ndarray) -> np.ndarray:
+    """
+    Force the first [BORDER_TEXEL_COLUMNS] columns fully transparent.
+
+    WHY, AND IT IS NOT COSMETIC. `DiveRenderer` draws the cliff as textured quads and the engine's
+    `texture.frag` resolves tiling as `uv = texStart + texSize * fract(texCoord * texTiling)`.
+    Where a quad's edge cuts THROUGH a pixel, that pixel's centre lies outside the quad, so the
+    interpolated `texCoord.u` extrapolates just past 1.0 - and `fract` of that is ~0, which samples
+    the texture's u = 0 column. On this art that column is solid stone, so every quad edge drew one
+    partially-covered pixel of opaque rock where the art is fully transparent.
+
+    Measured on the world surface at 3200x1800, in the sky above the waterline: RGBA(0, 0, 0, 64)
+    at the left crest's inner edge, (0, 0, 0, 53) at the right's, (0, 0, 0, 167) at the cliff-top
+    band's. Against the sunset that is a visible hairline down each cliff edge - which is what the
+    owner had been pointing at.
+
+    Proven by elimination rather than assumed. Skipping the crest removed its two lines; moving its
+    quad 3 m (exactly 90 px, so the sub-pixel phase was unchanged) moved them 3 m with byte-
+    identical alpha; nudging `uTiling` below the integer changed nothing, and so did insetting
+    `uMax` by a whole texel - both of which rule out a plain `fract(1.0) = 0` and a tap past the
+    texture array's sub-rectangle. Nudging the quad by HALF A PIXEL removed the lines entirely,
+    which is what identifies partial pixel coverage as the trigger.
+
+    A half-pixel nudge is not available as a fix: world geometry is in metres and `CameraRig` owns
+    the only metre-to-pixel conversion, so any pixel snap would be resolution-dependent and the
+    booth's resolution is not known. Making the wrapped-to column transparent fixes it for every
+    resolution at once.
+
+    ONLY THE BASE TEXTURES NEED IT. Each mirror's u = 0 is the base's u = 690, which is already
+    inside the art's transparent margin - the wall's last 67 columns and the crest's last 177 hold
+    no alpha at all. The mirrors are produced from these outputs, so they inherit the border at
+    u = 690 where it costs nothing.
+
+    What it costs on the base: one texel column, 0.0195 m of world at TILE_WIDTH_METRES, i.e. about
+    0.6 px on a 1080p panel. On the wall that lands on every horizontal tile join, where the flat
+    backing sits behind it by construction; on the crest it lands where the cliff-top band is drawn
+    behind it, which is the same rock. Neither can show through as anything but rock.
+    """
+    out = np.array(rgba, copy=True)
+    out[:, :BORDER_TEXEL_COLUMNS, 3] = 0
+    return out
+
+
 class SourceError(RuntimeError):
     pass
 
@@ -324,6 +371,9 @@ def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
     print(f"         normals mean |v| {np.linalg.norm(baked_v[opaque], axis=-1).mean():.4f} "
           f"(RGBA8: stored linearly, the GPU hands these bytes to the shader unchanged)")
 
+    diffuse_out = clear_wrap_border(diffuse_out)
+    normal_out = clear_wrap_border(normal_out)
+
     return {
         "diffuse": diffuse_out,
         "normal": normal_out,
@@ -415,6 +465,9 @@ def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
     normal_out = np.dstack([to_u8((unit + 1.0) * 0.5), to_u8(resized_alpha_n)])
     baked_v = (normal_out[..., :3] / 255.0) * 2.0 - 1.0
     print(f"         normals mean |v| {np.linalg.norm(baked_v[opaque], axis=-1).mean():.4f}")
+
+    diffuse_out = clear_wrap_border(diffuse_out)
+    normal_out = clear_wrap_border(normal_out)
 
     return {
         "diffuse": diffuse_out,
