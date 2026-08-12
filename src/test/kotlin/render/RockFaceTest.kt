@@ -28,6 +28,8 @@ class RockFaceTest
 {
     private val diffusePng = File("src/main/resources/backdrop/rock-diffuse.png")
     private val normalPng = File("src/main/resources/backdrop/rock-normal.png")
+    private val bodyDiffusePng = File("src/main/resources/backdrop/rock-body-diffuse.png")
+    private val bodyNormalPng = File("src/main/resources/backdrop/rock-body-normal.png")
 
     /**
      * THREE SILENT TRAPS IN ONE DECLARATION.
@@ -357,34 +359,112 @@ class RockFaceTest
     }
 
     /**
-     * How many tiles reach across the rock outside the column, at the aspect ratios this could
-     * ship on. The visible half-width is `VISIBLE_DEPTH_METRES * aspect / 2` — [CameraRig] scales
-     * on HEIGHT — so at 4:3 it is exactly [Tuning.COLUMN_HALF_WIDTH] and there is no wall at all.
+     * # THE PRIMARY TEST OF THIS WHOLE STRUCTURE, AND IT IS A SWEEP RATHER THAN A SPOT CHECK
      *
-     * That case is the one worth pinning: it must ask for one tile rather than zero, and
-     * `drawColumnWalls` must then draw nothing because the slab width is not positive. Zero tiles
-     * would be a zero-width quad; a fractional count would cut the cliff off at whatever world x
-     * the screen edge happens to be, which moves with the panel.
+     * The owner: *"The rocks should ALWAYS be exactly starting at the edge of the screen.
+     * ALWAYS."* This is that sentence, as arithmetic.
+     *
+     * FIVE COMMITS IN A ROW SHIPPED A VERSION THAT PASSED A FIVE-ASPECT-RATIO TEST AND STILL LEFT
+     * A HOLE. The reason is that the wall art is not uniform across a tile, so with the old
+     * structure what landed at the frame edge was a function of
+     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES` — and 43% of that period is empty or
+     * ragged. Measured on that code, at the extreme frame-edge column:
+     *
+     *     4:3  no rock at all | 16:10 solid | 16:9 EMPTY | 21:9 RAGGED | 32:9 EMPTY
+     *
+     * Naming five aspect ratios samples that modulus five times. Moving the anchor by any amount
+     * moves which five samples you get, so every attempt could be "verified" and every attempt was
+     * wrong somewhere else. A 1 cm sweep from the innermost half-width the body has to cover out
+     * to 200 m samples it 15 558 times, which is what makes it a proof rather than a coincidence:
+     * it would have failed on every one of those five commits.
+     *
+     * The named ratios are kept as well — they are the shapes a booth panel might actually be, and
+     * naming them keeps the failure message legible — plus 1.594 and 1.732, which the owner hit by
+     * dragging a window and which are the two the previous versions were retuned against.
      */
     @Test
-    fun `the tile columns cover the rock outside the column at every aspect ratio`()
+    fun `solid rock reaches the frame edge at every visible half-width`()
     {
-        val w = RockFace.TILE_WIDTH_METRES
-        for (aspect in listOf(4f / 3f, 16f / 10f, 16f / 9f, 21f / 9f, 32f / 9f))
+        // From the edge art's own solid run outward: inward of BACKING_HALF_WIDTH the art is
+        // ragged ON PURPOSE — that is the silhouette — and the body does not reach there.
+        var halfWidth = RockFace.BACKING_HALF_WIDTH
+        var steps = 0
+        while (halfWidth <= 200f)
         {
-            // The slab PLUS the inward shift, which is what `drawRockWall` actually asks for: the
-            // quad starts inside the boundary now, so it has that much further to reach.
-            val wall = Framing.VISIBLE_DEPTH_METRES * aspect * 0.5f - Tuning.COLUMN_HALF_WIDTH +
-                RockFace.EDGE_INSET_METRES
-            val columns = RockFace.tileColumns(wall)
-            assertTrue(columns >= 1, "aspect $aspect asked for $columns tiles")
-            assertTrue(columns * w >= wall, "$columns tiles span ${columns * w} m, short of the ${wall} m of rock at aspect $aspect")
-            if (wall > 0f)
-                assertTrue((columns - 1) * w < wall, "$columns tiles is one more than needed for ${wall} m at aspect $aspect")
+            val coverage = RockFace.coverageOuterHalfWidth(halfWidth)
+            assertTrue(
+                coverage >= halfWidth,
+                "a display showing $halfWidth m of half-width gets solid rock only out to " +
+                "$coverage m, so its outermost ${halfWidth - coverage} m is water or sky"
+            )
+            halfWidth += 0.01f
+            steps++
+        }
+        assertTrue(steps > 15_000, "the sweep only took $steps steps — it is not sweeping anything")
+
+        // ...and the same statement at the shapes a panel is actually sold in. VISIBLE_DEPTH_METRES
+        // * aspect / 2 is the visible half-width, because CameraRig scales on HEIGHT.
+        listOf(4f / 3f, 16f / 10f, 1.594f, 1.732f, 16f / 9f, 21f / 9f, 32f / 9f).forEach { aspect ->
+            val h = Framing.VISIBLE_DEPTH_METRES * aspect * 0.5f
+            val coverage = RockFace.coverageOuterHalfWidth(h)
+            assertTrue(
+                coverage >= h,
+                "at aspect $aspect the frame edge is at $h m and solid rock stops at $coverage m"
+            )
+        }
+    }
+
+    /**
+     * THE 4:3 DEGENERACY, STATED RATHER THAN LEFT TO FALL OUT.
+     *
+     * At 4:3 the visible half-width is EXACTLY [Tuning.COLUMN_HALF_WIDTH]: the frame edge and the
+     * place the simulation stops the diver are the same world line, so there is no room for rock
+     * at all and no arrangement of textures can put any there. Every capture of the dev window
+     * before it moved to 16:9 showed that, and it was read as "the walls are broken" more than
+     * once — see `application-dev.cfg`, which moved the window for exactly this reason.
+     *
+     * Pinned as an equality between the two constants so that changing either one surfaces it. If
+     * [Framing.VISIBLE_DEPTH_METRES] or [Tuning.COLUMN_HALF_WIDTH] moves, 4:3 stops being the
+     * degenerate case and some other ratio becomes it, and whoever makes that change should be
+     * told rather than left to find out at a booth.
+     */
+    @Test
+    fun `at 4 by 3 the frame edge is exactly where the diver is stopped`()
+    {
+        assertEquals(
+            Tuning.COLUMN_HALF_WIDTH,
+            Framing.VISIBLE_DEPTH_METRES * (4f / 3f) * 0.5f,
+            1e-4f,
+            "4:3 is no longer the aspect ratio at which the play column exactly fills the frame, " +
+            "so the degenerate case — where no rock can be drawn outside the column because there " +
+            "is no frame outside the column — has moved to some other ratio"
+        )
+    }
+
+    /**
+     * How many BODY tiles reach across the frame outward of the anchor. Whole tiles, rounded UP:
+     * `texture.frag` tiles with `fract(texCoord * tiling)`, so a fractional count would cut the
+     * texture off mid-feature at whatever world x the screen edge happens to be — which moves with
+     * the panel. Rounding up spills the surplus off the side, where nothing can see it.
+     *
+     * ZERO, NOT ONE, when there is no frame left over. The body is opaque at every texel, so a
+     * count floored at one would paint a solid rectangle across the crest's silhouette and into
+     * the play column at 16:10 and anything narrower — which is the defect `e7a638e` fixed, and
+     * the reason this differs from the `tileColumns` it replaced.
+     */
+    @Test
+    fun `the body asks for whole tiles, and for none at all when the frame stops short`()
+    {
+        val w = RockFace.BODY_TILE_WIDTH_METRES
+        listOf(0.01f, 1f, w - 0.01f, w, w + 0.01f, 17.83f, 54.5f, 130f).forEach { span ->
+            val columns = RockFace.bodyColumns(span)
+            assertTrue(columns * w >= span, "$columns tiles span ${columns * w} m, short of $span m")
+            assertTrue((columns - 1) * w < span, "$columns tiles is one more than needed for $span m")
         }
 
-        assertEquals(1, RockFace.tileColumns(0f), "a zero-width wall must still ask for a well-formed quad")
-        assertEquals(1, RockFace.tileColumns(-5f), "an inverted rect must not ask for a negative number of tiles")
+        assertEquals(0, RockFace.bodyColumns(0f), "a frame that stops exactly on the anchor needs no body at all")
+        assertEquals(0, RockFace.bodyColumns(-4.17f), "16:10 stops 4.17 m short of the anchor and must draw no body")
+        assertEquals(0, RockFace.bodyColumns(Float.NaN), "a NaN visible rect must not ask for a quad")
     }
 
     /**
@@ -401,6 +481,328 @@ class RockFaceTest
             1e-5f,
             "the tile's world shape does not match the texture's, so the cliff is drawn stretched"
         )
+    }
+
+    // --- THE BODY: the rock that actually reaches the frame edge --------------------------------
+
+    /**
+     * WHERE THE BODY STARTS, AND WHY IT IS THE ONLY PLACE IT CAN START.
+     *
+     * Two conditions bracket it, and they are both structural rather than aesthetic:
+     *
+     *  - it may not start INWARD of [RockFace.BACKING_HALF_WIDTH], because inward of there the
+     *    edge art is ragged and the body is opaque — an opaque quad over the silhouette is the
+     *    silhouette gone;
+     *  - it may not start OUTWARD of [RockFace.CREST_OUTER_HALF_WIDTH], because outward of there
+     *    the edge art has stopped and a gap between the two is a strip of water at a fixed world
+     *    position down both sides of the frame.
+     *
+     * The body's own inner edge is where those two must meet, and one texel inward of the edge
+     * tile's outward end is the unique choice that makes the meeting an exact reflection — see
+     * [RockFace.BODY_INNER_HALF_WIDTH], which has the derivation.
+     */
+    @Test
+    fun `the body's inner edge lies inside the edge art's solid run`()
+    {
+        assertTrue(
+            RockFace.BODY_INNER_HALF_WIDTH >= RockFace.BACKING_HALF_WIDTH,
+            "the body starts at ${RockFace.BODY_INNER_HALF_WIDTH} m, inward of the edge art's " +
+            "solid run at ${RockFace.BACKING_HALF_WIDTH} m — opaque rock would be drawn over the " +
+            "cliff's ragged silhouette, which is the one thing the edge art is for"
+        )
+        assertTrue(
+            RockFace.BODY_INNER_HALF_WIDTH <= RockFace.CREST_OUTER_HALF_WIDTH,
+            "the body starts at ${RockFace.BODY_INNER_HALF_WIDTH} m, outward of the edge tile's " +
+            "outward end at ${RockFace.CREST_OUTER_HALF_WIDTH} m — the gap between them is a " +
+            "strip of water down both sides of every frame"
+        )
+    }
+
+    /**
+     * ONE TEXEL, EXACTLY — the anchor that makes the join a reflection rather than a step.
+     *
+     * The edge tile's outward-most texel column is 0, which the bake forces transparent
+     * ([RockFace.BORDER_TEXEL_COLUMNS]); the first column carrying art is column 1. The body is
+     * its own horizontal mirror and its outermost column IS the wall's column 1, so anchoring one
+     * texel in puts column 1 immediately inward of the line and its mirror immediately outward.
+     *
+     * Half a metre inward (the `CLIFF_TOP_OVERLAP_METRES` fudge this replaced) would put 25 texels
+     * of opaque body over the edge art instead, and at the waterline that overlap is over the
+     * CREST — i.e. an opaque rectangle behind the summit's notches, which is `e7a638e`'s defect.
+     */
+    @Test
+    fun `the body's inner edge is exactly one texel inward of the edge tile's outward end`()
+    {
+        assertEquals(
+            RockFace.TEXEL_WIDTH_METRES,
+            RockFace.CREST_OUTER_HALF_WIDTH - RockFace.BODY_INNER_HALF_WIDTH,
+            1e-6f,
+            "the body overlaps the edge tile by " +
+            "${RockFace.CREST_OUTER_HALF_WIDTH - RockFace.BODY_INNER_HALF_WIDTH} m against one " +
+            "texel's ${RockFace.TEXEL_WIDTH_METRES} m — anything more is opaque rock over the " +
+            "crest's silhouette, anything less is a transparent seam at a fixed world position"
+        )
+        assertEquals(
+            RockFace.TILE_WIDTH_METRES / RockFace.TEXELS_WIDE, RockFace.TEXEL_WIDTH_METRES, 1e-9f,
+            "TEXEL_WIDTH_METRES is not the wall's own texel any more"
+        )
+    }
+
+    /**
+     * THE BODY IS A CROP OF THE WALL AND MUST KEEP ITS TEXEL SIZE. The two are drawn edge to edge
+     * along one world line, so a scale change there is a visible discontinuity in a surface that
+     * is otherwise continuous rock — the same failure the crest's equal-width bake avoids at the
+     * waterline.
+     *
+     * Both the declared width and the committed file are checked, because the constant is derived
+     * from the wall's alpha profile and the file is produced by `crop_body`: they agree today, and
+     * a re-bake that changed one without the other would leave the body stretched with every other
+     * test green.
+     */
+    @Test
+    fun `the body keeps the wall's texel size`()
+    {
+        val body = pngSize(bodyDiffusePng)
+        assertEquals(body, pngSize(bodyNormalPng), "the body's albedo and normal map must be the same size — they are one rect submitted twice")
+        assertEquals(RockFace.BODY_TEXELS_WIDE, body.first, "the committed body is ${body.first} texels wide, not ${RockFace.BODY_TEXELS_WIDE}")
+        assertEquals(RockFace.TEXELS_TALL, body.second, "the body is ${body.second} rows tall against the wall's ${RockFace.TEXELS_TALL} — it no longer shares the wall's v mapping, so the two stop being the same rock at the join")
+
+        assertEquals(
+            2 * (RockFace.OPAQUE_TEXEL_COLUMNS - RockFace.BORDER_TEXEL_COLUMNS), RockFace.BODY_TEXELS_WIDE,
+            "the body is not the wall's opaque run mirror-doubled"
+        )
+        assertEquals(
+            RockFace.TILE_WIDTH_METRES / RockFace.TEXELS_WIDE,
+            RockFace.BODY_TILE_WIDTH_METRES / RockFace.BODY_TEXELS_WIDE,
+            1e-9f,
+            "one body texel is ${RockFace.BODY_TILE_WIDTH_METRES / RockFace.BODY_TEXELS_WIDE} m " +
+            "against one wall texel's ${RockFace.TILE_WIDTH_METRES / RockFace.TEXELS_WIDE} m, so " +
+            "the rock changes scale where the two meet"
+        )
+    }
+
+    /**
+     * EVERY TEXEL OF THE BODY IS ALPHA 255. This is the half of the guarantee a pure sweep cannot
+     * make: [RockFace.coverageOuterHalfWidth] proves the body's QUAD reaches the frame edge, and
+     * this proves that what the quad rasterises there is rock rather than a hole.
+     *
+     * It is read off the committed file rather than trusted to the bake, for the reason every
+     * other file-reading case here exists: the bake is not run by `./gradlew test` and cannot be
+     * run at all from a clean clone, so the file is the only artifact both the game and this suite
+     * actually share.
+     */
+    @Test
+    fun `every texel of the committed body is opaque`()
+    {
+        listOf(bodyDiffusePng, bodyNormalPng).forEach { file ->
+            val image = ImageIO.read(file)
+            val argb = image.getRGB(0, 0, image.width, image.height, null, 0, image.width)
+            val hole = argb.indexOfFirst { (it ushr 24) != 255 }
+            assertEquals(
+                -1, hole,
+                "texel (${hole % image.width}, ${hole / image.width}) of ${file.name} has alpha " +
+                "${argb.getOrElse(hole) { 0 } ushr 24}, so the rock the frame edge is guaranteed " +
+                "to be made of has a transparent texel in it"
+            )
+        }
+    }
+
+    /**
+     * THE BODY IS ITS OWN HORIZONTAL MIRROR, WHICH IS WHAT LETS ONE PAIR SERVE BOTH SIDES.
+     *
+     * `crop_body` emits `[C | mirror(C)]`. Two things follow and both are load-bearing:
+     *
+     *  - the two cliffs are exact mirror images of one another even though they are drawn from the
+     *    same texture, because the quad grows outward on both sides so the left samples `1 − u`
+     *    where the right samples `u`;
+     *  - the tile join within one side is a REFLECTION rather than a step, which is the only way
+     *    to join this art to itself: it has no horizontal wrap period (the bake measures the best
+     *    candidate at 22.1/255 against an interior adjacency of 1.26/255, a ratio of 17.5x).
+     *
+     * The normal map's x component is negated by the mirror, which in eight bits is exactly
+     * `255 − r`. Forget that and every bump on one half of every tile is lit from the wrong side —
+     * which reads as bad art rather than as a bug, and is why this is checked on the file that
+     * shipped and not only in the bake's own tests.
+     */
+    @Test
+    fun `the body is its own horizontal mirror`()
+    {
+        val albedo = ImageIO.read(bodyDiffusePng)
+        val normal = ImageIO.read(bodyNormalPng)
+        val w = albedo.width
+        val h = albedo.height
+        val a = albedo.getRGB(0, 0, w, h, null, 0, w)
+        val n = normal.getRGB(0, 0, w, h, null, 0, w)
+
+        for (y in 0 until h step 7)
+        {
+            for (x in 0 until w)
+            {
+                val mx = w - 1 - x
+                assertEquals(
+                    a[y * w + x], a[y * w + mx],
+                    "the body's albedo at ($x, $y) is not its own mirror at ($mx, $y), so one " +
+                    "texture cannot serve both sides of the column and its tile join is a step"
+                )
+
+                val here = n[y * w + x]
+                val there = n[y * w + mx]
+                assertEquals(
+                    255 - ((here shr 16) and 0xFF), (there shr 16) and 0xFF,
+                    "the body's normal x at ($mx, $y) is not the negation of its own at ($x, $y) — every bump on one half of every tile is lit from the wrong side"
+                )
+                assertEquals((here shr 8) and 0xFF, (there shr 8) and 0xFF, "the mirrored normal's y component differs at ($mx, $y); a horizontal mirror leaves the up-down slope alone")
+                assertEquals(here and 0xFF, there and 0xFF, "the mirrored normal's z component differs at ($mx, $y); a horizontal mirror leaves the facing alone")
+            }
+        }
+    }
+
+    /**
+     * THE JOIN WITH THE EDGE ART IS A REFLECTION, TEXEL FOR TEXEL.
+     *
+     * The body is anchored one texel inward of the edge tile's outward end, so the texel landing
+     * against that world line is the body's OUTERMOST column — and this asserts that column is a
+     * copy of the wall's column [RockFace.BORDER_TEXEL_COLUMNS], which is what sits immediately
+     * inward of the same line. A crop that started anywhere else (at column 0, or at
+     * [RockFace.BACKING_HALF_WIDTH]'s column 396) would put unrelated art on the two sides of that
+     * line, and the art has no horizontal wrap period to make that continuous.
+     *
+     * Checked on the base texture, which is the LEFT wall; the right is its baked mirror and the
+     * body is its own mirror, so the same statement holds there by the two mirror tests.
+     */
+    @Test
+    fun `the body's outermost column is the wall's first column of art`()
+    {
+        val wallAlbedo = ImageIO.read(diffusePng)
+        val wallNormal = ImageIO.read(normalPng)
+        val bodyAlbedo = ImageIO.read(bodyDiffusePng)
+        val bodyNormal = ImageIO.read(bodyNormalPng)
+
+        assertEquals(wallAlbedo.height, bodyAlbedo.height, "the body is a different height from the wall it is cropped from")
+        for (y in 0 until wallAlbedo.height)
+        {
+            assertEquals(
+                wallAlbedo.getRGB(RockFace.BORDER_TEXEL_COLUMNS, y), bodyAlbedo.getRGB(0, y),
+                "the body's outermost albedo column differs from the wall's column " +
+                "${RockFace.BORDER_TEXEL_COLUMNS} at row $y, so the join between the edge art and " +
+                "the body is a discontinuity instead of a reflection"
+            )
+            assertEquals(
+                wallNormal.getRGB(RockFace.BORDER_TEXEL_COLUMNS, y), bodyNormal.getRGB(0, y),
+                "the body's outermost normal column differs from the wall's at row $y"
+            )
+        }
+    }
+
+    /** The same three silent traps as the wall's declaration, on the two body textures. */
+    @Test
+    fun `the body is declared with the parameters that keep it in the diver's texture arrays`()
+    {
+        listOf("body diffuse" to RockFace.bodyDiffuse, "body normal" to RockFace.bodyNormal)
+            .forEach { (name, texture) ->
+                assertEquals(1, texture.maxMipLevels, "$name maxMipLevels must be 1 — 0 allocates no storage at all, and the constructor's default of 5 generates mips across the never-written remainder of the array layer")
+                assertEquals(RockFace.diffuse.filter, texture.filter, "$name: a different filter means a second 251.7 MB texture array")
+                assertEquals(RockFace.diffuse.wrapping, texture.wrapping, "$name: a different wrapping means a second 251.7 MB texture array")
+                assertTrue(
+                    !texture.filePath.contains("_normal"),
+                    "${texture.filePath} contains `_normal` with an underscore, which trips the engine's auto-loader into RGBA8 with 10 mip levels regardless of this declaration"
+                )
+            }
+        assertEquals(TextureFormat.SRGBA8, RockFace.bodyDiffuse.format, "the body's albedo is sRGB-encoded and the GPU must linearize it on sample")
+        assertEquals(TextureFormat.RGBA8, RockFace.bodyNormal.format, "the bake already decoded the body's normals to linear; SRGBA8 would linearize them twice")
+
+        // ...and it lands in the 2048 bucket, which is the one the diver's sheets already forced
+        // into existence. TextureBank reuses an array only when max(w, h) > arraySize / 2, so a
+        // 790-wide texture is only free because it is 2048 TALL.
+        assertTrue(
+            maxOf(RockFace.BODY_TEXELS_WIDE, RockFace.TEXELS_TALL) > 2048 / 2,
+            "the body's largest side is ${maxOf(RockFace.BODY_TEXELS_WIDE, RockFace.TEXELS_TALL)}, " +
+            "which fails TextureBank's `> arraySize / 2` reuse test against the 2048 array and " +
+            "allocates a 251.7 MB array of its own"
+        )
+    }
+
+    /**
+     * The same reflectance-floor measurement as the wall's and the crest's — checked on the body
+     * SEPARATELY because it is what the frame edge is made of. A patch of body under the floor is
+     * replaced by flat `vec3(0.02)` grey by `texture_multiply_blend.frag` before the light map is
+     * applied, so the edge of the screen would stop being rock in the only way that matters:
+     * visually.
+     */
+    @Test
+    fun `every texel of the committed body clears the GI reflectance floor`()
+    {
+        val image = ImageIO.read(bodyDiffusePng)
+        val argb = image.getRGB(0, 0, image.width, image.height, null, 0, image.width)
+        var worst = Float.MAX_VALUE
+        var worstAt = -1
+        argb.forEachIndexed { index, value ->
+            val length = DiveRenderer.reflectanceLength(
+                ((value shr 16) and 0xFF) / 255f,
+                ((value shr 8) and 0xFF) / 255f,
+                (value and 0xFF) / 255f
+            )
+            if (length < worst) { worst = length; worstAt = index }
+        }
+        assertTrue(
+            worst >= DiveRenderer.GI_REFLECTANCE_FLOOR,
+            "the darkest of ${argb.size} body texels, at (${worstAt % image.width}, ${worstAt / image.width}), " +
+            "has linear length $worst — under the GI reflectance floor of ${DiveRenderer.GI_REFLECTANCE_FLOOR}, " +
+            "so the shader replaces that patch of the frame edge with flat grey"
+        )
+    }
+
+    /**
+     * THE BODY CARRIES THE WALL'S OWN LIFT, NOT A SECOND ONE SOLVED FOR ITS OWN MEAN.
+     *
+     * `bake_rock` solves a gain so the wall's mean luminance lands on
+     * [DiveRenderer.ROCK_LUMINANCE_FACTOR] times `wallColor`'s. `crop_body` takes its columns out
+     * of THAT array rather than re-running the lift on the source, so the body's mean is exactly
+     * the mean of the wall columns it was cut from. If a re-bake ever solved the body's own gain,
+     * the two would differ — and they are drawn edge to edge along one world line, so the
+     * difference would be a vertical brightness step down both sides of every frame. That is the
+     * same class of defect as the flat cliff top being half the rock's luminance (`41849a7`).
+     *
+     * Stated against the WALL'S OWN CROP rather than against the factor, because the crop is the
+     * solid interior and is legitimately a little darker than the whole tile (0.0644 against
+     * 0.0682) — asserting the factor would be asserting something that is not true of the body and
+     * would have to be given a tolerance wide enough to hide a real re-gain.
+     */
+    @Test
+    fun `the body carries the wall's baked mean luminance`()
+    {
+        val wall = ImageIO.read(diffusePng)
+        val wallArgb = wall.getRGB(0, 0, wall.width, wall.height, null, 0, wall.width)
+        var wallSum = 0.0
+        var wallCount = 0
+        for (y in 0 until wall.height)
+        {
+            for (x in RockFace.BORDER_TEXEL_COLUMNS until RockFace.OPAQUE_TEXEL_COLUMNS)
+            {
+                wallSum += relativeLuminance(wallArgb[y * wall.width + x])
+                wallCount++
+            }
+        }
+
+        val body = ImageIO.read(bodyDiffusePng)
+        val bodyArgb = body.getRGB(0, 0, body.width, body.height, null, 0, body.width)
+        val bodyMean = bodyArgb.sumOf { relativeLuminance(it) } / bodyArgb.size
+
+        assertEquals(
+            wallSum / wallCount, bodyMean, 1e-9,
+            "the body's mean luminance is $bodyMean against ${wallSum / wallCount} over the wall " +
+            "columns it is cropped from — it has been given a gain of its own, so there is a " +
+            "brightness step where the two meet"
+        )
+    }
+
+    /** The relative luminance of a packed ARGB texel, in the LINEAR space the GI blend measures. */
+    private fun relativeLuminance(argb: Int): Double
+    {
+        val r = DiveRenderer.srgbToLinear(((argb shr 16) and 0xFF) / 255f)
+        val g = DiveRenderer.srgbToLinear(((argb shr 8) and 0xFF) / 255f)
+        val b = DiveRenderer.srgbToLinear((argb and 0xFF) / 255f)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
     // --- THE CREST -----------------------------------------------------------------------------
@@ -465,16 +867,16 @@ class RockFaceTest
      *
      *  - the crest is drawn at its own art's proportions and is exactly one tile wide, so it
      *    neither repeats nor stretches as the display gets wider;
-     *  - the flat cliff top begins exactly where the sprite's outward edge ends, at exactly the
-     *    depth the art is opaque to at that edge. Either being off leaves a step in the skyline —
-     *    a notch of sky, or a shelf standing proud of the summit.
+     *  - the cliff BODY begins exactly one texel inward of where the sprite's outward edge ends,
+     *    at exactly the depth the art is opaque to at that edge. Either being off leaves a step in
+     *    the skyline — a notch of sky, or a shelf standing proud of the summit.
      *
      * [RockFace.TOP_SHOULDER_TEXEL_ROW] is re-derived from BOTH committed PNGs here rather than
      * trusted, so a re-bake or a redrawn summit fails this instead of quietly leaving that step.
      * That the base and the mirror agree is also one more independent check on the mirror.
      */
     @Test
-    fun `the crest is one tile wide and the flat cliff top starts exactly at its shoulder`()
+    fun `the crest is one tile wide and the cliff body starts exactly at its shoulder`()
     {
         assertEquals(
             RockFace.TILE_WIDTH_METRES, RockFace.CREST_WIDTH_METRES, 1e-5f,
@@ -484,8 +886,8 @@ class RockFaceTest
         )
         assertEquals(
             RockFace.CREST_WIDTH_METRES, RockFace.CREST_OUTER_HALF_WIDTH - RockFace.QUAD_INNER_HALF_WIDTH, 1e-5f,
-            "the flat cliff top does not begin where the crest sprite ends, so the skyline has a " +
-            "gap of sky or a doubled shoulder at the join"
+            "the cliff body's anchor is not one tile outward of the edge art's, so the skyline " +
+            "has a gap of sky or a doubled shoulder at the join"
         )
 
         val dir = "src/main/resources/backdrop/"
@@ -525,23 +927,25 @@ class RockFaceTest
     }
 
     /**
-     * THE CLIFF TOP MUST BE AS BRIGHT AS THE CLIFF, OR THE JOIN IS A LINE.
+     * A FLAT SLAB STANDING IN FOR ROCK MUST BE AS BRIGHT AS THE ROCK, OR THE JOIN IS A LINE.
      *
-     * Above the waterline, outward of the crest sprite, [DiveRenderer.drawColumnWalls] fills flat.
-     * That fill abuts the tiling wall along the whole of [RockFace.WALL_TOP_DEPTH], from the
-     * crest's outward edge to the side of the frame — so if the two are not the same brightness,
-     * the join is a horizontal step the full width of the fill.
+     * [DiveRenderer.drawFlatWalls] is the degradation when the textures have not uploaded, and it
+     * fills the two slabs in two colours split at [RockFace.WALL_TOP_DEPTH]. The above-waterline
+     * half stands in for the cliff top against the sunset, so if it is not the brightness the bake
+     * gives the rock, the join at the waterline is a horizontal step the full width of the slab.
      *
      * They were not. The fill used `wallColor`, and the bake solves the ROCK's mean to
      * `LUMINANCE_FACTOR` times that colour — so the fill was exactly half as bright. Captured at
-     * 0 m and 2.84:1, at world -75.3 m: (0, 0, 0) above the join against (1, 3, 6) below it.
+     * 0 m and 2.84:1, at world -75.3 m: (0, 0, 0) above the join against (1, 3, 6) below it. That
+     * was measured on the LIVE path, which is now textured rock at every texel; the constant and
+     * this test survive because the fallback makes exactly the same claim.
      *
      * The factor is READ OUT OF THE BAKE here, not copied: `tools/build_backdrop.py` owns it, and
      * a re-tune there that did not reach `DiveRenderer` would put the seam straight back with
      * every other test still green. Same reason the texel counts are re-derived from the PNG.
      */
     @Test
-    fun `the flat cliff top carries the same luminance the bake gives the rock`()
+    fun `the flat slab carries the same luminance the bake gives the rock`()
     {
         val bake = File("tools/build_backdrop.py").readText()
         val declared = Regex("""^LUMINANCE_FACTOR\s*=\s*([0-9.]+)""", RegexOption.MULTILINE)
@@ -551,8 +955,8 @@ class RockFaceTest
         assertEquals(
             declared, DiveRenderer.ROCK_LUMINANCE_FACTOR, 1e-4f,
             "the bake targets ${declared}x wallColor for the rock's mean luminance but DiveRenderer " +
-            "believes ${DiveRenderer.ROCK_LUMINANCE_FACTOR}x — the flat cliff top and the tiling wall " +
-            "meet along the whole waterline, so the difference is a horizontal seam there"
+            "believes ${DiveRenderer.ROCK_LUMINANCE_FACTOR}x — the two flat slabs meet along the " +
+            "whole waterline, so the difference is a horizontal seam there"
         )
 
         // ...and the colour really carries it, in the LINEAR space the ratio is stated in. An sRGB
@@ -567,17 +971,17 @@ class RockFaceTest
             val (wall, headland) = pair
             assertEquals(
                 linear(wall) * DiveRenderer.ROCK_LUMINANCE_FACTOR, linear(headland), 1e-4f,
-                "the cliff top's $name is not ${DiveRenderer.ROCK_LUMINANCE_FACTOR}x the wall's in LINEAR space"
+                "the above-waterline slab's $name is not ${DiveRenderer.ROCK_LUMINANCE_FACTOR}x the wall's in LINEAR space"
             )
         }
         assertTrue(
             DiveRenderer.headlandColor.red > DiveRenderer.wallColor.red,
-            "the cliff top is no brighter than wallColor, so it is still half the rock's luminance"
+            "the above-waterline slab is no brighter than wallColor, so it is still half the rock's luminance"
         )
     }
 
     /**
-     * ...AND THE DRAW SITE ACTUALLY USES IT. A SOURCE SCAN, for the reason
+     * ...AND THE DEGRADED WALL ACTUALLY USES IT. A SOURCE SCAN, for the reason
      * `SurfaceRendererOrderTest` is one: the invariant is which draw colour is in force when two
      * `fillRect` calls run, and there is no way to observe that without a GL context.
      *
@@ -585,39 +989,53 @@ class RockFaceTest
      * to `wallColor` — the exact regression that produced the seam — left `headlandColor` correctly
      * computed and unused, and every other case green. A colour that is right and not used is the
      * same picture as a colour that is wrong.
+     *
+     * THE DRAW SITE MOVED. `headlandColor` used to back the textured cliff-top band on the live
+     * path; the body texture is opaque at every texel, so there is nothing left for it to fill in
+     * up there and the live fill is gone. It survives in [DiveRenderer.drawFlatWalls] — the
+     * degradation when the textures have not uploaded — where the same argument applies unchanged:
+     * the above-waterline slab stands in for rock the bake makes twice as bright as `wallColor`,
+     * so filling the whole height in `wallColor` puts a horizontal step at the waterline.
+     *
+     * Scoped to `drawFlatWalls`'s OWN body. An `indexOf` over the whole file would find the
+     * backing's `setDrawColor(wallColor)` instead and pass on a gutted fallback.
      */
     @Test
-    fun `the headland fill is drawn in the headland colour and not the wall's`()
+    fun `the degraded wall fills above the waterline in the headland colour and not the wall's`()
     {
-        val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+        val body = functionBody("private fun drawFlatWalls")
 
-        val setsHeadland = code.indexOf("setDrawColor(headlandColor)")
-        // `innerEdge`, not CREST_OUTER_HALF_WIDTH: the fill starts CLIFF_TOP_OVERLAP_METRES inward
-        // so its own quad edge lands on solid crest rather than on the transparent wrap border.
-        val fillsHeadland = code.indexOf("surface.fillRect(innerEdge")
+        val setsHeadland = body.indexOf("setDrawColor(headlandColor)")
+        val fillsHeadland = body.indexOf("surface.fillRect(worldLeft, worldTop")
 
         assertTrue(
             setsHeadland >= 0,
-            "DiveRenderer never sets headlandColor as the draw colour, so the flat cliff top is " +
-            "drawn in whatever was left in force — wallColor from the backing fills, which is half " +
-            "the rock's luminance and puts a seam along the whole waterline join"
+            "drawFlatWalls never sets headlandColor as the draw colour, so the above-waterline " +
+            "slab is drawn in whatever was left in force — and wallColor is half the luminance " +
+            "the bake gives the rock, which is a horizontal step at the waterline"
         )
-        assertTrue(fillsHeadland >= 0, "DiveRenderer no longer fills the headland outward of the crest — re-read this test before deleting it")
+        assertTrue(fillsHeadland >= 0, "drawFlatWalls no longer fills above the waterline — re-read this test before deleting it")
         assertTrue(
             setsHeadland < fillsHeadland,
-            "headlandColor is set AFTER the headland is filled, so the fill still takes the " +
-            "previous draw colour. setDrawColor is shared surface state; the call has to precede " +
-            "the fill it is for"
+            "headlandColor is set AFTER the above-waterline slab is filled, so the fill still " +
+            "takes the previous draw colour. setDrawColor is shared surface state; the call has " +
+            "to precede the fill it is for"
         )
 
-        // Nothing may reset the colour in between. `setDrawColor` is shared state and the backing
-        // fills above set wallColor, so a third call slipped between these two would silently
-        // restore exactly the bug.
-        val between = code.substring(setsHeadland + "setDrawColor(headlandColor)".length, fillsHeadland)
+        // Nothing may reset the colour in between: a third call slipped between these two would
+        // silently restore exactly the bug.
+        val between = body.substring(setsHeadland + "setDrawColor(headlandColor)".length, fillsHeadland)
         assertTrue(
             !between.contains("setDrawColor"),
-            "another setDrawColor runs between headlandColor being set and the headland being " +
+            "another setDrawColor runs between headlandColor being set and the slab being " +
             "filled, so the fill does not get it: ${between.trim().lines().firstOrNull { it.contains("setDrawColor") }}"
+        )
+
+        // ...and the slab BELOW the waterline still takes wallColor, which is what it was tuned
+        // against. One colour for the whole height is the defect, whichever of the two it is.
+        assertTrue(
+            body.indexOf("setDrawColor(wallColor)") > setsHeadland,
+            "drawFlatWalls no longer fills below the waterline in wallColor"
         )
     }
 
@@ -643,55 +1061,122 @@ class RockFaceTest
      * is why the tests above still stand.
      */
     @Test
-    fun `the cliff top is drawn as rock, and its tiling keeps the texels square at any band height`()
+    fun `the cliff is drawn as rock on both sides, and its tiling keeps the texels square at any band height`()
     {
-        val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+        val walls = functionBody("private fun drawColumnWalls")
 
-        // BOTH sides, and each named with the width it is passed. The band spans the frame OUTWARD
-        // OF THE CREST (leftHeadland/rightHeadland), not the whole wall slab: passing the slab put
-        // an opaque rectangle behind the crest sprite, whose inward side is mostly alpha, so the
-        // summit's notches showed this band's straight top edge instead of the sky. The owner put
-        // arrows on both top corners and asked why the fill was needed. It was not.
+        // BOTH SIDES, each named with the half-width it is passed. Dropping one side leaves the
+        // other, and a whole-file `contains` would not notice — which it did not, the first time
+        // this was written. The property survived the restructure because it is a property of the
+        // COLUMN having two sides, not of what is drawn on them.
         //
-        // Dropping one side leaves the other, and a whole-file `contains` would not notice — which
-        // it did not, the first time this was written.
-        listOf("leftHeadland, topOfHeadland, LEFT_SIDE", "rightHeadland, topOfHeadland, RIGHT_SIDE").forEach {
+        // Four calls, because the body is drawn as two quads and not one tall one: a single quad
+        // on the v lattice would have to start at WALL_TOP_DEPTH - 40 m and would paint 17 m of
+        // opaque rock across the sky. See drawColumnWalls.
+        listOf(
+            "leftHalfWidth, aboveTop, RockFace.WALL_TOP_DEPTH, LEFT_SIDE",
+            "rightHalfWidth, aboveTop, RockFace.WALL_TOP_DEPTH, RIGHT_SIDE",
+            "leftHalfWidth, RockFace.WALL_TOP_DEPTH, wallBottom, LEFT_SIDE",
+            "rightHalfWidth, RockFace.WALL_TOP_DEPTH, wallBottom, RIGHT_SIDE"
+        ).forEach {
             assertTrue(
-                code.contains("drawCliffTop(surface, normalMaps, $it)"),
-                "drawCliffTop is not called with ($it), so that side's cliff top above the " +
-                "waterline is back to a flat colour with no relief for the light to catch"
+                walls.contains("drawRockBody(surface, normalMaps, $it)"),
+                "drawRockBody is not called with ($it), so that band of that side's cliff has no " +
+                "rock reaching the frame edge at all"
+            )
+        }
+        listOf("side = LEFT_SIDE", "side = RIGHT_SIDE").forEach {
+            assertTrue(
+                walls.contains("drawRockEdge(surface, normalMaps, worldBottom, $it)"),
+                "drawRockEdge is not called with ($it), so that side of the column has no ragged " +
+                "silhouette where the diver is stopped"
             )
         }
 
-        // Scoped to drawCliffTop's OWN body. `indexOf` over the whole file finds drawRockWall's
-        // copy of these lines instead and passes on a gutted drawCliffTop.
-        val bodyStart = code.indexOf("private fun drawCliffTop")
-        assertTrue(bodyStart >= 0, "DiveRenderer no longer declares drawCliffTop — re-read this test before deleting it")
-        val body = code.substring(bodyStart, code.indexOf("private fun ", bodyStart + 20))
+        // AND IN THAT ORDER. The edge art has alpha notches, and what shows through them must be
+        // the water and the sky rather than the body — so the body goes down first. The crest is
+        // last because it caps the wall it is drawn over.
+        assertTrue(
+            walls.indexOf("drawRockBody(") < walls.indexOf("drawRockEdge(") &&
+                walls.indexOf("drawRockEdge(") < walls.indexOf("drawCrest("),
+            "the wall is not drawn body, then edge, then crest — the cliff's notches would show " +
+            "opaque body instead of water, or the crest would be drawn under the wall it caps"
+        )
+
+        val body = functionBody("private fun drawRockBody")
         assertTrue(
             body.contains("drawNormalMap"),
-            "drawCliffTop submits no normal map, so the cliff top is lit flat — which is the whole " +
-            "of what made the flat fill wrong"
+            "drawRockBody submits no normal map, so the rock at the frame edge is lit flat — which " +
+            "is the whole of what made the flat fill wrong"
         )
         assertTrue(
-            body.contains("cliffTopVerticalTiles("),
-            "drawCliffTop no longer derives its vTiling from the band's height, so the rock " +
+            body.contains("bodyVerticalTiles("),
+            "drawRockBody no longer derives its vTiling from the band's height, so the rock " +
             "stretches as the camera moves"
         )
 
-        // The band's height varies with the camera, so the tiling has to vary with it. Every band
-        // must show exactly its own height of tile, at the tile's own scale.
+        // uTiling IS THE TILE COUNT, on BOTH maps. Pinning it to 1 leaves the quad the right
+        // width — so the frame edge is still covered and the arithmetic sweep still passes — and
+        // stretches one 15.43 m tile across up to 60 m of frame instead. That is invisible to
+        // every pure test here, which is exactly why it is asserted at the draw site; and it has
+        // to be the same on both maps, because drawNormalMap takes no uv arguments at all and a
+        // normal map tiled differently from its albedo lights every facet from the wrong place.
+        assertEquals(
+            2, Regex("""columns\.toFloat\(\), rows""").findAll(body).count(),
+            "drawRockBody does not pass uTiling = columns to BOTH the albedo and the normal map, " +
+            "so the body's tiles are stretched or its lighting does not match its art"
+        )
+
+        // The above-waterline band's height varies with the camera, so the tiling has to vary with
+        // it. Every band must show exactly its own height of tile, at the tile's own scale.
         listOf(2f, 7.5f, RockFace.TILE_HEIGHT_METRES, 20.16f, 39.9f).forEach { height ->
             assertEquals(
                 height,
-                DiveRenderer.cliffTopVerticalTiles(height) * RockFace.TILE_HEIGHT_METRES,
+                DiveRenderer.bodyVerticalTiles(height) * RockFace.TILE_HEIGHT_METRES,
                 1e-3f,
-                "a ${height} m band of cliff top is drawn showing " +
-                "${DiveRenderer.cliffTopVerticalTiles(height)} tiles, i.e. " +
-                "${DiveRenderer.cliffTopVerticalTiles(height) * RockFace.TILE_HEIGHT_METRES} m of rock — " +
+                "a ${height} m band of cliff is drawn showing " +
+                "${DiveRenderer.bodyVerticalTiles(height)} tiles, i.e. " +
+                "${DiveRenderer.bodyVerticalTiles(height) * RockFace.TILE_HEIGHT_METRES} m of rock — " +
                 "the texels are stretched, and they stretch differently at every camera depth"
             )
         }
+    }
+
+    /**
+     * THE EDGE IS DRAWN ONCE ACROSS, AND THAT IS THE FIX. A SOURCE SCAN, because the number that
+     * matters is a `uTiling` argument and no pure function can observe it.
+     *
+     * `drawRockEdge` used to ask for `tileColumns(wallWidth + EDGE_INSET_METRES)` tiles — as many
+     * as it took to reach the frame edge. That is what made the frame edge a function of
+     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES`, and 43% of that period is empty or
+     * ragged, so at 16:9 the outermost pixel column of the screen had no rock in it at all.
+     *
+     * Putting a horizontal count back here is the single most likely way for this defect to
+     * return, because it looks like the obvious way to make the cliff reach further. It is not:
+     * [DiveRenderer.drawRockBody] is what reaches, and this must stay exactly one tile wide so its
+     * non-solid region is one fixed world interval at every aspect ratio.
+     */
+    @Test
+    fun `the edge art is one tile across and is never tiled horizontally`()
+    {
+        val edge = functionBody("private fun drawRockEdge")
+
+        assertTrue(
+            edge.contains("val width = RockFace.TILE_WIDTH_METRES"),
+            "drawRockEdge's quad is no longer exactly one tile wide, so which part of the art " +
+            "lands at the frame edge depends on the display's aspect ratio again"
+        )
+        assertTrue(
+            !edge.contains("olumns"),
+            "drawRockEdge counts tiles across again — that is the modulus this whole structure " +
+            "exists to remove: ${edge.lines().firstOrNull { it.contains("olumns") }?.trim()}"
+        )
+        // uTiling is the second-to-last argument of both draws, and it is the literal 1f.
+        assertEquals(
+            2, Regex("""1f, rows\.toFloat\(\)""").findAll(edge).count(),
+            "drawRockEdge does not pass uTiling = 1 to BOTH the albedo and the normal map — a " +
+            "normal map tiled differently from the albedo lights every facet from the wrong place"
+        )
     }
 
     /**
@@ -836,6 +1321,28 @@ class RockFaceTest
                 "the darkest of $counted visible texels in $name, at $worstAt, has linear length $worst — under the GI reflectance floor of ${DiveRenderer.GI_REFLECTANCE_FLOOR}, so the shader will replace that patch of cliff with flat grey"
             )
         }
+    }
+
+    /**
+     * The source of ONE function of `DiveRenderer`, from its declaration to the next one.
+     *
+     * Every source scan here is scoped through this rather than run over the whole file, because
+     * an unscoped `indexOf` finds another function's identical lines and passes on a gutted
+     * target — which has happened twice in this file's history: a whole-file `contains` for the
+     * cliff-top draw matched only one of the two sides, and a scan for `drawNormalMap` matched the
+     * wall's copy of the call while the band's had been deleted.
+     */
+    private fun functionBody(declaration: String): String
+    {
+        val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+        val start = code.indexOf(declaration)
+        assertTrue(start >= 0, "DiveRenderer no longer declares `$declaration` — re-read the test that asked for it before deleting it")
+        // Its own closing brace, which is the first one at FOUR spaces of indent: every block
+        // inside a method closes at eight or more. Ending at "the next `private fun` instead"
+        // swept up the following method's KDoc, and a doc that mentions a call is not a call.
+        val end = code.indexOf("\n    }\n", start + declaration.length)
+        assertTrue(end > start, "`$declaration`'s body has no closing brace at four spaces of indent; this helper cannot find its end")
+        return code.substring(start, end)
     }
 
     /** Width and height from the IHDR chunk, at its fixed offset. No image library, no pixels. */

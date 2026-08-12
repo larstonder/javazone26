@@ -20,6 +20,34 @@ import kotlin.math.ceil
  * body must run outward from there, off the side of the frame. See [DiveRenderer.drawColumnWalls]
  * for how the right-hand wall gets the same edge.
  *
+ * ## TWO TEXTURES, BECAUSE ONE OF THEM CANNOT REACH THE FRAME EDGE
+ *
+ * The owner: *"The rocks should ALWAYS be exactly starting at the edge of the screen. ALWAYS."*
+ *
+ * The art above is not uniform across a tile, so it cannot be the thing that reaches the edge.
+ * Going outward from a tile's inner end it is EMPTY for [EDGE_INSET_METRES] (1.31 m), RAGGED to
+ * [BACKING_HALF_WIDTH] (5.76 m), and only then solid for the remaining 7.73 m. Tile it outward
+ * from a fixed anchor and what lands at the frame edge is decided by
+ * `(visibleHalfWidth − anchor) mod` [TILE_WIDTH_METRES] — and 43% of that period is not solid.
+ * Measured on the code this replaced, at the extreme frame-edge column:
+ *
+ *     4:3  no rock at all | 16:10 solid | 16:9 EMPTY | 21:9 RAGGED | 32:9 EMPTY
+ *
+ * 16:9 is the likeliest booth panel. FIVE commits in a row moved the anchor or swapped the
+ * mirror; each of them relocated the hole, because a modulus cannot be closed by choosing a
+ * phase. So the wall is now two things with two different jobs:
+ *
+ *  - **EDGE** — this art, [TILE_WIDTH_METRES] wide, drawn exactly ONCE per side and never tiled
+ *    horizontally. Its ragged silhouette lands on ±[Tuning.COLUMN_HALF_WIDTH], where the
+ *    simulation stops the diver. Its non-solid region is then ONE fixed world interval,
+ *    `[38.691, 44.453]`, at every aspect ratio there is.
+ *  - **BODY** — [bodyDiffuse], opaque at EVERY texel, tiled outward from [BODY_INNER_HALF_WIDTH]
+ *    with a whole-tile count rounded UP ([bodyColumns]). [coverageOuterHalfWidth] therefore
+ *    reaches at least the visible half-width by construction of `ceil`, with no modulus left
+ *    anywhere in the derivation — which is the property `RockFaceTest` sweeps rather than
+ *    spot-checks, because spot-checking five aspect ratios is exactly what let the last five
+ *    versions of this through.
+ *
  * ## Tiling is the engine's, not ours
  *
  * `texture.vert` carries a per-instance `tiling` vec2 and `texture.frag` resolves it as
@@ -107,6 +135,16 @@ object RockFace
      */
     const val TILE_WIDTH_METRES = TILE_HEIGHT_METRES * TEXELS_WIDE.toFloat() / TEXELS_TALL.toFloat()
 
+    /**
+     * How much world one texel of the rock covers: 0.01953125 m, i.e. 40/2048 exactly.
+     *
+     * The bake keeps the texels square, so this is the same number horizontally and vertically
+     * and it is exact in binary — which matters, because [BODY_INNER_HALF_WIDTH] is one of these
+     * inward of a tile boundary and the join it makes has to be texel-exact rather than
+     * approximately right.
+     */
+    const val TEXEL_WIDTH_METRES = TILE_WIDTH_METRES / TEXELS_WIDE
+
     // --- The cliff's ALPHA PROFILE, and what the wall may paint behind it ----------------------
     //
     // These two numbers were not needed while the wall was backed by an opaque slab across its
@@ -170,28 +208,6 @@ object RockFace
      * the same rock.
      */
     const val BORDER_TEXEL_COLUMNS = 1
-
-    /**
-     * How far INWARD of [CREST_OUTER_HALF_WIDTH] the cliff-top band starts, so that its own edge
-     * is hidden under solid crest — 0.5 m.
-     *
-     * The band and the flat fill behind it both used to begin exactly at [CREST_OUTER_HALF_WIDTH],
-     * which is also the crest sprite's outward edge. That was invisible only while the crest was
-     * opaque right up to that edge; [BORDER_TEXEL_COLUMNS] made its outermost column transparent,
-     * and the band's own quad-edge sliver started showing through the 1-texel gap. Measured:
-     * `RGBA(0, 0, 0, 64)` appeared at -52.200 m where nothing had been before.
-     *
-     * Half a metre is 26 texels — comfortably past the one-texel border, and comfortably inside
-     * the summit's solid run, which is 513 of 691 columns (10.0 m) from its outward edge. So the
-     * band's edge lands on opaque stone at every depth of the band, and the crest is drawn after
-     * it.
-     *
-     * WHAT IT GIVES UP: the band no longer shares the wall's horizontal tile lattice, so their
-     * vertical joins do not line up across [WALL_TOP_DEPTH]. That join is already a texture
-     * discontinuity — the crest is a different crop of rock entirely — and it is hidden the same
-     * way, by [CREST_SUBMERGENCE_METRES] putting it below the deepest trough the wave can reach.
-     */
-    const val CLIFF_TOP_OVERLAP_METRES = 0.5f
 
     /**
      * One past the last texel column holding any alpha at all: 624 of 691, u = 0.903.
@@ -286,7 +302,7 @@ object RockFace
      * DIFFERENTLY: on the right, an upside-down wall ran up to a right-way-up summit. The owner,
      * on a capture: *"they should be placed from top to bottom to ensure the seams line up"*.
      *
-     * Both now come from the bake, and [DiveRenderer.drawRockWall] draws both sides at angle 0.
+     * Both now come from the bake, and [DiveRenderer.drawRockEdge] draws both sides at angle 0.
      * The cost is two more layers in the 2048 arrays the diver's sheets already allocate — which
      * is why these go through [rockTexture] and inherit exactly the same filter, wrapping and
      * `maxMipLevels` as everything else here (see the class doc: differ in any one of them and
@@ -402,6 +418,78 @@ object RockFace
     const val CREST_SHOULDER_DEPTH =
         CREST_TOP_DEPTH + TOP_HEIGHT_METRES * TOP_SHOULDER_TEXEL_ROW / TOP_TEXELS_TALL
 
+    // --- THE BODY: the rock that actually reaches the frame edge -------------------------------
+    //
+    // See the class doc for the defect this exists to close and why no anchor on the wall's own
+    // art could close it. Everything here is derived; nothing is typed.
+
+    /**
+     * The body texture's width in TEXELS — 790, and DERIVED rather than declared.
+     *
+     * `crop_body` takes the wall's columns `[BORDER_TEXEL_COLUMNS, OPAQUE_TEXEL_COLUMNS)` — 395 of
+     * them, the run that is opaque in every single row — and concatenates that crop with its own
+     * horizontal mirror. So the width is twice the crop, and if a re-bake moves either column
+     * count this moves with it. `RockFaceTest` re-derives it from the committed PNG's IHDR as
+     * well, so the two cannot drift apart in silence.
+     */
+    const val BODY_TEXELS_WIDE = 2 * (OPAQUE_TEXEL_COLUMNS - BORDER_TEXEL_COLUMNS)
+
+    /**
+     * How wide one body tile is in metres — 15.43 m at the shipped 790 texels.
+     *
+     * Expressed in [TEXEL_WIDTH_METRES] rather than as its own aspect ratio, because the body is
+     * a CROP of the wall and must keep the wall's texel size exactly: the two are drawn edge to
+     * edge along the world line [BODY_INNER_HALF_WIDTH], and a scale change there is a visible
+     * discontinuity in a surface that is otherwise continuous rock.
+     */
+    const val BODY_TILE_WIDTH_METRES = TEXEL_WIDTH_METRES * BODY_TEXELS_WIDE
+
+    /**
+     * Where the body's inner edge sits: exactly ONE TEXEL inward of the edge tile's outward end.
+     *
+     * ## THIS IS THE ONLY ANCHOR THAT WORKS, AND BOTH REASONS ARE STRUCTURAL
+     *
+     * **It is the only one that makes the join an exact reflection.** The edge tile runs from
+     * [QUAD_INNER_HALF_WIDTH] out to [CREST_OUTER_HALF_WIDTH], so its outward-most texel column is
+     * 0 — the transparent wrap border — and the first column carrying art is
+     * [BORDER_TEXEL_COLUMNS], occupying `[CREST_OUTER_HALF_WIDTH − 2 texels, − 1 texel]`. The body
+     * is its own horizontal mirror, so whichever side it is drawn on, the texel that lands against
+     * this line is the mirror of its own column 0 — which the bake made a copy of the wall's
+     * column [BORDER_TEXEL_COLUMNS]. Inward of the line: the wall's column 1. Outward of it: that
+     * same column, mirrored. A reflection, texel for texel.
+     *
+     * [BACKING_HALF_WIDTH] — the obvious alternative, "start where the edge art is provably solid"
+     * — does not do this: it lands on the boundary between the wall's columns 395 and 396, so the
+     * body's column 395 would butt against the wall's, and the art has no horizontal wrap period
+     * to make that continuous (the bake measures the best candidate at 17.5x the interior
+     * adjacency).
+     *
+     * **And it is the only one that does not paint over the crest's silhouette.** Above the
+     * waterline the body is opaque rock drawn from this line outward, while the crest sprite —
+     * the summit, whose whole job is to be a silhouette against the sunset — occupies
+     * `[QUAD_INNER_HALF_WIDTH, CREST_OUTER_HALF_WIDTH]`. Any anchor inward of the crest's outward
+     * edge puts an opaque rectangle behind the summit's notches, which is precisely the defect
+     * `e7a638e` fixed: the owner put arrows on both top corners and asked why the fill was needed.
+     * One texel inward is the largest overlap that cannot show — it is covered by the crest's own
+     * outward column, which the bake made transparent ([BORDER_TEXEL_COLUMNS]) and which the body
+     * is therefore the only thing drawing.
+     */
+    const val BODY_INNER_HALF_WIDTH = CREST_OUTER_HALF_WIDTH - TEXEL_WIDTH_METRES
+
+    /**
+     * The cliff body. ONE pair for BOTH sides of the column, where every other rock texture here
+     * needs a baked mirror — because `crop_body` emits `[C | mirror(C)]`, which IS its own
+     * horizontal mirror. Two array layers instead of four, and no way for the two sides to be
+     * given different art by mistake.
+     *
+     * Same filter, wrapping and `maxMipLevels` as everything else in this file, for the reason the
+     * class doc gives: differ in any one of them and this allocates a 251.7 MB texture array of
+     * its own instead of taking a free layer in the diver's. `max(790, 2048)` is 2048, so it lands
+     * in the same bucket.
+     */
+    val bodyDiffuse = rockTexture("rock-body-diffuse.png", "rock_body_diffuse", TextureFormat.SRGBA8)
+    val bodyNormal = rockTexture("rock-body-normal.png", "rock_body_normal", TextureFormat.RGBA8)
+
     private fun rockTexture(file: String, name: String, format: TextureFormat) = Texture(
         "/backdrop/$file",
         name,
@@ -432,12 +520,14 @@ object RockFace
 
     private val wallTextures = listOf(diffuse, normal, mirrorDiffuse, mirrorNormal)
     private val topTextures = listOf(topDiffuse, topNormal, topMirrorDiffuse, topMirrorNormal)
+    private val bodyTextures = listOf(bodyDiffuse, bodyNormal)
 
     /** Queues every rock texture for upload. Called once, from `EnPustTil.onCreate`. */
     fun load(engine: PulseEngine)
     {
         wallTextures.forEach { engine.asset.load(it) }
         topTextures.forEach { engine.asset.load(it) }
+        bodyTextures.forEach { engine.asset.load(it) }
     }
 
     /** Ten seconds at 60 fps — see [DiverSprite.sheetsReady], which this mirrors. */
@@ -458,8 +548,12 @@ object RockFace
      */
     fun ready(): Boolean
     {
+        // THE BODY IS IN HERE TOO, and it has to be: it is the only thing drawing rock at the
+        // frame edge, so "ready" without it is a frame with water down both sides. All three sets
+        // are queued in the same `load` call, so in practice they land together.
         if (wallTextures.all { it.handle != TextureHandle.INVALID } &&
-            topTextures.all { it.handle != TextureHandle.INVALID })
+            topTextures.all { it.handle != TextureHandle.INVALID } &&
+            bodyTextures.all { it.handle != TextureHandle.INVALID })
         {
             framesWithoutTextures = 0
             return true
@@ -522,17 +616,45 @@ object RockFace
     }
 
     /**
-     * How many whole tiles are needed to cover [wallWidthMetres] of rock outside the column.
+     * How many whole BODY tiles reach across [spanMetres] of frame outward of
+     * [BODY_INNER_HALF_WIDTH].
      *
      * WHOLE tiles, never a fraction: `texture.frag` tiles with `fract(texCoord * tiling)`, so a
-     * fractional count cuts the cliff off mid-feature at whatever x the quad happens to end at —
-     * and that x is the screen edge, which moves with the display's aspect ratio. Rounding up
-     * instead spills the surplus off the side of the frame, where nothing can see it.
+     * fractional count cuts the texture off mid-feature at whatever x the quad happens to end at —
+     * and that x is the screen edge, which moves with the display's aspect ratio. Rounding UP is
+     * the whole mechanism by which the rock reaches the frame edge at every aspect: the surplus
+     * spills off the side, where nothing can see it.
      *
-     * At least one, so the 4:3 case — where the visible half-width is exactly
-     * [Tuning.COLUMN_HALF_WIDTH] and there is no wall at all — asks for a well-formed quad that
-     * then draws nothing, rather than for zero tiles.
+     * ZERO when there is no frame left over, unlike the `tileColumns` this replaced, which floored
+     * at one. That is not tidiness — the body is opaque, and one tile drawn where the span is
+     * negative would paint solid rock across the crest's silhouette and into the play column. The
+     * caller skips the draw entirely instead. NaN falls out here too, because the test is written
+     * `> 0f` rather than `<= 0f`.
      */
-    fun tileColumns(wallWidthMetres: Float): Int =
-        maxOf(1, ceil(wallWidthMetres / TILE_WIDTH_METRES).toInt())
+    fun bodyColumns(spanMetres: Float): Int =
+        if (spanMetres > 0f) ceil(spanMetres / BODY_TILE_WIDTH_METRES).toInt() else 0
+
+    /**
+     * HOW FAR FROM THE AXIS SOLID ROCK IS GUARANTEED TO REACH, given a visible half-width. THE
+     * REQUIREMENT IS `coverageOuterHalfWidth(H) >= H` FOR EVERY H, and that is what
+     * `RockFaceTest` sweeps in 1 cm steps rather than spot-checking at named aspect ratios.
+     *
+     * There is no modulus in this expression and that is the point of the whole restructure. The
+     * body starts at a fixed world line, whole tiles are added by [bodyColumns]'s `ceil`, and
+     * `ceil(x) * w >= x * w` is arithmetic rather than a property of the art. Where the previous
+     * versions failed, they failed because the answer depended on `(H − anchor) mod tileWidth` and
+     * the art within a tile is not uniform — so five different anchors produced five different
+     * aspect ratios at which the frame edge was empty.
+     *
+     * Below [BODY_INNER_HALF_WIDTH] the body is not drawn at all and the guarantee is the EDGE
+     * art's own solid run, which starts at [BACKING_HALF_WIDTH] — hence the sweep starting there
+     * and not at [Tuning.COLUMN_HALF_WIDTH]. Between the two there is nothing this can do: at 4:3
+     * the visible half-width IS the column half-width, so the frame edge is exactly where the
+     * diver is stopped and there is no room for rock at all.
+     */
+    fun coverageOuterHalfWidth(visibleHalfWidthMetres: Float): Float
+    {
+        val columns = bodyColumns(visibleHalfWidthMetres - BODY_INNER_HALF_WIDTH)
+        return BODY_INNER_HALF_WIDTH + columns * BODY_TILE_WIDTH_METRES
+    }
 }

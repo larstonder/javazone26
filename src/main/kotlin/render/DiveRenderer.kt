@@ -436,6 +436,32 @@ object DiveRenderer
      * before the upload lands); inward of it the zone bands show through the alpha, which is what
      * the owner asked for. When the texture is NOT ready the backing covers the whole wall again,
      * unchanged — a flat slab is the right degradation, an empty frame edge is not.
+     *
+     * ## THE EDGE AND THE BODY ARE TWO DIFFERENT TEXTURES, AND THE FRAME EDGE IS THE BODY'S JOB
+     *
+     * The owner: *"The rocks should ALWAYS be exactly starting at the edge of the screen.
+     * ALWAYS."* [RockFace]'s class doc has the measurement, the five failed attempts and the
+     * reason no anchor on the wall's own art could ever satisfy it — in one line, the art is not
+     * uniform across a tile, so tiling it makes the frame edge a function of a MODULUS.
+     *
+     * The order below is the whole structure, and each step is where it is for a reason:
+     *
+     *  1. the flat [wallColor] backing, below the waterline, exactly as before;
+     *  2. the BODY ([drawRockBody]) — opaque at every texel, tiled outward from
+     *     [RockFace.BODY_INNER_HALF_WIDTH] with a whole-tile count rounded UP, in TWO calls: one
+     *     for the band above the waterline and one for the wall below it. Not one tall quad: the
+     *     v lattice is anchored on [RockFace.WALL_TOP_DEPTH], so a single quad covering both would
+     *     have to start 40 m above that line and would paint 17 m of opaque rock across the sky;
+     *  3. the EDGE ([drawRockEdge]) — the wall's own art, ONE tile, never tiled horizontally,
+     *     carrying the ragged silhouette onto ±[Tuning.COLUMN_HALF_WIDTH]. AFTER the body, so
+     *     what shows through its alpha notches is the water and the sky, not the body;
+     *  4. the CREST ([drawCrest]), last, so the summit draws over everything it caps.
+     *
+     * The width gates that used to gate each of these are gone. The body's own `columns` is zero
+     * when there is no frame left over, and at 4:3 — where the visible half-width IS
+     * [Tuning.COLUMN_HALF_WIDTH] — every texel of the edge and the crest that would be on screen
+     * is transparent by construction (`RockFaceTest.the inward shift draws no rock inside the play
+     * column`), so drawing them costs two quads and shows nothing.
      */
     private fun drawColumnWalls(
         surface: Surface,
@@ -447,112 +473,104 @@ object DiveRenderer
         worldBottom: Float
     )
     {
-        val height = worldBottom - worldTop
-        val leftSlab = -Tuning.COLUMN_HALF_WIDTH - worldLeft
-        val rightSlab = worldRight - Tuning.COLUMN_HALF_WIDTH
-        val ready = RockFace.ready()
+        // Per SIDE, not one half-width. [CameraRig] fixes the camera's world x at 0, so these are
+        // the same number today; taking them separately costs a negation and means that if a
+        // horizontal camera target is ever added it cannot leave one side of the frame short of
+        // rock while the tests, which know nothing about the camera, stay green.
+        val leftHalfWidth = -worldLeft
+        val rightHalfWidth = worldRight
 
-        // How far from the axis the opaque backing may begin. Without the art it is the column
-        // boundary itself, i.e. exactly the slab `0f07303` shipped.
-        val backingHalfWidth = if (ready) RockFace.BACKING_HALF_WIDTH else Tuning.COLUMN_HALF_WIDTH
-        val leftBacking = -backingHalfWidth - worldLeft
-        val rightBacking = worldRight - backingHalfWidth
+        if (!RockFace.ready())
+        {
+            drawFlatWalls(surface, worldLeft, worldTop, worldRight, worldBottom)
+            return
+        }
 
-        // THE BACKING STOPS AT THE WATERLINE TOO, and that is what lets the sky exist above the
-        // cliffs. It used to run the full height of the visible rect, which was invisible while
-        // the whole frame was water and would now be a pair of opaque stone bars painted straight
-        // up through the sunset. Without the art it still runs full height — a flat slab to the
-        // top of the frame is the wall this replaced, and it is a better degradation than a frame
-        // with nothing at its edges.
-        val backingTop = if (ready) maxOf(worldTop, RockFace.WALL_TOP_DEPTH) else worldTop
+        // 1. THE BACKING, below the waterline, from BACKING_HALF_WIDTH outward — see this
+        // method's doc for the "it's black behind the rock" defect that cut it back to there.
+        val backingTop = maxOf(worldTop, RockFace.WALL_TOP_DEPTH)
         val backingHeight = worldBottom - backingTop
-
-        surface.setDrawColor(wallColor)
         if (backingHeight > 0f)
         {
-            if (leftBacking > 0f) surface.fillRect(worldLeft, backingTop, leftBacking, backingHeight)
-            if (rightBacking > 0f) surface.fillRect(backingHalfWidth, backingTop, rightBacking, backingHeight)
+            surface.setDrawColor(wallColor)
+            val leftBacking = leftHalfWidth - RockFace.BACKING_HALF_WIDTH
+            val rightBacking = rightHalfWidth - RockFace.BACKING_HALF_WIDTH
+            if (leftBacking > 0f)
+                surface.fillRect(worldLeft, backingTop, leftBacking, backingHeight)
+            if (rightBacking > 0f)
+                surface.fillRect(RockFace.BACKING_HALF_WIDTH, backingTop, rightBacking, backingHeight)
         }
 
-        // THE CLIFF TOP ABOVE THE WATERLINE — the wall's own rock, continuing up past it.
-        //
-        // The crest sprite is ONE summit, [RockFace.CREST_WIDTH_METRES] across (see that constant
-        // for the picket fence that came of drawing it any other way). Everything outward of it
-        // between [RockFace.CREST_SHOULDER_DEPTH] and the waterline was open sky until `d7921a6`,
-        // which is why the cliffs read as free-standing sea stacks rather than the walls of a
-        // column.
-        //
-        // ## IT WAS A FLAT COLOUR AND THAT WAS THE WRONG SHAPE OF FIX
-        //
-        // `d7921a6` filled it flat, on a measurement that above the waterline the cliff is a
-        // silhouette — mean RGB (2.3, 1.3, 5.8) against a sky of (50, 10, 37) in a 0 m capture.
-        // That measurement was real and the conclusion drawn from it was not: it holds at the
-        // moment of that capture and not in general. On the owner's frame the cliff top is plainly
-        // LIT, with the normal map's relief carrying most of what makes it read as rock, and a
-        // flat slab beside it is a dark band with a hard vertical edge. `41849a7` then matched the
-        // fill's albedo to the rock's mean, which fixed the horizontal join and could never fix
-        // this one: the difference is not albedo, it is that flat geometry has no relief to light.
-        //
-        // ## SO IT IS THE WALL TEXTURE, WITH NO SLICING
-        //
-        // Drawn as the wall's own quad — same lattice, same [RockFace.tileColumns] anchored on
-        // [RockFace.QUAD_INNER_HALF_WIDTH] — occupying the band from the summit's shoulder down to
-        // [RockFace.WALL_TOP_DEPTH]. `vTiling` is the band's height in tiles, so the texels stay
-        // square and BOTH maps take the identical natural mapping. That matters because
-        // `NormalMapRenderer.drawNormalMap` takes no uv arguments at all (verified against the
-        // jar): slicing the albedo's v to continue the wall's lattice exactly would have left the
-        // normals unsliced and lit every facet up here from the wrong place, which is the same
-        // trap that made the right-hand wall a baked mirror rather than a uv swap.
-        //
-        // What that costs is that the rock does NOT continue across [RockFace.WALL_TOP_DEPTH] —
-        // the band starts the tile again rather than carrying on from the wall below. That join is
-        // already a discontinuity for the crest, which is a different crop of rock entirely, and
-        // it is hidden the same way: [RockFace.CREST_SUBMERGENCE_METRES] puts it below the deepest
-        // trough the wave can reach, inside the meniscus `water.frag` draws.
-        //
-        // [headlandColor] stays, BEHIND it, doing the job the backing does below the waterline:
-        // the wall tile is empty for its last 67 texel columns, so tiling it leaves a transparent
-        // slit at every tile join and something opaque has to be behind them. It is the rock's own
-        // mean luminance rather than [wallColor] (see that property) so the slits do not read as
-        // dark lines.
-        if (ready)
-        {
-            val topOfHeadland = maxOf(worldTop, RockFace.CREST_SHOULDER_DEPTH)
-            val headlandHeight = RockFace.WALL_TOP_DEPTH - topOfHeadland
-            if (headlandHeight > 0f)
-            {
-                // BOTH the fill and the textured band start inward of the crest's outward edge,
-                // so that BOTH their quad edges land on solid stone instead of on the 1-texel
-                // transparent border — see RockFace.CLIFF_TOP_OVERLAP_METRES. Moving only the band
-                // left the fill's own edge showing at exactly CREST_OUTER_HALF_WIDTH: measured
-                // RGBA(0, 0, 0, 64) left and (0, 0, 0, 128) right, unchanged by the band's move,
-                // which is what identified the fill rather than the band as their source.
-                surface.setDrawColor(headlandColor)
-                val innerEdge = RockFace.CREST_OUTER_HALF_WIDTH - RockFace.CLIFF_TOP_OVERLAP_METRES
-                val leftHeadland = -innerEdge - worldLeft
-                val rightHeadland = worldRight - innerEdge
-                if (leftHeadland > 0f)
-                    surface.fillRect(worldLeft, topOfHeadland, leftHeadland, headlandHeight)
-                if (rightHeadland > 0f)
-                    surface.fillRect(innerEdge, topOfHeadland, rightHeadland, headlandHeight)
-
-                surface.setDrawColor(1f, 1f, 1f, 1f)
-                if (leftHeadland > 0f) drawCliffTop(surface, normalMaps, leftHeadland, topOfHeadland, LEFT_SIDE)
-                if (rightHeadland > 0f) drawCliffTop(surface, normalMaps, rightHeadland, topOfHeadland, RIGHT_SIDE)
-            }
-        }
-
-        if (!ready) return
-
-        // White and opaque: drawTexture MODULATES by the surface's current draw colour, which is
-        // still wallColor from the fills above.
+        // 2. THE BODY. White and opaque first: drawTexture MODULATES by the surface's current
+        // draw colour, which is still wallColor from the backing above.
         surface.setDrawColor(1f, 1f, 1f, 1f)
-        if (leftSlab > 0f) drawRockWall(surface, normalMaps, leftSlab, worldBottom, side = LEFT_SIDE)
-        if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldBottom, side = RIGHT_SIDE)
 
-        // The crest, LAST, so it draws over the top of the wall it caps rather than under it.
-        if (leftSlab > 0f) drawCrest(surface, cam, normalMaps, side = LEFT_SIDE)
-        if (rightSlab > 0f) drawCrest(surface, cam, normalMaps, side = RIGHT_SIDE)
+        // Above the waterline: the summit's shoulder down to the join, clipped to the frame so the
+        // quad shrinks as the camera drops rather than being drawn and clipped by the GPU.
+        val aboveTop = maxOf(worldTop, RockFace.CREST_SHOULDER_DEPTH)
+        drawRockBody(surface, normalMaps, leftHalfWidth, aboveTop, RockFace.WALL_TOP_DEPTH, LEFT_SIDE)
+        drawRockBody(surface, normalMaps, rightHalfWidth, aboveTop, RockFace.WALL_TOP_DEPTH, RIGHT_SIDE)
+
+        // Below it: the same whole number of whole tiles the edge runs, so the two share a v
+        // lattice and their horizontal joins cannot fall at different depths.
+        val wallBottom = RockFace.WALL_TOP_DEPTH +
+            RockFace.tileRows(worldBottom) * RockFace.TILE_HEIGHT_METRES
+        drawRockBody(surface, normalMaps, leftHalfWidth, RockFace.WALL_TOP_DEPTH, wallBottom, LEFT_SIDE)
+        drawRockBody(surface, normalMaps, rightHalfWidth, RockFace.WALL_TOP_DEPTH, wallBottom, RIGHT_SIDE)
+
+        // 3. THE EDGE, over the body, so the water shows through its notches.
+        drawRockEdge(surface, normalMaps, worldBottom, side = LEFT_SIDE)
+        drawRockEdge(surface, normalMaps, worldBottom, side = RIGHT_SIDE)
+
+        // 4. The crest, LAST, so it draws over the top of the wall it caps rather than under it.
+        drawCrest(surface, cam, normalMaps, side = LEFT_SIDE)
+        drawCrest(surface, cam, normalMaps, side = RIGHT_SIDE)
+    }
+
+    /**
+     * THE DEGRADATION: what the column looks like when the rock textures have not uploaded —
+     * frame one, and any display where the files are missing from the classpath. Flat slabs from
+     * ±[Tuning.COLUMN_HALF_WIDTH] to the frame edge, which is exactly the wall `0f07303` shipped
+     * and reads as entirely deliberate. ([RockFace.ready] is what logs that it happened.)
+     *
+     * TWO COLOURS, SPLIT AT THE WATERLINE, and that split is the whole reason this is not one
+     * fill. Below [RockFace.WALL_TOP_DEPTH] the slab stands in for unlit rock seen through water,
+     * which is what [wallColor] was tuned against. Above it the slab stands in for the cliff top
+     * against the sunset, where [headlandColor] is the rock's own baked mean luminance — the bake
+     * solves the rock to [ROCK_LUMINANCE_FACTOR] times [wallColor], so filling the whole height in
+     * `wallColor` would make the above-water half half as bright as the rock it replaces. That was
+     * a measured defect in its own right when the live path filled flat (`41849a7`, the owner:
+     * *"there is still like a 1 pixel seam between the sides of the screen and the tops"*), and
+     * there is no reason to reintroduce it in the fallback.
+     */
+    private fun drawFlatWalls(
+        surface: Surface,
+        worldLeft: Float,
+        worldTop: Float,
+        worldRight: Float,
+        worldBottom: Float
+    )
+    {
+        val leftSlab = -Tuning.COLUMN_HALF_WIDTH - worldLeft
+        val rightSlab = worldRight - Tuning.COLUMN_HALF_WIDTH
+        if (leftSlab <= 0f && rightSlab <= 0f) return
+
+        val skyHeight = RockFace.WALL_TOP_DEPTH - worldTop
+        if (skyHeight > 0f)
+        {
+            surface.setDrawColor(headlandColor)
+            if (leftSlab > 0f) surface.fillRect(worldLeft, worldTop, leftSlab, skyHeight)
+            if (rightSlab > 0f) surface.fillRect(Tuning.COLUMN_HALF_WIDTH, worldTop, rightSlab, skyHeight)
+        }
+
+        val seaTop = maxOf(worldTop, RockFace.WALL_TOP_DEPTH)
+        val seaHeight = worldBottom - seaTop
+        if (seaHeight > 0f)
+        {
+            surface.setDrawColor(wallColor)
+            if (leftSlab > 0f) surface.fillRect(worldLeft, seaTop, leftSlab, seaHeight)
+            if (rightSlab > 0f) surface.fillRect(Tuning.COLUMN_HALF_WIDTH, seaTop, rightSlab, seaHeight)
+        }
     }
 
     /**
@@ -585,7 +603,7 @@ object DiveRenderer
      * about 30 m into the dive, which is most of every run.
      *
      * The two draws are ONE argument list written twice, exactly as [drawDiver]'s and
-     * [drawRockWall]'s are.
+     * [drawRockEdge]'s are.
      */
     private fun drawCrest(
         surface: Surface,
@@ -666,16 +684,15 @@ object DiveRenderer
     private const val RIGHT_SIDE = 1f
 
     /**
-     * One wall: a whole number of tiles across, a whole number down, anchored on the world's tile
-     * lattice and NOT on the visible rect.
+     * THE EDGE: the wall's own art, ONE tile wide, drawn EXACTLY ONCE per side and NEVER tiled
+     * horizontally. It carries the silhouette; it does not carry the frame edge.
      *
      * ## The cue this has to keep carrying
      *
      * The reason a wall is drawn at all has not changed since `0f07303`. [CameraRig] derives
      * pixels-per-metre from screen HEIGHT, so a 16:9 booth panel shows about 53 m of half-width
      * against the column's 40 m, and without a visible boundary the diver stops dead in open
-     * water with no visual reason — the stick reads as broken rather than as blocked. What has
-     * changed is that the art carries it now instead of a painted strip.
+     * water with no visual reason — the stick reads as broken rather than as blocked.
      *
      * SO THE ROCK MUST STAY WHERE THE DIVER STOPS. The walls are symmetric at
      * +-[Tuning.COLUMN_HALF_WIDTH] because that is where the simulation actually halts him, and
@@ -688,141 +705,40 @@ object DiveRenderer
      * BOUNDARY ITSELF. The last 67 of the tile's 691 texel columns hold no alpha at all, so a quad
      * whose u = 1 edge sat on the boundary put the cliff's furthest-reaching texel 1.31 m short of
      * it. That was invisible while an opaque slab filled the gap and becomes a uniform channel of
-     * un-enterable water the moment the water shows through — i.e. removing the slab would have
-     * WEAKENED the very cue this method exists for. Shifting the quad in by exactly that empty
-     * margin restores it and then some: the promontories touch the boundary, the bays between them
-     * are water, and because the margin really is empty no rock is ever drawn inside the column.
+     * un-enterable water the moment the water shows through. Shifting the quad in by exactly that
+     * empty margin restores it and then some: the promontories touch the boundary, the bays
+     * between them are water, and because the margin really is empty no rock is ever drawn inside
+     * the column.
      *
-     * ## Everything else here is width and rounding
+     * ## `uTiling` IS 1, AND THE FRAME EDGE IS SOMEBODY ELSE'S JOB
      *
-     * [wallWidth] is how much frame is left outside the column on this side, which is zero at 4:3
-     * (the visible half-width is exactly 40 m there) and grows with the panel's aspect ratio. The
-     * quad is a whole number of [RockFace.TILE_WIDTH_METRES] wide, anchored on
-     * [RockFace.QUAD_INNER_HALF_WIDTH] and running OUTWARD, so the surplus spills off the side of
-     * the frame where nothing can see the join. See [RockFace.tileColumns] for why a fractional
-     * count is not an option — and note the count is asked for the slab PLUS the inset, since the
-     * quad now starts inside the boundary and has that much further to reach.
+     * It used to be `tileColumns(wallWidth + EDGE_INSET_METRES)` — as many tiles as it took to
+     * reach the side of the frame. That is what made the frame edge a function of
+     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES`, and the art is EMPTY over 1.31 m of
+     * that period and RAGGED over another 4.45 m, so at 16:9 the outermost pixel column of the
+     * screen was empty. See [drawColumnWalls] and [RockFace]'s class doc. Drawn once, this quad's
+     * non-solid region is one FIXED world interval — `[38.691, 44.453]` — at every aspect ratio,
+     * which is what makes it a silhouette rather than a lottery. [drawRockBody] covers everything
+     * outward of it.
      *
      * Vertically it starts at [RockFace.WALL_TOP_DEPTH] — a fixed WORLD depth, just under the
      * waterline, where [drawCrest] caps it — and runs [RockFace.tileRows] whole tiles past the
      * bottom of the frame. A fixed top edge is what nails the rock to the water rather than to the
-     * camera, and it is stronger than the tile lattice it replaced because it is a constant rather
-     * than a rounding of the camera. See [RockFace.tileRows] for what that cost (a vertical phase
-     * that provably bought nothing) and why.
+     * camera. See [RockFace.tileRows] for what that cost (a vertical phase that provably bought
+     * nothing) and why.
      *
      * The two draws are ONE argument list written twice, exactly as [drawDiver]'s are. If you
      * change one of these numbers, change it in both.
      */
-    /**
-     * The cliff top above the waterline: the wall's rock, in the band between the summit's
-     * shoulder and [RockFace.WALL_TOP_DEPTH]. See [drawColumnWalls] for why it is textured rather
-     * than filled flat, and what the v mapping deliberately gives up.
-     *
-     * Same lattice as [drawRockWall] — same [RockFace.tileColumns], same anchor, same mirrored
-     * pair on the right — so the two agree about where every vertical tile join falls and the
-     * only discontinuity between them is in v, at a depth the wave hides.
-     *
-     * [heightMetres] is however much of the band is on screen, so the quad shrinks as the camera
-     * drops rather than being drawn and clipped. `vTiling` is that height in tiles, which is what
-     * keeps the texels square at any camera position: a fixed `1f` would squash the whole tile
-     * into whatever band happened to be visible.
-     */
-    /**
-     * How many TILES tall the cliff-top band is — its height in metres over
-     * [RockFace.TILE_HEIGHT_METRES], and therefore the `vTiling` it must be drawn with.
-     *
-     * Pure and extracted because it is the one number in [drawCliffTop] that can be wrong without
-     * looking wrong at a glance. The band's height shrinks as the camera drops (it is clipped to
-     * the visible rect), so a fixed `1f` would squash a whole 40 m tile into whatever sliver was
-     * on screen and the rock's texels would stretch as the diver descended — a distortion that
-     * only shows up as motion, which no single still frame can catch.
-     */
-    internal fun cliffTopVerticalTiles(heightMetres: Float) = heightMetres / RockFace.TILE_HEIGHT_METRES
-
-    private fun drawCliffTop(
+    private fun drawRockEdge(
         surface: Surface,
         normalMaps: NormalMapRenderer?,
-        wallWidth: Float,
-        topOfHeadland: Float,
-        side: Float
-    )
-    {
-        val columns = RockFace.tileColumns(wallWidth)
-        val width = columns * RockFace.TILE_WIDTH_METRES
-        val height = RockFace.WALL_TOP_DEPTH - topOfHeadland
-        if (height <= 0f) return
-
-        // ANCHORED OUTWARD OF THE CREST, NOT ON THE COLUMN BOUNDARY, AND THAT IS THE WHOLE POINT.
-        //
-        // It used to start at [RockFace.QUAD_INNER_HALF_WIDTH] like the wall, which put opaque
-        // rock BEHIND the crest sprite — and the crest is mostly alpha on its inward side, so what
-        // showed through the summit's notches was this band's straight top edge instead of the
-        // sky. The owner, arrows on a capture of both top corners: "why is this fill needed?" It
-        // was not: it was filling in the silhouette the crest exists to cut.
-        //
-        // The lattice still matches the wall's, for free: [RockFace.CREST_OUTER_HALF_WIDTH] is
-        // exactly [RockFace.CREST_WIDTH_METRES] — one whole tile — outward of the wall's own
-        // anchor, so every vertical tile join still lines up with the wall's below.
-        //
-        // And where the frame ends before the crest does, [wallWidth] is negative, this is never
-        // called, and the summit is simply seen against the sky. That is the common case on a
-        // display narrower than about 1.75:1.
-        // Started INWARD of the crest's outward edge so this quad's own edge sliver lands on solid
-        // stone rather than on the 1-texel transparent border — see RockFace.CLIFF_TOP_OVERLAP_METRES.
-        val innerEdge = RockFace.CREST_OUTER_HALF_WIDTH - RockFace.CLIFF_TOP_OVERLAP_METRES
-        val centreX = side * (innerEdge + width * 0.5f)
-        val centreY = RockFace.WALL_TOP_DEPTH - height * 0.5f
-        val rows = cliffTopVerticalTiles(height)
-
-        // THE OPPOSITE MIRROR TO THE WALL'S, AND THAT IS THE POINT.
-        //
-        // The wall art is solid at u = 0 and empty past u = 624/691. The wall wants that solid
-        // side running OUTWARD off the frame, with the ragged edge landing on the column boundary
-        // — so the left wall takes the base art. This band wants the opposite: it is anchored at
-        // its INNER edge and grows outward, and the only part of it ever on screen is the strip
-        // between the crest and the frame edge. With the wall's own orientation the solid side ran
-        // off-frame and that strip was the art's EMPTY margin, so the flat fill showed through it.
-        //
-        // The owner, comparing an enlarged window against fullscreen: "seems like this actually
-        // changes at different screen sizes". It did, and this is why — how much of the band is on
-        // screen is halfWidth minus the crest's outward edge, and that decides which PART of the
-        // tile the strip lands in:
-        //
-        //     16:10   band not drawn at all (the crest covers the whole slab)
-        //     1.73    0.27 m visible, u = 0.980 -> empty margin, flat fill
-        //     16:9    1.65 m visible, u = 0.878 -> ragged edge, partly transparent
-        //     21:9   18.30 m visible, u < 0     -> solid rock
-        //
-        // Taking the other mirror puts the solid side inward, so the strip is solid rock at every
-        // aspect the crest does not already cover. The flat fill stays behind it for the joins.
-        val diffuse = if (side == RIGHT_SIDE) RockFace.diffuse else RockFace.mirrorDiffuse
-        val normal = if (side == RIGHT_SIDE) RockFace.normal else RockFace.mirrorNormal
-
-        surface.drawTexture(
-            diffuse,
-            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
-            0f, 0f, 0f, 1f, 1f, columns.toFloat(), rows
-        )
-
-        // The copied argument list. Same rect, same angle, same origin, same tiling.
-        normalMaps?.drawNormalMap(
-            normal,
-            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
-            columns.toFloat(), rows
-        )
-    }
-
-    private fun drawRockWall(
-        surface: Surface,
-        normalMaps: NormalMapRenderer?,
-        wallWidth: Float,
         worldBottom: Float,
         side: Float
     )
     {
-        val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
         val rows = RockFace.tileRows(worldBottom)
-        val width = columns * RockFace.TILE_WIDTH_METRES
+        val width = RockFace.TILE_WIDTH_METRES
         val height = rows * RockFace.TILE_HEIGHT_METRES
 
         // Centres, because the CENTRE_ORIGIN convention every other object here uses is what the
@@ -840,14 +756,97 @@ object DiveRenderer
         surface.drawTexture(
             diffuse,
             centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
-            0f, 0f, 0f, 1f, 1f, columns.toFloat(), rows.toFloat()
+            0f, 0f, 0f, 1f, 1f, 1f, rows.toFloat()
         )
 
         // The copied argument list. Same rect, same angle, same origin, same tiling.
         normalMaps?.drawNormalMap(
             normal,
             centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
-            columns.toFloat(), rows.toFloat()
+            1f, rows.toFloat()
+        )
+    }
+
+    /**
+     * How many TILES tall a body quad is — its height in metres over
+     * [RockFace.TILE_HEIGHT_METRES], and therefore the `vTiling` it must be drawn with.
+     *
+     * Pure and extracted because it is the one number in [drawRockBody] that can be wrong without
+     * looking wrong at a glance. The above-water band's height shrinks as the camera drops (it is
+     * clipped to the visible rect), so a fixed `1f` would squash a whole 40 m tile into whatever
+     * sliver was on screen and the rock's texels would stretch as the diver descended — a
+     * distortion that only shows up as motion, which no single still frame can catch.
+     *
+     * It is the WALL's tile height, not the body texture's own, and that is deliberate: the body
+     * is a horizontal crop of the wall, all 2048 rows of it, so it shares the wall's v mapping
+     * exactly and the two are still the same rock at the same scale where they meet.
+     */
+    internal fun bodyVerticalTiles(heightMetres: Float) = heightMetres / RockFace.TILE_HEIGHT_METRES
+
+    /**
+     * THE BODY: opaque rock from [RockFace.BODY_INNER_HALF_WIDTH] out past the side of the frame,
+     * however wide the frame is. This is what makes the owner's *"the rocks should ALWAYS be
+     * exactly starting at the edge of the screen"* true by construction.
+     *
+     * [halfWidth] is this side's visible half-width, and the tile count is
+     * `ceil((halfWidth − BODY_INNER_HALF_WIDTH) / BODY_TILE_WIDTH_METRES)` — see
+     * [RockFace.bodyColumns], and [RockFace.coverageOuterHalfWidth] for the arithmetic that
+     * `RockFaceTest` sweeps. Zero columns when the frame stops short of the anchor (16:10 and
+     * anything narrower), and then nothing is drawn at all: the body is opaque, so a floored-to-one
+     * tile would paint solid rock across the crest's silhouette.
+     *
+     * ## THE SAME TEXTURE ON BOTH SIDES, AND THE LIGHTING IS STILL MIRRORED
+     *
+     * Every other rock texture here comes as a base/mirror pair. This one does not need to,
+     * because the bake emits `[C | mirror(C)]`: the texture IS its own horizontal mirror. Work it
+     * through — the quad grows outward from the anchor, so at a distance `d` outward the RIGHT
+     * side samples `u = d/W` and the LEFT samples `u = 1 − d/W`. Self-mirroring means the albedo
+     * at those two u's is the same texel, so the two cliffs are exact mirror images of each other;
+     * and the mirror negated the normal's x, so the left's normal x at `d` is the negation of the
+     * right's. Which is precisely what a mirrored cliff must have. Two array layers, not four, and
+     * no way to hand one side the wrong half of a pair.
+     *
+     * ## NO UV SLICING, EVER
+     *
+     * `vTiling` is [bodyVerticalTiles] and `uTiling` is the column count, so both maps take the
+     * identical natural mapping. `NormalMapRenderer.drawNormalMap` takes no uv arguments at all
+     * (verified against the jar), so slicing the albedo's v to continue a lattice exactly would
+     * leave the normals unsliced and light every facet from the wrong place — the same trap that
+     * made the right-hand wall a baked mirror rather than a uv swap.
+     *
+     * The two draws are ONE argument list written twice, exactly as [drawDiver]'s are.
+     */
+    private fun drawRockBody(
+        surface: Surface,
+        normalMaps: NormalMapRenderer?,
+        halfWidth: Float,
+        topDepth: Float,
+        bottomDepth: Float,
+        side: Float
+    )
+    {
+        val columns = RockFace.bodyColumns(halfWidth - RockFace.BODY_INNER_HALF_WIDTH)
+        if (columns == 0) return
+
+        val height = bottomDepth - topDepth
+        if (height <= 0f) return
+
+        val width = columns * RockFace.BODY_TILE_WIDTH_METRES
+        val centreX = side * (RockFace.BODY_INNER_HALF_WIDTH + width * 0.5f)
+        val centreY = topDepth + height * 0.5f
+        val rows = bodyVerticalTiles(height)
+
+        surface.drawTexture(
+            RockFace.bodyDiffuse,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            0f, 0f, 0f, 1f, 1f, columns.toFloat(), rows
+        )
+
+        // The copied argument list. Same rect, same angle, same origin, same tiling.
+        normalMaps?.drawNormalMap(
+            RockFace.bodyNormal,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            columns.toFloat(), rows
         )
     }
 
