@@ -27,13 +27,25 @@ cd tools && python3 -m pytest         # the bake script's tests
 
 ### Seeing it actually run
 
-Tests passing is not evidence the game looks right — a lot of the bugs in this project's history were invisible-in-tests rendering faults. To capture a frame:
+Tests passing is not evidence the game looks right — a lot of the bugs in this project's history were invisible-in-tests rendering faults.
+
+**GRAB THE REAL WINDOW. `EPT_SCREENSHOT` IS NOT PASSIVE AND ITS OUTPUT IS NOT THE FRAME.** Both halves of that cost a full day of wrong conclusions on the cliff work, where a dozen "before/after" measurements were quoted as evidence and none of them matched what was on the owner's screen:
+
+- `ScreenshotEffect.getTexture()` returns `RenderTexture.BLANK`, so **any surface it is attached to composites as blank**. With `EPT_SCREENSHOT` set, the sky surface came out black in the running game. The tool changes the frame it claims to be observing.
+- It dumps each surface SEPARATELY (`-0` world, `-hud`, `-sky`). Recompositing those by hand does not reproduce the engine's frame — the rock came out a pure black silhouette in the dumps and lit, textured stone on screen. Any brightness, contrast or texture-variance number taken off a recomposite is worthless.
+
+So use it only to inspect ONE surface's raw contents (its alpha channel is genuinely useful — that is how the quad-edge slivers were found), and take anything about *appearance* from a real screen grab:
 
 ```bash
 caffeinate -d -u -t 900 &                      # macOS: stop the display sleeping mid-capture
-EPT_SCREENSHOT=/tmp/shot.png ./gradlew run     # writes /tmp/shot-0.png (world) and /tmp/shot-hud-0.png
+./gradlew run > /dev/null 2>&1 &
+until pgrep -f EnPustTilKt > /dev/null; do sleep 2; done ; sleep 12
+osascript -e 'tell application "System Events" to set frontmost of (first application process whose name is "java") to true'
+sleep 2 ; screencapture -x -o /tmp/shot.png    # needs Screen Recording granted to the terminal
 pkill -9 -f EnPustTilKt                        # the game has no quit key in booth mode
 ```
+
+The JVM window has **no bundle identifier**, so the computer-use MCP filters it out of its screenshots entirely — the shell route above is the one that works.
 
 `render/ScreenshotEffect.kt` is a debug tool, not a feature: it captures at frame 180 by default, and it derives its filename via `outputPath.replace(".png", "-$index.png")` — so if `EPT_SCREENSHOT` has no `.png` in it, the file is written with no extension at all.
 
