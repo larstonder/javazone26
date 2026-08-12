@@ -774,8 +774,29 @@ object DiveRenderer
         val centreY = RockFace.WALL_TOP_DEPTH - height * 0.5f
         val rows = cliffTopVerticalTiles(height)
 
-        val diffuse = if (side == RIGHT_SIDE) RockFace.mirrorDiffuse else RockFace.diffuse
-        val normal = if (side == RIGHT_SIDE) RockFace.mirrorNormal else RockFace.normal
+        // THE OPPOSITE MIRROR TO THE WALL'S, AND THAT IS THE POINT.
+        //
+        // The wall art is solid at u = 0 and empty past u = 624/691. The wall wants that solid
+        // side running OUTWARD off the frame, with the ragged edge landing on the column boundary
+        // — so the left wall takes the base art. This band wants the opposite: it is anchored at
+        // its INNER edge and grows outward, and the only part of it ever on screen is the strip
+        // between the crest and the frame edge. With the wall's own orientation the solid side ran
+        // off-frame and that strip was the art's EMPTY margin, so the flat fill showed through it.
+        //
+        // The owner, comparing an enlarged window against fullscreen: "seems like this actually
+        // changes at different screen sizes". It did, and this is why — how much of the band is on
+        // screen is halfWidth minus the crest's outward edge, and that decides which PART of the
+        // tile the strip lands in:
+        //
+        //     16:10   band not drawn at all (the crest covers the whole slab)
+        //     1.73    0.27 m visible, u = 0.980 -> empty margin, flat fill
+        //     16:9    1.65 m visible, u = 0.878 -> ragged edge, partly transparent
+        //     21:9   18.30 m visible, u < 0     -> solid rock
+        //
+        // Taking the other mirror puts the solid side inward, so the strip is solid rock at every
+        // aspect the crest does not already cover. The flat fill stays behind it for the joins.
+        val diffuse = if (side == RIGHT_SIDE) RockFace.diffuse else RockFace.mirrorDiffuse
+        val normal = if (side == RIGHT_SIDE) RockFace.normal else RockFace.mirrorNormal
 
         surface.drawTexture(
             diffuse,
