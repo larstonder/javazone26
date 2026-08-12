@@ -218,6 +218,62 @@ a black frame legible. B1 is next and is now unambiguously the main event.
 
 ---
 
+## 2d. Step 2 was ATTEMPTED AND REVERTED: the ambient floor cannot work
+
+An ambient floor was built (applied after the blend, so `ambientGreen` kept its single meaning
+and neither `shaftDaylightByZone`'s Abyss zero nor the torch ramp moved) and it changed the
+frame by **nothing measurable**: mean 3.46 both ways, 96.1% below 2/255 both ways. Raising it
+8x — an Abyss ambient blue of 0.72, eight times the Trench's — moved 7% of the frame off pure
+black, to 2.6/255 at p90. It was reverted rather than shipped, because a documented no-op is
+worse than an absent feature.
+
+**Why, and this is the arithmetic the whole problem turns on.** The frame is
+`albedo x ambient`, and BOTH are ramps that fall to near-zero, so the deep falls off
+QUADRATICALLY. Then the colour grade, read out of `shaders/effects/color_grading.frag`:
+
+```glsl
+color.rgb *= pow(2.0, exposure) - 1.0;                                    // 1.1 -> x1.1435
+color.rgb = ((color.rgb - 0.5) * max(1.0 + 0.05*(contrast - 1), 0)) + 0.5; // 1.3 -> x1.015
+```
+
+**`contrast` is scaled by 0.05 inside the shader**, so our 1.3 is a multiplier of 1.015 and not
+1.3 — but that is still enough to push anything below **0.00739** negative, where ACES clamps
+it to zero. A hard black clamp, not a curve.
+
+Modelled end to end and validated against the captures (the Shallows figure below is what a
+correctly-lit surface frame measures):
+
+```
+zone        albedo  ambient   product   out/255
+Shallows     0.520    0.680   0.35360    138.55
+Kelp         0.360    0.440   0.15840     66.50
+Twilight     0.220    0.240   0.05280     12.66
+Trench       0.120    0.090   0.01080      0.38
+Abyss        0.035    0.003   0.00011      0.00
+```
+
+The Trench is ALREADY black (0.38/255) and the Abyss is four orders of magnitude below the
+Shallows. For the Abyss water to read at even 8/255 the product must reach 0.041 — which at the
+current albedo needs an ambient of 1.46, sixteen times the Trench's. Keeping both ramps
+monotone and lifting the bottom as far as is defensible (albedo 0.11, ambient 0.10) still only
+reaches 0.41/255.
+
+**CONCLUSION: the water cannot be what makes the deep legible.** There is no assignment of
+ambient that makes the Abyss visible and still leaves it looking deeper than the Twilight. Any
+value large enough to work makes the Abyss look like the Twilight, which is the design's
+"near-total dark" (§11, and the §11 zone table) deleted rather than tuned.
+
+So B1 is dead as stated, and what remains is the correct answer anyway: **the deep should be
+legible because the TORCH lights things in it** — the rock, the diver, the pearls — not because
+the water glows. That is B2, and it is now the main event.
+
+**If the owner does want the water itself to have presence in the deep, that is a DESIGN
+AMENDMENT and not a tuning pass** — it means the Abyss stops being near-total dark — and the
+numbers it requires are the table above: an Abyss ambient around 0.2 with an albedo around 0.2,
+i.e. the Abyss rendered about as bright as the Twilight is today.
+
+---
+
 ## 3. Interventions, cheapest and most reversible first
 
 Each is one dial, with the measurement that decides whether to keep it. Do them **one at a
