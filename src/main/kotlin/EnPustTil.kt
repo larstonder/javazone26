@@ -1,5 +1,6 @@
 import dive.DiveInput
 import dive.DiveSim
+import dive.Tuning
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
 import no.njoh.pulseengine.core.asset.types.Font
@@ -51,6 +52,48 @@ fun main() = PulseEngine.run<EnPustTil>()
  * never crash the booth machine; it just silently reuses day one's seed instead).
  */
 fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
+
+/**
+ * Parses `EPT_DEPTH` — the DEV-ONLY depth pin that puts the diver at a fixed depth so the
+ * attract screen becomes a deep-water test rig.
+ *
+ * ## WHY IT EXISTS, WHICH IS A PROCESS PROBLEM AND NOT A FEATURE
+ *
+ * There is no way to put the diver at 140 m without playing the cabinet, and over 2026-08-12
+ * and -13 that blocked EVERY visual claim about the deep: the pearls' light response, the
+ * torch's reach, the mote field's glow. Three checks in a row had to be handed back to the
+ * owner because the only instrument for them was a human at a joystick. The lighting work
+ * planned in `docs/superpowers/plans/2026-08-13-deep-water-lighting.md` is a sequence of
+ * one-dial changes each decided by a capture, and it is unrunnable without this.
+ *
+ * `EPT_WAVE_PHASE`, `EPT_SHAFT_PHASE` and `EPT_MOTE_PHASE` are the precedent — one `getenv`
+ * at startup, unset and therefore inert at the booth.
+ *
+ * ## IT MOVES THE DIVER, IT DOES NOT CHANGE THE RULES
+ *
+ * Applied through [DiveSim.debugSetDepth], the same `internal` hook the simulation tests use.
+ * Nothing in `dive/` learns that it exists: no rule is suspended, no timer is stopped, air
+ * burns normally the moment a run starts. In IDLE — the attract screen — the sim is not
+ * ticked at all (`RunLifecycle.simulationAdvances` is false), so a diver placed there simply
+ * stays, which is what makes it a stable rig rather than a brief glimpse.
+ *
+ * ## PARSING
+ *
+ * Returns null for absent, blank or unparseable, so a typo is inert rather than a crash or a
+ * silent 0. A valid number is COERCED into `0..MAX_DEPTH` rather than rejected: the useful
+ * values are at the bottom of the column and "140" and "160" and "200" are all obviously
+ * asking for the same thing, while a depth outside the column would put the camera somewhere
+ * the game cannot otherwise reach and produce measurements of nothing.
+ */
+const val DEPTH_PIN_ENV = "EPT_DEPTH"
+
+/** @see parseDepthPin — top-level beside it, because [EnPustTil]'s companion is private. */
+fun parseDepthPin(raw: String?, maxDepth: Float): Float?
+{
+    val value = raw?.trim()?.toFloatOrNull() ?: return null
+    if (!value.isFinite()) return null
+    return value.coerceIn(0f, maxDepth)
+}
 
 /**
  * What the engine's default font can actually draw — which is a good deal narrower than
@@ -437,6 +480,34 @@ class EnPustTil : PulseEngineGame()
     // a technician wrote in the file.
     private var dailySeed = DAILY_SEED
 
+    /**
+     * The dev-only depth pin, or null at the booth. Resolved in [onCreate] from
+     * [DEPTH_PIN_ENV] — see [parseDepthPin] for what it is for and why it exists.
+     *
+     * A `var` set once rather than a `val` initialised here, for exactly [dailySeed]'s reason
+     * in reverse: this one COULD be read at construction (it is an env var, not config), but
+     * keeping both pins resolved in the same place in `onCreate` is worth more than saving a
+     * line, since the failure mode for both is "read too early and silently see nothing".
+     */
+    private var depthPin: Float? = null
+
+    /**
+     * Puts the diver at [depthPin], if there is one. Called after EVERY `DiveSim` construction.
+     *
+     * Both call sites matter and a new one must call it too, which is why
+     * `EnPustTilDepthPinTest` scans this file for `DiveSim(` and requires each occurrence to be
+     * followed by this call: a third construction site that forgot would produce a rig that
+     * silently works on the attract screen and not after a restart.
+     *
+     * `debugSetDepth` and not `debugMoveTo`, so the diver keeps the horizontal position the
+     * seed gave him — the pin is a depth, and moving him sideways as well would change which
+     * pearls and which cliff he is next to, i.e. change the thing being photographed.
+     */
+    private fun applyDepthPin()
+    {
+        depthPin?.let { sim.debugSetDepth(it) }
+    }
+
     // Read once at construction, same as MetricViewer's gate below — everything downstream
     // that checks this field (the input overlay in onRender) is then a single boolean read,
     // not a repeated env-var lookup, and is trivially inert (one branch, no allocation, no
@@ -458,7 +529,14 @@ class EnPustTil : PulseEngineGame()
         // doc) is the only source for a technician's day-two override. See
         // application.cfg for the exact commented-out line to uncomment/edit on-site.
         dailySeed = parseDailySeed(engine.config.getString("dailySeed"), DAILY_SEED)
+
+        // Read ONCE, here, beside the other capture pins — see parseDepthPin. Null at the
+        // booth, where EPT_DEPTH is not set, so applyDepthPin below is a null check per run.
+        depthPin = parseDepthPin(System.getenv(DEPTH_PIN_ENV), Tuning.MAX_DEPTH)
+        depthPin?.let { Logger.warn { "[$DEPTH_PIN_ENV] the diver is PINNED at $it m — this is a capture rig, not a playable build" } }
+
         sim = DiveSim(seed = dailySeed)
+        applyDepthPin()
         scoreRepository = ScoreRepository(todaySeed = dailySeed)
         Logger.info { "Daily seed: $dailySeed" }
 
@@ -946,6 +1024,10 @@ class EnPustTil : PulseEngineGame()
         if (lifecycle.justStarted)
         {
             sim = DiveSim(seed = dailySeed)
+            // BEFORE the snap below, not after: snapTo teleports the camera to sim.depth, and
+            // a pin applied afterwards would leave the camera at the surface easing 140 m down
+            // through the first second of the run. `EnPustTilDepthPinTest` asserts this order.
+            applyDepthPin()
             camera.snapTo(sim.depth)
             // Pushed through immediately, for the same reason as in onCreate: this runs on the
             // render clock, so without it the frame drawn right after a restart would use the
