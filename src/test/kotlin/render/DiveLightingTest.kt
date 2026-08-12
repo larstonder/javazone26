@@ -23,59 +23,119 @@ import kotlin.test.assertTrue
  */
 class DiveLightingTest
 {
+    /**
+     * THE RAMP IS GONE, AND THIS IS THE TEST THAT REPLACED THE THREE THAT GUARDED IT.
+     *
+     * `pearlIntensityForDepth` ran 0.6 in the Shallows to 4.0 in the Abyss so that a pearl stayed
+     * equally legible as the water darkened, and three tests here pinned that: strictly increasing
+     * by zone, brightest in the Abyss, continuous across every boundary. The owner removed the
+     * rule — *"I'd rather like the diver to have to find them using their flashlight"* — so all
+     * three were asserting the opposite of the intent and were replaced rather than relaxed.
+     *
+     * What is left to protect is the NEW rule, and it is a stronger statement than the old one:
+     * not "the ramp is gentle" but "there is no ramp at all, anywhere in the column".
+     */
     @Test
-    fun `pearls shine harder the deeper the zone, so they stay legible against the darker ambient`()
+    fun `nothing depth-dependent reaches a pearl light's intensity`()
     {
-        val intensities = Zone.entries.map { DiveLighting.pearlIntensityForDepth(DepthBlend.zoneMidpoint(it)) }
+        // ASSERTED ON THE SOURCE, because the strongest form of "there is no ramp" is that there
+        // is no depth to ramp over: pearlIntensity() takes no argument, so a value test can only
+        // ever compare a constant with itself. What can still regress is the CALL SITE — someone
+        // multiplying by a DepthBlend lookup, or passing pearl.depth into a new overload — and
+        // that is what this catches.
+        val source = File("src/main/kotlin/render/DiveLighting.kt").readText()
+        val block = source.substringAfter("private fun drawPearlLights").substringBefore("\n    }")
 
-        // Strictly increasing zone-midpoint by zone-midpoint — this is the whole point of the
-        // curve: if the Abyss were not the brightest, pearls would wash out into the darkest
-        // ambient. Sampled at each zone's own midpoint so this exercises the concrete tables,
-        // not DepthBlend's boundary maths (see DepthBlendTest for that).
-        for (i in 1 until intensities.size)
-        {
+        assertTrue(
+            "intensity = pearlIntensity()," in block,
+            "drawPearlLights no longer passes the flat pearlIntensity()"
+        )
+        assertFalse(
+            "DepthBlend" in block,
+            "a depth blend has reappeared in the pearl light — pearls brightening with depth is " +
+                "exactly what the owner removed, so the torch stops being how you find them"
+        )
+    }
+
+    /**
+     * THE RULE THE OWNER ACTUALLY ASKED FOR, AND THE ONE A FLAT PEARL VALUE ALONE DID NOT BUY.
+     *
+     * Flattening the pearl ramp to its own shallow anchor (0.6) left every pearl rendering at the
+     * same brightness whether the beam was on it or not: a pearl's emitter is inside its own drawn
+     * disc and `radius = 0` removes the distance term, so a pearl's body always receives a flat
+     * shelf of its own emission, and at 0.6 that shelf swamped anything the torch added. On a
+     * capture at 85 m: *"it seems the pearls aren't affected by the light at all. They should be."*
+     *
+     * So what has to be pinned is the RATIO, not either value on its own — "the torch is what
+     * reveals a pearl" is a statement about which of the two dominates. Both constants stay free to
+     * be re-tuned; what cannot come back is a pearl that out-shines the thing meant to find it.
+     */
+    @Test
+    fun `the torch overwhelms a pearl's own glow, so the beam is what reveals one`()
+    {
+        val pearl = DiveLighting.pearlIntensity()
+        Zone.entries.forEach { zone ->
+            val torch = DiveLighting.diverIntensityForDepth(DepthBlend.zoneMidpoint(zone))
             assertTrue(
-                intensities[i] > intensities[i - 1],
-                "zone ${Zone.entries[i]} (${intensities[i]}) must shine harder than " +
-                    "${Zone.entries[i - 1]} (${intensities[i - 1]})"
+                torch > pearl * 10f,
+                "in $zone the torch emits $torch against a pearl's own $pearl — under 10x, a pearl " +
+                    "lights its own body about as hard as the beam does and stops responding to it"
             )
         }
     }
 
     @Test
-    fun `the abyss pearl intensity is the brightest, matching pearls being the only light there`()
+    fun `the torch is brightest where there is no daylight left, not dimmest`()
     {
-        val abyss = DiveLighting.pearlIntensityForDepth(DepthBlend.zoneMidpoint(Zone.ABYSS))
-        val others = Zone.entries.filter { it != Zone.ABYSS }
-            .map { DiveLighting.pearlIntensityForDepth(DepthBlend.zoneMidpoint(it)) }
-        assertTrue(others.all { it < abyss })
-    }
-
-    @Test
-    fun `pearl intensity rises continuously with depth, with no step at a zone boundary`()
-    {
-        // The playtest complaint this whole rework answers: a hard switch exactly at a zone's
-        // minDepth. Sample a hair either side of every boundary and require near-equality.
-        val zones = Zone.entries
-        for (i in 1 until zones.size)
+        // The exact inversion of the rule this replaced. `the diver's own light dims only in the
+        // abyss, where pearls should read as comparatively brighter` asserted abyss < shallows —
+        // correct while pearls were the deep's light source, and backwards the moment the torch
+        // became it. Asserted as monotone across every zone rather than just at the ends, because
+        // the curve is derived from the ambient table and a re-tune there moves all of it.
+        val byZone = Zone.entries.map { DiveLighting.diverIntensityForDepth(DepthBlend.zoneMidpoint(it)) }
+        for (i in 1 until byZone.size)
         {
-            val boundary = zones[i].minDepth
-            val justAbove = DiveLighting.pearlIntensityForDepth(boundary - 0.01f)
-            val justBelow = DiveLighting.pearlIntensityForDepth(boundary + 0.01f)
             assertTrue(
-                kotlin.math.abs(justAbove - justBelow) < 0.01f,
-                "pearl intensity jumped at the ${zones[i]} boundary: $justAbove -> $justBelow"
+                byZone[i] >= byZone[i - 1],
+                "the torch is weaker in ${Zone.entries[i]} (${byZone[i]}) than in " +
+                    "${Zone.entries[i - 1]} (${byZone[i - 1]}) — it fades exactly where it becomes " +
+                    "the only light"
             )
         }
+        assertTrue(
+            byZone.last() > byZone.first() * 2f,
+            "the Abyss torch (${byZone.last()}) is not meaningfully stronger than the surface's " +
+                "(${byZone.first()}), so nothing replaces the daylight that is gone"
+        )
     }
 
     @Test
-    fun `the diver's own light dims only in the abyss, where pearls should read as comparatively brighter`()
+    fun `the torch at the surface is unchanged, so the shallows were not re-lit`()
     {
-        val abyss = DiveLighting.diverIntensityForDepth(DepthBlend.zoneMidpoint(Zone.ABYSS))
-        val shallows = DiveLighting.diverIntensityForDepth(DepthBlend.zoneMidpoint(Zone.SHALLOWS))
-        assertTrue(abyss < shallows, "diver light should be dimmer in the abyss than in the shallows")
+        // The deep was the complaint; brightening the Shallows would be a change nobody asked for,
+        // and the derivation is built to make the surface a fixed point (1 - daylight = 0 there).
+        assertEquals(
+            2.0f * DiveLighting.TORCH_SIZE_COMPENSATION,
+            DiveLighting.diverIntensityForDepth(0f), 1e-4f,
+            "the torch no longer emits its original 2.0 at the surface"
+        )
     }
+
+    @Test
+    fun `the anglerfish lure emits exactly what a pearl does`()
+    {
+        // The design's tell is motion and never light. One function serves both call sites, so
+        // this is checking that nothing has introduced a second constant beside it.
+        val source = File("src/main/kotlin/render/DiveLighting.kt").readText()
+        val lureBlock = source.substringAfter("private fun drawAnglerfishLight")
+            .substringBefore("\n    }")
+        assertTrue(
+            "intensity = pearlIntensity()" in lureBlock,
+            "the anglerfish lure no longer takes its intensity from pearlIntensity(), so the lure " +
+                "can be told from a pearl by brightness alone"
+        )
+    }
+
 
     // FOUR `isOnScreen` CASES LIVED HERE and were deleted with their subject. `isOnScreen` was a
     // screen-ROW bounds check with a 50-PIXEL margin, and there are no screen rows in

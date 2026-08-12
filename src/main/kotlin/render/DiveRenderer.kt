@@ -142,7 +142,15 @@ object DiveRenderer
 
     private const val MIN_REFLECTANCE_LENGTH = GI_REFLECTANCE_FLOOR * REFLECTANCE_FLOOR_MARGIN
 
-    private val pearlColor = Color(1f, 0.78f, 0.35f)
+    /**
+     * THE PEARL'S WARM AMBER, and it is `internal` rather than `private` for one reason: `MotesTest`
+     * asserts the marine snow's cool blue is a long way from it on the colour wheel. That is the
+     * §1.1 constraint in `docs/superpowers/specs/2026-08-11-outstanding-work.md` — the anglerfish's
+     * lure renders identically to a pearl and the only tell is motion, so ambient glowing points
+     * must not be mistakable for one. A test that compares against a TRANSCRIPTION of this number
+     * would pass forever after somebody changed this line, which is the failure it exists to catch.
+     */
+    internal val pearlColor = Color(1f, 0.78f, 0.35f)
     private val airPocketColor = Color(0.65f, 0.95f, 1f)
     private val airPocketSpentColor = Color(0.22f, 0.34f, 0.42f)
     private val diverColor = Color(1f, 1f, 1f)
@@ -393,8 +401,8 @@ object DiveRenderer
 
     /**
      * Solid rock bounding the playable column outside +-[Tuning.COLUMN_HALF_WIDTH]. Without
-     * this the boundary is invisible: [CameraRig] derives pixels-per-metre from screen HEIGHT,
-     * so on a 16:9 booth screen the visible half-width is ~53m versus the 40m column and the
+     * this the boundary is invisible: [CameraRig] fits the frame to the screen's larger dimension,
+     * so on a 16:9 booth screen the visible half-width is ~49m versus the 40m column and the
      * diver stops dead in open water with no visual reason — the stick reads as broken rather
      * than blocked. Drawn onto the world surface (not "hud"), so it is behind
      * [no.njoh.pulseengine.core.PulseEngineGame]'s lighting pass like everything else
@@ -418,7 +426,8 @@ object DiveRenderer
      * still opaque, so it covered the water [drawZoneBands] had already laid down full-width, and
      * what showed through the cliff's notches was [wallColor] — not water.
      *
-     * MEASURED, at 12 m and 16:9 (3200x1800), mean over a 40-row band across the boundary:
+     * MEASURED, at 12 m and 16:9 (3200x1800), mean over a 40-row band across the boundary — on
+     * the art as it was then, whose empty margin was 1.31 m rather than today's 2.715 m:
      *
      *     x = column boundary (water)     RGB (0.00, 3.00, 30.88)
      *     x = 1.3 m outside it (backing)  RGB (0.00, 0.00,  0.00)
@@ -597,10 +606,12 @@ object DiveRenderer
      * ## Culling
      *
      * [showsSquare] against the larger side, exactly as [drawDiver] does — the codebase has one
-     * answer to "is this on screen" and it is the engine's. It is conservative here (the quad is
-     * wider than it is tall on a wide panel) and conservative is the safe direction: it can keep a
-     * crest that is a metre off frame, never drop one that is on it. In practice it stops drawing
-     * about 30 m into the dive, which is most of every run.
+     * answer to "is this on screen" and it is the engine's. It is conservative here, and more so
+     * than it used to be: the larger side is now the quad's full [RockFace.TOP_HEIGHT_METRES],
+     * whose top half is the transparent padding the crest is baked with, so the square tested is
+     * far taller than the summit it contains. Conservative is the safe direction — it can keep a
+     * crest that is metres off frame, never drop one that is on it — and it costs one quad that
+     * draws nothing for a while after the summit has left the frame.
      *
      * The two draws are ONE argument list written twice, exactly as [drawDiver]'s and
      * [drawRockEdge]'s are.
@@ -689,8 +700,8 @@ object DiveRenderer
      *
      * ## The cue this has to keep carrying
      *
-     * The reason a wall is drawn at all has not changed since `0f07303`. [CameraRig] derives
-     * pixels-per-metre from screen HEIGHT, so a 16:9 booth panel shows about 53 m of half-width
+     * The reason a wall is drawn at all has not changed since `0f07303`. [CameraRig] fits the
+     * frame to the screen's larger dimension, so a 16:9 booth panel shows about 49 m of half-width
      * against the column's 40 m, and without a visible boundary the diver stops dead in open
      * water with no visual reason — the stick reads as broken rather than as blocked.
      *
@@ -702,8 +713,8 @@ object DiveRenderer
      * with a stick they now believe is faulty.
      *
      * WHICH IS WHY THE QUAD IS ANCHORED ON [RockFace.QUAD_INNER_HALF_WIDTH] AND NOT ON THE
-     * BOUNDARY ITSELF. The last 67 of the tile's 691 texel columns hold no alpha at all, so a quad
-     * whose u = 1 edge sat on the boundary put the cliff's furthest-reaching texel 1.31 m short of
+     * BOUNDARY ITSELF. The last 139 of the tile's 614 texel columns hold no alpha at all, so a quad
+     * whose u = 1 edge sat on the boundary put the cliff's furthest-reaching texel 2.715 m short of
      * it. That was invisible while an opaque slab filled the gap and becomes a uniform channel of
      * un-enterable water the moment the water shows through. Shifting the quad in by exactly that
      * empty margin restores it and then some: the promontories touch the boundary, the bays
@@ -714,10 +725,10 @@ object DiveRenderer
      *
      * It used to be `tileColumns(wallWidth + EDGE_INSET_METRES)` — as many tiles as it took to
      * reach the side of the frame. That is what made the frame edge a function of
-     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES`, and the art is EMPTY over 1.31 m of
-     * that period and RAGGED over another 4.45 m, so at 16:9 the outermost pixel column of the
+     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES`, and the art is EMPTY over 2.715 m of
+     * that period and RAGGED over another 4.121 m, so at 16:9 the outermost pixel column of the
      * screen was empty. See [drawColumnWalls] and [RockFace]'s class doc. Drawn once, this quad's
-     * non-solid region is one FIXED world interval — `[38.691, 44.453]` — at every aspect ratio,
+     * non-solid region is one FIXED world interval — `[37.285, 44.121]` — at every aspect ratio,
      * which is what makes it a silhouette rather than a lottery. [drawRockBody] covers everything
      * outward of it.
      *
@@ -1035,7 +1046,7 @@ object DiveRenderer
     private fun drawPearlSurface(surface: Surface, iridescence: IridescenceRenderer?, centreX: Float, depth: Float)
     {
         val size = Framing.PEARL_SIZE_METRES
-        val exposure = pearlAlbedoExposure(depth)
+        val exposure = pearlAlbedoExposure()
         surface.setDrawColor(
             exposed(pearlColor.red, exposure),
             exposed(pearlColor.green, exposure),
@@ -1136,10 +1147,24 @@ object DiveRenderer
      *      70 m Twilight   mean RGB (234, 210,  85)   chroma 0.638    0.0%
      *     140 m Abyss      mean RGB (246, 241, 187)   chroma 0.240   27.0%
      *
-     * The pearl does not merely brighten with depth, it goes WHITE, because
-     * [DiveLighting.pearlIntensityForDepth] runs 0.6 in the Shallows to 4.0 in the Abyss and the
-     * product leaves the ACES shoulder with no hue left. An iridescent surface authored under
-     * those conditions is invisible on exactly the objects it is for.
+     * The pearl did not merely brighten with depth, it went WHITE, because the pearl light then
+     * ran 0.6 in the Shallows to 4.0 in the Abyss and the product left the ACES shoulder with no
+     * hue left. An iridescent surface authored under those conditions is invisible on exactly the
+     * objects it is for.
+     *
+     * ## THIS IS NOW INERT, AND THAT IS THE CORRECT OUTCOME RATHER THAN A REGRESSION
+     *
+     * The depth ramp above no longer exists: the owner removed it so that the torch, not the
+     * pearl's own glow, is how you find pearls in the deep — see [DiveLighting.PEARL_INTENSITY].
+     * With emission flat at the Shallows' own 0.6, `here` and the reference are the same number,
+     * so this returns exactly 1 and removes no albedo at any depth.
+     *
+     * It is kept rather than deleted because it is a CONSEQUENCE of the emission curve, not a
+     * setting: it is written as `reference / here`, so if any depth response is ever reintroduced
+     * the compensation comes back with it automatically and correctly. Deleting it would leave the
+     * next person to try a ramp rediscovering the white-out above from scratch. The measurements
+     * are retained for the same reason — they are the evidence for what 4.0 in the Abyss costs,
+     * and they are why 0.6 flat is known to be safe (the Shallows row clips nothing at all).
      *
      * ## Why this and not an emitter shape
      *
@@ -1151,11 +1176,14 @@ object DiveRenderer
      * ## What this does instead, and why it is depth-STABLE rather than merely darker
      *
      * The light a pearl's own body receives is dominated by its own emitter, whose intensity is
-     * an existing, pure, already-tested function of depth. So the albedo is stopped down by the
-     * inverse of that intensity, normalised to the deepest zone at which the material was
-     * measured to still read (Twilight, 1.8 — 70 m above reads at chroma 0.638 with nothing
-     * clipped). `exposure x intensity` is then constant with depth, and the material reads the
-     * same in the Kelp as in the Abyss instead of 6.7x differently.
+     * an existing, pure, already-tested property of the pearl. So the albedo is stopped down by
+     * the inverse of that intensity, normalised to a reference the material was measured to still
+     * read at. `exposure x intensity` is then constant with depth, and the material reads the same
+     * in the Kelp as in the Abyss instead of 6.7x differently.
+     *
+     * The reference used to be the Twilight zone's 1.8, picked as the deepest zone whose pearls
+     * kept their hue. With the ramp gone there is only one intensity to be the reference, so it is
+     * simply that — see [PEARL_EXPOSURE_REFERENCE_INTENSITY].
      *
      * Clamped at 1 so it can only ever REMOVE albedo. The Shallows and the Kelp already read;
      * brightening them would be a change nobody asked for, and it would push them toward the same
@@ -1171,22 +1199,26 @@ object DiveRenderer
      * The anglerfish's lure gets it too, necessarily and by construction: both go through
      * [drawPearlSurface], and its depth is the fish's depth exactly as a pearl's is its own.
      */
-    internal fun pearlAlbedoExposure(depth: Float): Float
+    internal fun pearlAlbedoExposure(): Float
     {
-        val here = DiveLighting.pearlIntensityForDepth(depth)
-        if (!(here > 0f)) return 1f // NaN or a degenerate table: draw the pearl unmodified
+        val here = DiveLighting.pearlIntensity()
+        if (!(here > 0f)) return 1f // NaN or a degenerate constant: draw the pearl unmodified
         val full = (PEARL_EXPOSURE_REFERENCE_INTENSITY / here).coerceAtMost(1f)
         return full.pow(PEARL_EXPOSURE_STRENGTH)
     }
 
     /**
-     * The pearl-light intensity the exposure above is normalised to: the value at the midpoint of
-     * the deepest zone whose pearls were measured to keep their hue (Twilight — 70 m reads at
-     * chroma 0.638 with nothing clipped, against the Abyss's 0.240 with 27% clipped).
+     * The pearl-light intensity the exposure above is normalised to.
      *
-     * Asked of [DepthBlend] and [DiveLighting] rather than typed as 1.8, so that re-tuning the
-     * pearl-light table moves this with it instead of silently leaving the reference pointing at
-     * an intensity no zone has any more.
+     * It was the value at the midpoint of the deepest zone whose pearls were measured to keep
+     * their hue — Twilight, 1.8, where 70 m reads at chroma 0.638 with nothing clipped, against
+     * the Abyss's 0.240 with 27% clipped. Now that the emission is flat there is exactly one
+     * intensity in the game, so the reference is that intensity and the exposure is 1.
+     *
+     * Asked of [DiveLighting] rather than typed as a number, which is what makes the whole
+     * compensation follow the emission automatically instead of pointing at a value nothing has
+     * any more. That property is precisely what carried it through the ramp's removal without an
+     * edit to the arithmetic.
      */
     /**
      * How much of the full compensation to apply, as an exponent: 0 is the old behaviour, 1 is
@@ -1214,8 +1246,7 @@ object DiveRenderer
      */
     internal const val PEARL_EXPOSURE_STRENGTH = 0.5f
 
-    internal val PEARL_EXPOSURE_REFERENCE_INTENSITY =
-        DiveLighting.pearlIntensityForDepth(DepthBlend.zoneMidpoint(dive.Zone.TWILIGHT))
+    internal val PEARL_EXPOSURE_REFERENCE_INTENSITY = DiveLighting.pearlIntensity()
 
     /**
      * One channel of a draw colour, stopped down by [exposure] IN LINEAR SPACE.

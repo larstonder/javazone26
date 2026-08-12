@@ -3,6 +3,7 @@ import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
 import no.njoh.pulseengine.core.asset.types.Font
+import no.njoh.pulseengine.core.graphics.api.BlendFunction
 import no.njoh.pulseengine.core.graphics.api.Multisampling
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.input.GamepadAxis
@@ -25,6 +26,7 @@ import render.DiverSprite
 import render.Hud
 import render.IridescenceRenderer
 import render.LightEmitter
+import render.Motes
 import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
@@ -717,6 +719,39 @@ class EnPustTil : PulseEngineGame()
             zOrder = engine.gfx.mainSurface.config.zOrder + Sky.Z_ORDER_OFFSET
         )
 
+        // THE MARINE SNOW, ON A SURFACE OF ITS OWN AND IN FRONT OF THE WORLD — the mirror image of
+        // the sky's decision two calls up, and `render/Motes.kt` has the whole argument. In short:
+        // GI multiplies `mainSurface` by the light map, so motes drawn there would be scaled toward
+        // black exactly where they are supposed to do their work (the deep). `"hud"` escapes the
+        // multiply but is composited on top of everything and is in screen PIXELS; the motes are at
+        // world positions in metres. A fourth surface escapes the multiply and sits between the
+        // world and the HUD.
+        //
+        //   - camera: `engine.gfx.mainCamera`, the shared world camera, for exactly the sky's
+        //     reason — a mote and the water it hangs in must go through one matrix. Another READ,
+        //     which `MainCameraOwnershipTest` allows this file and only this file (plus CameraRig,
+        //     which is the only writer).
+        //   - zOrder: `main`'s plus `Motes.Z_ORDER_OFFSET`, which is NEGATIVE. Sorted by `-zOrder`
+        //     ascending, so smaller is drawn later, i.e. in front — the same sense as
+        //     `HUD_Z_ORDER`'s -90 and the opposite of the sky's +10. It lands strictly between the
+        //     world and the HUD, and `MotesTest` asserts that relationship rather than the number.
+        //   - blendFunction: ADDITIVE, so overlapping motes SUM rather than the nearer one winning.
+        //     That is all it can buy: the backbuffer composite is a fixed
+        //     `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` applied once in
+        //     `GraphicsImpl.renderOffscreenTargetsToBackBuffer`, with no per-surface hook, so no
+        //     surface in this engine can be additive against the world. `Motes`' class doc has the
+        //     arithmetic that follows from that and why `SCREEN` is not the answer either.
+        //   - backgroundColor: transparent, so the surface contributes nothing between the motes.
+        //   - multisampling: left at the engine's NONE. Every edge on this surface is the emitter
+        //     texture's own alpha ramp, which is already smooth and already sampled LINEAR.
+        engine.gfx.createSurface(
+            name = Motes.SURFACE_NAME,
+            camera = engine.gfx.mainCamera,
+            backgroundColor = Color.BLANK,
+            blendFunction = BlendFunction.ADDITIVE,
+            zOrder = engine.gfx.mainSurface.config.zOrder + Motes.Z_ORDER_OFFSET
+        )
+
         // THE WAVE'S PHASE, PINNED FOR REPRODUCIBLE CAPTURES. The sea animates on the RENDER
         // clock — see `WaterSurface`'s clock note for why that is the right call for something
         // with no gameplay meaning that has to keep moving on the attract screen — and a
@@ -725,6 +760,11 @@ class EnPustTil : PulseEngineGame()
         // test has measured nothing, so the phase can be nailed down. Unset at the booth: one
         // getenv at startup.
         System.getenv("EPT_WAVE_PHASE")?.toFloatOrNull()?.let { WaterSurface.pin(it) }
+
+        // The marine snow's phase, for the same reason and read in the same place. The god rays'
+        // EPT_SHAFT_PHASE is deliberately NOT here — `LightShafts` reads it itself and says why —
+        // but a third ambient clock read in a third file would be worse, so this one joins the sea.
+        System.getenv(Motes.PIN_ENV)?.toFloatOrNull()?.let { Motes.pin(it) }
 
         System.getenv("EPT_SCREENSHOT")?.let {
             engine.gfx.mainSurface.addPostProcessingEffect(render.ScreenshotEffect(it))
@@ -807,6 +847,10 @@ class EnPustTil : PulseEngineGame()
         // reproducible. This is the precedent for the floating bubbles and any later ambient
         // motion; anything the simulation CAN observe still belongs on the fixed tick.
         WaterSurface.advance(engine.data.deltaTime)
+
+        // The marine snow drifts on the same clock, outside the same gates and for the same
+        // reasons — see `Motes.advance`. It is the third consumer of the precedent above.
+        Motes.advance(engine.data.deltaTime)
 
         // Start/restart is a LEVEL reading here — deliberately. The engine's Gamepad only
         // exposes isPressed/getAxis (confirmed against the engine jar: no gamepad
@@ -1008,6 +1052,13 @@ class EnPustTil : PulseEngineGame()
         // against one visible rect, and only this file has to name engine.gfx.mainCamera at all
         // (see MainCameraOwnershipTest, whose allow-list is exact set equality).
         DiveLighting.render(engine, sim, worldCamera)
+
+        // THE MARINE SNOW, LAST OF THE WORLD-SPACE DRAWS AND ON ITS OWN SURFACE. Like the sky,
+        // order within this method decides nothing — the surfaces' zOrder does, and the motes' puts
+        // them in front of the world and behind the HUD — but it is drawn here so the file reads
+        // back to front like the frame does. Same camera reference as everything else above, so
+        // the cells it walks are culled against the rect the frame is actually being drawn with.
+        Motes.render(engine.gfx.getSurfaceOrDefault(Motes.SURFACE_NAME), worldCamera)
 
         // HUD: its own surface, its own screen-pixel camera, composited on top unaffected by
         // GI — see the comment in onCreate for why it cannot share mainSurface. What it shows

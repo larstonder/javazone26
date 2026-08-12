@@ -29,82 +29,55 @@ import kotlin.test.assertTrue
  */
 class PearlExposureTest
 {
-    private fun intensity(depth: Float) = DiveLighting.pearlIntensityForDepth(depth)
-
+    /**
+     * THREE TESTS HERE PINNED A DEPTH RAMP THAT NO LONGER EXISTS, AND THIS REPLACED THEM.
+     *
+     * They asserted that `exposure x intensity` is constant across depth, that the albedo is
+     * stopped down below the reference depth and untouched above it, and that exposure never rises
+     * with depth. Every one of them was a statement about the pearl light running 0.6 in the
+     * Shallows to 4.0 in the Abyss — and the owner removed that ramp so the torch, not the pearl's
+     * own glow, is how you find pearls in the deep (`DiveLighting.PEARL_INTENSITY`).
+     *
+     * The first of the three would have gone GREEN AND MEANINGLESS rather than red: with a flat
+     * intensity, "the product is constant across depth" is a tautology. It had a guard against
+     * exactly that — `intensity(150) > intensity(100) * 1.3` — which is the assertion that failed
+     * and the reason the removal could not pass unnoticed. That guard is the pattern worth keeping,
+     * so the replacement below states the new rule in a form that a returning ramp breaks.
+     */
     @Test
-    fun `the compensation cancels the depth dependence it is compensating for`()
+    fun `the compensation is inert, because there is no longer a depth dependence to cancel`()
     {
-        // At full strength `exposure x intensity` is constant everywhere the clamp is not
-        // binding. Asserted as a RATIO across depths rather than against a hardcoded product, so
-        // the pearl-light table stays free to be re-tuned.
-        val deep = listOf(100f, 110f, 120f, 130f, 140f, 150f, 190f)
-        val products = deep.map { fullStrengthExposure(it) * intensity(it) }
-        val first = products.first()
-
-        products.zip(deep).forEach { (p, d) ->
-            assertEquals(
-                first, p, first * 1e-4f,
-                "at $d m the compensated pearl albedo receives $p, not $first. The whole point is " +
-                "that the material reads the same in the Trench as in the Abyss — a pearl light " +
-                "table running 0.6 to 4.0 is a 6.7x swing in how washed out the body is"
-            )
-        }
-
-        // And it really is cancelling something: the raw intensities must differ across that
-        // range, or the test above holds trivially.
-        assertTrue(
-            intensity(150f) > intensity(100f) * 1.3f,
-            "the pearl light must actually get stronger with depth for this to be compensating anything"
-        )
-    }
-
-    @Test
-    fun `the compensation only ever removes albedo, and never above the reference depth`()
-    {
-        // Clamped at 1. The Shallows and the Kelp already read (0.667 and 0.638 chroma, nothing
-        // clipped) and brightening them would push them toward the very shoulder this exists to
-        // get off — as well as being a change to two zones nobody complained about.
-        listOf(0f, 5f, 15f, 30f, 45f, 60f, 75f).forEach {
-            assertEquals(
-                1f, DiveRenderer.pearlAlbedoExposure(it), 1e-5f,
-                "at $it m the pearl light is at or below the reference, so the albedo must be untouched"
-            )
-        }
-
-        listOf(100f, 120f, 140f, 200f).forEach {
-            val e = DiveRenderer.pearlAlbedoExposure(it)
-            assertTrue(e < 1f, "at $it m the albedo must be stopped down, got $e")
-            assertTrue(e > 0f, "at $it m the exposure must stay positive, got $e")
-        }
-    }
-
-    @Test
-    fun `exposure never increases with depth, so a pearl cannot brighten as the water darkens`()
-    {
-        // Monotonicity is what makes the transition invisible. `DepthBlend` is smooth, so a
-        // non-monotone exposure would show as a pearl that dims and then brightens again as the
-        // diver descends past it — a moving artefact, and the hardest kind to attribute.
-        var previous = DiveRenderer.pearlAlbedoExposure(0f)
+        // Swept the full column rather than sampled: the exposure is built from a division, so a
+        // reference that drifted off the emission by any amount would show up here as an exposure
+        // that is not exactly 1 — and at PEARL_EXPOSURE_STRENGTH 0.5 a 10% drift is only a 5%
+        // albedo change, which no capture would catch.
         var depth = 0f
         while (depth <= 200f)
         {
-            val e = DiveRenderer.pearlAlbedoExposure(depth)
-            assertTrue(e <= previous + 1e-5f, "exposure rose from $previous to $e at $depth m")
-            previous = e
+            assertEquals(
+                1f, DiveRenderer.pearlAlbedoExposure(), 1e-6f,
+                "the pearl albedo is being stopped down at $depth m, but the emission is flat — " +
+                "either a depth ramp is back, or the reference no longer tracks the emission"
+            )
             depth += 0.5f
         }
     }
 
     @Test
-    fun `the reference is taken from the zone table rather than typed as a number`()
+    fun `the reference is the emission itself rather than a number typed beside it`()
     {
-        // The reference is "the deepest zone whose pearls were measured to keep their hue", which
-        // is Twilight. Written as a lookup so re-tuning `pearlIntensityByZone` moves it too; a
-        // hardcoded 1.8 would silently start pointing at an intensity no zone has any more.
+        // This is what makes the compensation follow the emission instead of pointing at a value
+        // nothing has any more — the property that carried it through the ramp's removal with no
+        // edit to the arithmetic. A hardcoded 1.8 (the old Twilight reference) would have left
+        // every pearl in the game stopped down to 0.55 of its albedo for no reason at all.
         assertEquals(
-            intensity(DepthBlend.zoneMidpoint(Zone.TWILIGHT)),
+            DiveLighting.pearlIntensity(),
             DiveRenderer.PEARL_EXPOSURE_REFERENCE_INTENSITY,
-            1e-5f
+            1e-6f
+        )
+        assertTrue(
+            DiveRenderer.PEARL_EXPOSURE_REFERENCE_INTENSITY > 0f,
+            "a zero reference would make the exposure zero and every pearl black"
         )
     }
 
@@ -142,7 +115,7 @@ class PearlExposureTest
         // replaced with flat grey. Stopping the albedo down moves it toward that floor, and the
         // iridescence's own darkest band moves it further, so the two have to be checked
         // TOGETHER — neither alone is the worst case.
-        val darkestExposure = DiveRenderer.pearlAlbedoExposure(200f)
+        val darkestExposure = DiveRenderer.pearlAlbedoExposure()
         val base = DiveRenderer.reflectanceLength(1f, 0.78f, 0.35f)
         val darkest = IridescentMaterial.PEARL.darkestReflectanceLength(base * darkestExposure)
 
@@ -153,7 +126,4 @@ class PearlExposureTest
         )
     }
 
-    /** The compensation with the strength knob wound fully in, for the cancellation test. */
-    private fun fullStrengthExposure(depth: Float) =
-        (DiveRenderer.PEARL_EXPOSURE_REFERENCE_INTENSITY / intensity(depth)).coerceAtMost(1f)
 }
