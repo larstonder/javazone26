@@ -135,6 +135,53 @@ because without it every step below is unmeasurable.
 
 ---
 
+## 2b. THE BASELINE, MEASURED — step 0 is done and it changed the ranking
+
+`EPT_DEPTH` landed, and the first capture it made possible settles several of §1's
+candidates immediately. Frame: 140 m, `EPT_DEPTH=140 EPT_WAVE_PHASE=12 EPT_SHAFT_PHASE=30
+EPT_MOTE_PHASE=45`, 3190x1845 of game window.
+
+```
+mean luminance          3.86 / 255
+pixels below  2/255        95.2%
+pixels below 10/255        95.3%
+lit pixels (>25)            4.50%
+   of which blue (motes)   19.1%
+   of which amber (pearls)  7.1%
+brightest mote            213.5
+brightest pearl           194.2
+```
+
+**B1 is confirmed and is the headline: 95% of the Abyss is at or below 2/255.** That is not
+"dark", it is black — three quarters of a single 8-bit level. The owner's "WAY too dark" is
+if anything an understatement, and no contrast or vignette change can recover a signal that
+is not there. B3 drops down the list accordingly: the grade is not what is destroying the
+image, it is being handed nothing.
+
+**A NEW FINDING, AND IT INVERTS A DESIGN INTENT: the motes are the brightest thing in the
+Abyss.** Brightest mote 213.5 against the brightest pearl's 194.2, and motes are 19.1% of all
+lit pixels against the pearls' 7.1%. The field reads as a starfield rather than as suspended
+matter, and it out-shines the object the player is actually hunting.
+
+**This also exposes a hole in `MotesTest`.** `a glowing mote is dimmer than a pearl, which is
+dimmer than the torch` passes — and is worthless for this — because it compares EMITTED
+INTENSITY, while what reaches the screen is composited very differently for the two: a mote
+is drawn on its own surface and escapes the GI multiply entirely, whereas a pearl's albedo is
+multiplied by a light map that is ~0 down here. The two quantities are not comparable and the
+test silently assumed they were. Any fix must add an assertion about the COMPOSITED result,
+which means it needs a capture and cannot live in the unit suite — or the mote surface has to
+stop being exempt from the thing that darkens everything else.
+
+**Revised order of work:**
+1. Bring the motes down (they are the loudest wrong thing, and they are a 2026-08-13 addition
+   — likely also the reason the owner noticed the fighting when he did);
+2. then B1, the ambient floor, which is what makes the water exist at all;
+3. then A1, the emitter-occlusion measurement, which is now a *comparison* against this
+   baseline rather than an open question;
+4. reach (B2) and the grade (B3) last.
+
+---
+
 ## 3. Interventions, cheapest and most reversible first
 
 Each is one dial, with the measurement that decides whether to keep it. Do them **one at a
