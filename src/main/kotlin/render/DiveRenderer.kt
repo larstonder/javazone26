@@ -464,12 +464,12 @@ object DiveRenderer
         // White and opaque: drawTexture MODULATES by the surface's current draw colour, which is
         // still wallColor from the fills above.
         surface.setDrawColor(1f, 1f, 1f, 1f)
-        if (leftSlab > 0f) drawRockWall(surface, normalMaps, leftSlab, worldBottom, LEFT_WALL)
-        if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldBottom, RIGHT_WALL)
+        if (leftSlab > 0f) drawRockWall(surface, normalMaps, leftSlab, worldBottom, side = LEFT_SIDE)
+        if (rightSlab > 0f) drawRockWall(surface, normalMaps, rightSlab, worldBottom, side = RIGHT_SIDE)
 
         // The crest, LAST, so it draws over the top of the wall it caps rather than under it.
-        if (leftSlab > 0f) drawCrest(surface, cam, normalMaps, LEFT_WALL)
-        if (rightSlab > 0f) drawCrest(surface, cam, normalMaps, RIGHT_WALL)
+        if (leftSlab > 0f) drawCrest(surface, cam, normalMaps, side = LEFT_SIDE)
+        if (rightSlab > 0f) drawCrest(surface, cam, normalMaps, side = RIGHT_SIDE)
     }
 
     /**
@@ -484,9 +484,9 @@ object DiveRenderer
      *
      * ## The right-hand one is a DIFFERENT TEXTURE, not a different angle
      *
-     * The wall gets its right-hand copy from [RIGHT_WALL]'s half turn, which is a horizontal
+     * The wall used to get its right-hand copy from a half turn, which is a horizontal
      * mirror and a vertical flip together. A wall tile survives being flipped vertically; a summit
-     * does not. So both crests are drawn at [LEFT_WALL] — no rotation at all — and the right one
+     * does not. So both crests are drawn with NO rotation at all — as both walls now are — and the right one
      * uses a texture that was mirrored IN THE BAKE, where the normal map's x component could be
      * negated exactly (`tools/backdrop/mirror.py`, and `RockFaceTest` re-derives it from the
      * committed base PNGs). Mirroring at the draw site is not available: `drawNormalMap` takes no
@@ -514,14 +514,13 @@ object DiveRenderer
         val width = RockFace.CREST_WIDTH_METRES
         val height = RockFace.TOP_HEIGHT_METRES
 
-        val outward = if (side == RIGHT_WALL) 1f else -1f
-        val centreX = outward * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
+        val centreX = side * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
         val centreY = RockFace.WALL_TOP_DEPTH - height * 0.5f
 
         if (!cam.showsSquare(centreX, centreY, max(width, height))) return
 
-        val diffuse = if (side == RIGHT_WALL) RockFace.topMirrorDiffuse else RockFace.topDiffuse
-        val normal = if (side == RIGHT_WALL) RockFace.topMirrorNormal else RockFace.topNormal
+        val diffuse = if (side == RIGHT_SIDE) RockFace.topMirrorDiffuse else RockFace.topDiffuse
+        val normal = if (side == RIGHT_SIDE) RockFace.topMirrorNormal else RockFace.topNormal
 
         // TILING IS 1, AND THAT IS THE WHOLE OF THIS SPRITE'S CONTRACT — see
         // RockFace.CREST_WIDTH_METRES. The wall's identical-looking call passes `columns` here
@@ -543,13 +542,17 @@ object DiveRenderer
     }
 
     /**
-     * The right-hand wall is the same cliff turned through half a turn, and that is the only
-     * difference between the two calls.
+     * The right-hand wall is the same cliff MIRRORED IN THE BAKE, and that is the only difference
+     * between the two calls. Both are drawn at angle 0.
      *
      * [RockFace]'s art is a LEFT wall: solid stone on its u = 0 side, ragged alpha edge on its
      * u = 1 side. The left wall can use it as it stands, with u = 1 landing on the column
-     * boundary. The right wall needs that edge on its own inner side, i.e. mirrored — and 180
-     * degrees is the way to get it, not a negative width and not flipped uv arguments:
+     * boundary. The right wall needs that edge on its own inner side, i.e. mirrored.
+     *
+     * ## IT USED TO BE A HALF TURN, AND THAT PUT ONE WALL UPSIDE DOWN
+     *
+     * The original argument was sound as far as it went, and is worth keeping because it rules
+     * out the two obvious alternatives:
      *
      *  - `NormalMapRenderer.drawNormalMap` takes no uv arguments at all, so a `uMin`/`uMax` swap
      *    would mirror the albedo and leave the normals unmirrored. The lighting would then be lit
@@ -558,16 +561,26 @@ object DiveRenderer
      *    the same result, and additionally reverses the triangles' winding.
      *  - `normal_map.vert` builds `normalRotation = rotMatrix(rotation + cameraAngle)`, so a
      *    rotation is the ONE transform the engine applies to the geometry and to the normal
-     *    vectors together.
+     *    vectors together — at the DRAW SITE.
      *
-     * Half a turn also flips v, so the right wall shows the cliff upside down as well as
-     * mirrored. That is a bonus rather than a cost: an exact mirror of a 40 m tile down both
-     * sides of the frame is conspicuous, and this breaks it for free. It does not disturb the
-     * tiling, because the quad still spans a whole number of tiles between two world-space tile
-     * boundaries, so the world-depth to v mapping stays a function of depth alone.
+     * The conclusion it reached does not follow, because there is a third place to mirror: the
+     * BAKE. `98bbcb0` had already gone there for the crest, which cannot survive a half turn (a
+     * summit upside down is not a summit). So the two sides of the column were being transformed
+     * differently — the crest by a horizontal mirror, the wall by a mirror AND a vertical flip —
+     * and on the right-hand side an upside-down wall ran up to a right-way-up summit. The owner,
+     * on a capture: *"they should be placed from top to bottom to ensure the seams line up"*.
+     *
+     * Both are baked mirrors now (`tools/backdrop/mirror.py`, `RockFace.mirrorDiffuse`), so each
+     * side of the column is one consistent horizontal mirror of the other, top and side together.
+     *
+     * WHAT THAT COSTS, since the old note called it a bonus: the half turn also flipped v, so the
+     * right wall showed the tile upside down as well as mirrored, which broke up the symmetry of
+     * an exact 40 m mirror down both sides of the frame for free. An exact mirror is more
+     * conspicuous. That is the price of the seams lining up, and the seams win — the alternative
+     * is a join that cannot be made continuous at all.
      */
-    private const val LEFT_WALL = 0f
-    private const val RIGHT_WALL = 180f
+    private const val LEFT_SIDE = -1f
+    private const val RIGHT_SIDE = 1f
 
     /**
      * One wall: a whole number of tiles across, a whole number down, anchored on the world's tile
@@ -622,7 +635,7 @@ object DiveRenderer
         normalMaps: NormalMapRenderer?,
         wallWidth: Float,
         worldBottom: Float,
-        angle: Float
+        side: Float
     )
     {
         val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
@@ -630,23 +643,28 @@ object DiveRenderer
         val width = columns * RockFace.TILE_WIDTH_METRES
         val height = rows * RockFace.TILE_HEIGHT_METRES
 
-        // Centres, because a rotated quad's (x, y) has to mean its middle for the rotation to be
-        // about that middle — the same CENTRE_ORIGIN convention every other object here uses.
-        // The quad grows OUTWARD from its inner edge, hence the sign.
-        val outward = if (angle == RIGHT_WALL) 1f else -1f
-        val centreX = outward * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
+        // Centres, because the CENTRE_ORIGIN convention every other object here uses is what the
+        // normal-map draw has to be handed identically. The quad grows OUTWARD from its inner
+        // edge, which is the whole of what [side] means.
+        val centreX = side * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
         val centreY = RockFace.WALL_TOP_DEPTH + height * 0.5f
 
+        // The mirrored PAIR on the right — never one of them. Taking the mirrored albedo with the
+        // base normals would light every bump on that wall from the wrong side, which is exactly
+        // the failure a uv swap would have caused and the reason the mirror is baked at all.
+        val diffuse = if (side == RIGHT_SIDE) RockFace.mirrorDiffuse else RockFace.diffuse
+        val normal = if (side == RIGHT_SIDE) RockFace.mirrorNormal else RockFace.normal
+
         surface.drawTexture(
-            RockFace.diffuse,
-            centreX, centreY, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            diffuse,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
             0f, 0f, 0f, 1f, 1f, columns.toFloat(), rows.toFloat()
         )
 
         // The copied argument list. Same rect, same angle, same origin, same tiling.
         normalMaps?.drawNormalMap(
-            RockFace.normal,
-            centreX, centreY, width, height, angle, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            normal,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
             columns.toFloat(), rows.toFloat()
         )
     }

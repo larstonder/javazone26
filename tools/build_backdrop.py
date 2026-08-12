@@ -50,9 +50,17 @@ THE FIVE DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
    TWICE. It is drawn edge to edge with the wall at the waterline, so equal baked
    WIDTHS is what makes their texels the same size and the WALL'S OWN gain and ambient
    are what stop a brightness step appearing along the join. The second bake is its
-   horizontal mirror, for the other side of the column: the wall gets its mirror from a
-   180-degree rotation at the draw site, and 180 degrees flips a summit upside down.
-   See bake_rock_top and backdrop/mirror.py.
+   horizontal mirror, for the other side of the column. See bake_rock_top and
+   backdrop/mirror.py.
+
+6. SO IS THE WALL, AND THAT IS NEW. It used to get its right-hand copy from a
+   180-degree rotation at the draw site. The crest could not, because 180 degrees is a
+   horizontal mirror AND A VERTICAL FLIP and a summit cannot be upside down - so the
+   two sides of the column were transformed DIFFERENTLY, and the wall under the
+   right-hand crest ran upside down relative to the summit capping it. The owner, on a
+   capture: "they should be placed from top to bottom to ensure the seams line up".
+   Both now come from the bake, so each side of the column is one consistent horizontal
+   mirror of the other, top and side together.
 
 Not a decision, a measurement: the rock's albedo is lifted so it clears the GI
 reflectance floor. 44.2% of its opaque texels are under it as delivered. See
@@ -87,9 +95,16 @@ OUT_DIR = REPO / "src" / "main" / "resources" / "backdrop"
 # explicit SpriteSheet-style constructor in `RockFace` governs. Same rule, and same
 # reason, as `diver-normal.png`. We construct the assets explicitly rather than through
 # loadAll, so this is belt and braces - but the belt is one rename away from failing.
-ROCK_DIFFUSE_OUT = "rock-diffuse.png"
-ROCK_NORMAL_OUT = "rock-normal.png"
-# The cliff top, and its horizontal mirror for the other side of the column. All four
+# The wall, and its horizontal mirror for the other side of the column - see bake_rock's
+# docstring for why the mirror is baked rather than taken as a 180-degree rotation at the
+# draw site, which is what shipped and what put the right-hand cliff upside down.
+ROCK_OUT = {
+    "diffuse": "rock-diffuse.png",
+    "normal": "rock-normal.png",
+    "mirror_diffuse": "rock-mirror-diffuse.png",
+    "mirror_normal": "rock-mirror-normal.png",
+}
+# The cliff top, and its horizontal mirror for the other side of the column. All eight
 # hyphenated for the same reason: `_normal` with an UNDERSCORE trips the auto-loader.
 ROCK_TOP_OUT = {
     "diffuse": "rock-top-diffuse.png",
@@ -185,6 +200,35 @@ def require_matching_alpha(name: str, diffuse: np.ndarray, normal: np.ndarray) -
 
 
 def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
+    """
+    The vertically tiling cliff face, and its horizontal mirror for the other side of the
+    column.
+
+    THE MIRROR IS BAKED HERE, AND IT USED NOT TO BE. `DiveRenderer` drew the right-hand
+    wall by rotating this texture 180 degrees, which `backdrop/mirror.py` explains is the
+    one transform the engine applies to the geometry and the normal VECTORS together
+    (`normal_map.vert` builds `normalRotation = rotMatrix(rotation + cameraAngle)`), and
+    which is why the mirror was not needed at bake time.
+
+    What that argument missed is that 180 degrees is a horizontal mirror AND A VERTICAL
+    FLIP. The crest could never use it - a summit upside down is not a summit - so the
+    crest was already baked mirrored while the wall was rotated. The two sides of the
+    column were therefore transformed DIFFERENTLY, and on the right-hand side an
+    upside-down wall ran up to a right-way-up summit. The owner, looking at a capture:
+    "they should be placed from top to bottom to ensure the seams line up."
+
+    So the wall is mirrored the same way the crest is, and `DiveRenderer` draws both
+    sides at angle 0. Mirroring costs two more layers in the 2048 texture arrays the
+    diver's sheets already allocate (see the filter/wrapping/format note printed by
+    `kotlin_snippet`) and nothing else: a horizontal mirror moves whole rows, so the
+    vertical wrap-blend this function solves for is preserved exactly.
+
+    WHAT IS GIVEN UP, said plainly because it was a stated benefit of the rotation: 180
+    degrees also flipped v, so the right-hand wall showed the tile upside down as well as
+    mirrored, which broke up the symmetry of an exact 40 m mirror down both sides of the
+    frame for free. An exact mirror is more conspicuous. That is the cost of the seams
+    lining up, and the seams win.
+    """
     diffuse = load_rgba(ROCK_DIR / "diffuse.png")
     normal = load_rgba(ROCK_DIR / "normal.png")
     require_matching_alpha("rock", diffuse, normal)
@@ -283,6 +327,8 @@ def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
     return {
         "diffuse": diffuse_out,
         "normal": normal_out,
+        "mirror_diffuse": mirror.mirror_diffuse(diffuse_out),
+        "mirror_normal": mirror.mirror_normal(normal_out),
         "period": period,
         "size": (out_w, out_h),
         "gain": gain,
@@ -455,13 +501,13 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
         "ept:source_sha256": fingerprint.hexdigest()[:16],
     }
 
-    write_png(OUT_DIR / ROCK_DIFFUSE_OUT, rock["diffuse"], meta)
-    write_png(OUT_DIR / ROCK_NORMAL_OUT, rock["normal"], meta)
+    for key, name in ROCK_OUT.items():
+        write_png(OUT_DIR / name, rock[key], meta)
     for key, name in ROCK_TOP_OUT.items():
         write_png(OUT_DIR / name, top[key], meta)
     for index, rgba in layers:
         write_png(OUT_DIR / f"silhouette-{index}.png", rgba, meta)
-    print(f"\nwrote {OUT_DIR}/{{{ROCK_DIFFUSE_OUT}, {ROCK_NORMAL_OUT}, "
+    print(f"\nwrote {OUT_DIR}/{{{', '.join(ROCK_OUT.values())}, "
           f"{', '.join(ROCK_TOP_OUT.values())}, silhouette-1..3.png}}")
     print(kotlin_snippet(*rock["size"], *top["size"]))
     return 0

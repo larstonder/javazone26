@@ -50,7 +50,17 @@ class RockFaceTest
     @Test
     fun `the rock is declared with the parameters that keep it in the diver's texture arrays`()
     {
-        for ((name, texture) in listOf("diffuse" to RockFace.diffuse, "normal" to RockFace.normal))
+        // The MIRROR pair is in here too. It was added when the right-hand wall stopped being a
+        // 180-degree rotation, and it is two more layers in the same arrays — so it has to match
+        // on all four parameters or it opens a 251.7 MB array of its own for the sake of one
+        // horizontally flipped cliff.
+        val declared = listOf(
+            "diffuse" to RockFace.diffuse,
+            "normal" to RockFace.normal,
+            "mirror diffuse" to RockFace.mirrorDiffuse,
+            "mirror normal" to RockFace.mirrorNormal
+        )
+        for ((name, texture) in declared)
         {
             assertEquals(1, texture.maxMipLevels, "rock $name maxMipLevels must be 1 — 0 allocates no storage, and the constructor's default of 5 mips across a partly-written array layer puts a line on the tile seam")
             assertEquals(TextureFilter.LINEAR, texture.filter, "rock $name must not use a MIPMAP filter with one mip level")
@@ -59,6 +69,18 @@ class RockFaceTest
 
         assertEquals(TextureFormat.SRGBA8, RockFace.diffuse.format, "the albedo is sRGB-encoded and the GPU must linearize it on sample")
         assertEquals(TextureFormat.RGBA8, RockFace.normal.format, "the bake already decoded the normals to linear; SRGBA8 would linearize them a second time")
+        assertEquals(RockFace.diffuse.format, RockFace.mirrorDiffuse.format, "the mirrored albedo must share the base albedo's format, or it lands in a different array")
+        assertEquals(RockFace.normal.format, RockFace.mirrorNormal.format, "the mirrored normals must share the base normals' format, or they land in a different array")
+
+        // The filename rule, on the two files that were added last and are the easiest to get
+        // wrong: `Extensions.kt:446-448`'s auto-loader keys on `_normal` with an UNDERSCORE and
+        // forces RGBA8 with TEN mip levels when it matches. Every rock file uses a hyphen.
+        listOf(RockFace.diffuse, RockFace.normal, RockFace.mirrorDiffuse, RockFace.mirrorNormal).forEach {
+            assertTrue(
+                !it.filePath.contains("_normal"),
+                "${it.filePath} contains `_normal` with an underscore, which trips the engine's auto-loader into RGBA8 with 10 mip levels regardless of this declaration"
+            )
+        }
 
         // The array-sharing requirement, stated against the assets it has to share WITH rather
         // than against a second copy of the constants.
@@ -546,18 +568,36 @@ class RockFaceTest
      * bake's own tests already cover the function; this covers the FILES that shipped.
      */
     @Test
-    fun `the mirrored crest is the exact horizontal mirror of the committed base`()
+    fun `each mirrored rock texture is the exact horizontal mirror of its committed base`()
+    {
+        // BOTH PAIRS. The crest has been baked mirrored since `98bbcb0`; the WALL joined it when
+        // the 180-degree rotation was retired, and the wall is the one with something extra to
+        // lose — it tiles vertically, and its wrap-blend only survives because a horizontal mirror
+        // permutes each row within itself. That follows from the texel-exact check below rather
+        // than needing its own case.
+        listOf(
+            "rock-top-diffuse.png" to "rock-top-mirror-diffuse.png",
+            "rock-diffuse.png" to "rock-mirror-diffuse.png"
+        ).forEach { (baseAlbedo, mirrorAlbedo) ->
+            assertExactMirror(baseAlbedo, mirrorAlbedo)
+        }
+    }
+
+    /** @see [each mirrored rock texture is the exact horizontal mirror of its committed base] */
+    private fun assertExactMirror(baseAlbedo: String, mirrorAlbedo: String)
     {
         val dir = "src/main/resources/backdrop/"
-        val baseDiffuse = ImageIO.read(File(dir + "rock-top-diffuse.png"))
-        val mirrorDiffuse = ImageIO.read(File(dir + "rock-top-mirror-diffuse.png"))
-        val baseNormal = ImageIO.read(File(dir + "rock-top-normal.png"))
-        val mirrorNormal = ImageIO.read(File(dir + "rock-top-mirror-normal.png"))
+        val baseNormalName = baseAlbedo.replace("-diffuse.png", "-normal.png")
+        val mirrorNormalName = mirrorAlbedo.replace("-diffuse.png", "-normal.png")
+        val baseDiffuse = ImageIO.read(File(dir + baseAlbedo))
+        val mirrorDiffuse = ImageIO.read(File(dir + mirrorAlbedo))
+        val baseNormal = ImageIO.read(File(dir + baseNormalName))
+        val mirrorNormal = ImageIO.read(File(dir + mirrorNormalName))
 
         val w = baseDiffuse.width
         val h = baseDiffuse.height
-        assertEquals(w to h, mirrorDiffuse.width to mirrorDiffuse.height, "the mirrored albedo is a different size from the base")
-        assertEquals(w to h, mirrorNormal.width to mirrorNormal.height, "the mirrored normal map is a different size from the base")
+        assertEquals(w to h, mirrorDiffuse.width to mirrorDiffuse.height, "$mirrorAlbedo is a different size from $baseAlbedo")
+        assertEquals(w to h, mirrorNormal.width to mirrorNormal.height, "$mirrorNormalName is a different size from $baseNormalName")
 
         // Sampled on a coprime lattice rather than every texel: 691x1152 is 796 032 texels and
         // four getRGB calls each is slow enough to notice in a test suite. 7 and 11 share no
@@ -569,14 +609,14 @@ class RockFaceTest
                 val mx = w - 1 - x
                 assertEquals(
                     baseDiffuse.getRGB(x, y), mirrorDiffuse.getRGB(mx, y),
-                    "the mirrored albedo differs from the base at ($x, $y) -> ($mx, $y)"
+                    "$mirrorAlbedo differs from $baseAlbedo at ($x, $y) -> ($mx, $y)"
                 )
 
                 val a = baseNormal.getRGB(x, y)
                 val b = mirrorNormal.getRGB(mx, y)
                 assertEquals(
                     255 - ((a shr 16) and 0xFF), (b shr 16) and 0xFF,
-                    "the mirrored normal's x component at ($mx, $y) is not the negation of the base's at ($x, $y) — every bump on the right-hand cliff would be lit from the wrong side"
+                    "$mirrorNormalName's x component at ($mx, $y) is not the negation of $baseNormalName's at ($x, $y) — every bump on the right-hand cliff would be lit from the wrong side"
                 )
                 assertEquals((a shr 8) and 0xFF, (b shr 8) and 0xFF, "the mirrored normal's y component changed at ($mx, $y); a horizontal mirror leaves the up-down slope alone")
                 assertEquals(a and 0xFF, b and 0xFF, "the mirrored normal's z component changed at ($mx, $y); a horizontal mirror leaves the facing alone")

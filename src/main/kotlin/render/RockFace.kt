@@ -202,6 +202,34 @@ object RockFace
         maxMipLevels = 1                    // NEVER 0 — see the class doc.
     )
 
+    /**
+     * THE WALL'S HORIZONTAL MIRROR, for the right-hand side of the column — and it is BAKED,
+     * where the crest's already was.
+     *
+     * `DiveRenderer` used to get the right wall by drawing this same texture rotated 180 degrees,
+     * on the sound argument that a rotation is the one transform the engine applies to the
+     * geometry and to the normal VECTORS together (`normal_map.vert` builds
+     * `normalRotation = rotMatrix(rotation + cameraAngle)`), which a uv swap and a negative width
+     * both fail to do.
+     *
+     * What that missed is that 180 degrees is a horizontal mirror AND A VERTICAL FLIP. The crest
+     * could never use it — a summit upside down is not a summit — so the crest was baked mirrored
+     * while the wall was rotated, and the two sides of the column ended up transformed
+     * DIFFERENTLY: on the right, an upside-down wall ran up to a right-way-up summit. The owner,
+     * on a capture: *"they should be placed from top to bottom to ensure the seams line up"*.
+     *
+     * Both now come from the bake, and [DiveRenderer.drawRockWall] draws both sides at angle 0.
+     * The cost is two more layers in the 2048 arrays the diver's sheets already allocate — which
+     * is why these go through [rockTexture] and inherit exactly the same filter, wrapping and
+     * `maxMipLevels` as everything else here (see the class doc: differ in any one of them and
+     * this allocates a second 251.7 MB array).
+     *
+     * A horizontal mirror moves whole rows, so the vertical wrap-blend the bake solves for is
+     * preserved exactly — `RockFaceTest` asserts both that and the texel-exact mirror.
+     */
+    val mirrorDiffuse = rockTexture("rock-mirror-diffuse.png", "rock_mirror_diffuse", TextureFormat.SRGBA8)
+    val mirrorNormal = rockTexture("rock-mirror-normal.png", "rock_mirror_normal", TextureFormat.RGBA8)
+
     // --- THE CREST: what stops the wall at the waterline ---------------------------------------
     //
     // The tile has no top. It repeats down the column for ever and, before this, ran straight off
@@ -313,10 +341,10 @@ object RockFace
     /**
      * The crest, and its horizontal MIRROR for the other side of the column.
      *
-     * The wall gets its right-hand copy from a 180-degree rotation at the draw site, which is a
-     * horizontal mirror AND a vertical flip; a vertically flipped wall tile is still a wall tile,
-     * and a vertically flipped summit points downwards. There is no horizontal-only mirror
-     * available at the draw site either — `NormalMapRenderer.drawNormalMap` takes no uv arguments,
+     * Baked mirrored for the same reason [mirrorDiffuse] now is, and this one never had a choice:
+     * the only mirror available at the draw site is a 180-degree rotation, which is a horizontal
+     * mirror AND a vertical flip, and a vertically flipped summit points downwards. There is no
+     * horizontal-only mirror at the draw site either — `NormalMapRenderer.drawNormalMap` takes no uv arguments,
      * so a `uMin`/`uMax` swap would mirror the albedo and leave every bump lit from the wrong
      * side, and a negative width leaves `normalRotation` alone with the same result.
      *
@@ -329,13 +357,13 @@ object RockFace
     val topMirrorDiffuse = rockTexture("rock-top-mirror-diffuse.png", "rock_top_mirror_diffuse", TextureFormat.SRGBA8)
     val topMirrorNormal = rockTexture("rock-top-mirror-normal.png", "rock_top_mirror_normal", TextureFormat.RGBA8)
 
+    private val wallTextures = listOf(diffuse, normal, mirrorDiffuse, mirrorNormal)
     private val topTextures = listOf(topDiffuse, topNormal, topMirrorDiffuse, topMirrorNormal)
 
     /** Queues every rock texture for upload. Called once, from `EnPustTil.onCreate`. */
     fun load(engine: PulseEngine)
     {
-        engine.asset.load(diffuse)
-        engine.asset.load(normal)
+        wallTextures.forEach { engine.asset.load(it) }
         topTextures.forEach { engine.asset.load(it) }
     }
 
@@ -357,7 +385,7 @@ object RockFace
      */
     fun ready(): Boolean
     {
-        if (diffuse.handle != TextureHandle.INVALID && normal.handle != TextureHandle.INVALID &&
+        if (wallTextures.all { it.handle != TextureHandle.INVALID } &&
             topTextures.all { it.handle != TextureHandle.INVALID })
         {
             framesWithoutTextures = 0
