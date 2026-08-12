@@ -614,6 +614,73 @@ class RockFaceTest
     }
 
     /**
+     * THE CLIFF TOP IS ROCK, NOT A COLOUR — and the band keeps the rock's proportions as the
+     * camera drops.
+     *
+     * `d7921a6` filled above the waterline flat, and `41849a7` then matched that flat colour to
+     * the rock's mean luminance. Neither could work: what makes the cliff read as rock up there is
+     * the NORMAL MAP's relief catching the light, and flat geometry has none to catch it with. The
+     * owner, on a crop of the right-hand cliff: *"look at the sky seeping through, and us filling
+     * with a dark color after"*. Measured over the cliff-top band, the flat fill's per-channel
+     * standard deviation was (0.00, 0.37, 0.48) — zero variation in red, because it was one
+     * colour — against (0.26, 0.84, 1.89) for the wall texture now drawn there.
+     *
+     * The band is CLIPPED to the visible rect, so its height changes every time the camera moves.
+     * `vTiling` therefore has to be that height in tiles: a fixed `1f` squashes a whole 40 m tile
+     * into whatever sliver is on screen, and the rock stretches as the diver descends. That is a
+     * distortion in MOTION, which no still frame catches — hence a test rather than a capture.
+     *
+     * [DiveRenderer.headlandColor] survives as the backing behind the texture, filling the
+     * transparent slit at every tile join exactly as the backing does below the waterline, which
+     * is why the tests above still stand.
+     */
+    @Test
+    fun `the cliff top is drawn as rock, and its tiling keeps the texels square at any band height`()
+    {
+        val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+
+        // BOTH sides. Dropping one leaves the other, and a whole-file `contains` would not notice
+        // — which it did not, the first time this was written.
+        listOf("leftSlab, topOfHeadland, LEFT_SIDE", "rightSlab, topOfHeadland, RIGHT_SIDE").forEach {
+            assertTrue(
+                code.contains("drawCliffTop(surface, normalMaps, $it)"),
+                "drawCliffTop is not called with ($it), so that side's cliff top above the " +
+                "waterline is back to a flat colour with no relief for the light to catch"
+            )
+        }
+
+        // Scoped to drawCliffTop's OWN body. `indexOf` over the whole file finds drawRockWall's
+        // copy of these lines instead and passes on a gutted drawCliffTop.
+        val bodyStart = code.indexOf("private fun drawCliffTop")
+        assertTrue(bodyStart >= 0, "DiveRenderer no longer declares drawCliffTop — re-read this test before deleting it")
+        val body = code.substring(bodyStart, code.indexOf("private fun ", bodyStart + 20))
+        assertTrue(
+            body.contains("drawNormalMap"),
+            "drawCliffTop submits no normal map, so the cliff top is lit flat — which is the whole " +
+            "of what made the flat fill wrong"
+        )
+        assertTrue(
+            body.contains("cliffTopVerticalTiles("),
+            "drawCliffTop no longer derives its vTiling from the band's height, so the rock " +
+            "stretches as the camera moves"
+        )
+
+        // The band's height varies with the camera, so the tiling has to vary with it. Every band
+        // must show exactly its own height of tile, at the tile's own scale.
+        listOf(2f, 7.5f, RockFace.TILE_HEIGHT_METRES, 20.16f, 39.9f).forEach { height ->
+            assertEquals(
+                height,
+                DiveRenderer.cliffTopVerticalTiles(height) * RockFace.TILE_HEIGHT_METRES,
+                1e-3f,
+                "a ${height} m band of cliff top is drawn showing " +
+                "${DiveRenderer.cliffTopVerticalTiles(height)} tiles, i.e. " +
+                "${DiveRenderer.cliffTopVerticalTiles(height) * RockFace.TILE_HEIGHT_METRES} m of rock — " +
+                "the texels are stretched, and they stretch differently at every camera depth"
+            )
+        }
+    }
+
+    /**
      * THE JOIN IS UNDER WATER AND STAYS THERE. The crest and the tile are different crops of rock
      * whose textures do not continue into one another, so where they meet is a discontinuity —
      * and the only thing hiding it is that it sits below the deepest trough the wave can reach,
