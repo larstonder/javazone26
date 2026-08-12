@@ -173,12 +173,48 @@ which means it needs a capture and cannot live in the unit suite — or the mote
 stop being exempt from the thing that darkens everything else.
 
 **Revised order of work:**
-1. Bring the motes down (they are the loudest wrong thing, and they are a 2026-08-13 addition
-   — likely also the reason the owner noticed the fighting when he did);
+1. ~~Bring the motes down~~ **DONE** — see §2c;
 2. then B1, the ambient floor, which is what makes the water exist at all;
 3. then A1, the emitter-occlusion measurement, which is now a *comparison* against this
    baseline rather than an open question;
 4. reach (B2) and the grade (B3) last.
+
+### A correction to the numbers above
+
+The "brightest mote 213.5" and the mote/pearl pixel shares in the baseline block **counted the
+attract screen's HUD text as motes** — 7026 pale-blue pixels, at byte-identical positions in
+every capture, on a surface neither change touches. The conclusion (the motes dominated the
+Abyss) survives and is if anything understated, but any figure derived from a naive
+`blue > red` test on these captures is contaminated. Use a SATURATION test: the motes are
+`(0.25, 0.62, 1.0)`, so `b > r * 2.5` holds for them and fails for the HUD's `(169, 209, 221)`.
+
+---
+
+## 2c. Step 1 is done: the motes are on `main`
+
+The exemption is removed. The per-zone alpha table went with it — it ramped 0.18 to 0.85 so the
+motes were strongest where the water is blackest, which was coherent only while they escaped
+the multiply. Applied to an albedo GI is about to scale toward zero it is backwards, so there
+is one flat `MOTE_ALPHA` and the depth response is the light map's.
+
+Same pinned frame, same seed, same phases, saturation-tested:
+
+```
+                    own surface     on main
+mote pixels               47811         710      (-99%)
+pearl pixels              20296       21785
+brightest mote            181.3       181.3      (now below the pearls' 194.2)
+mean luminance             3.86        3.46
+pixels below 2/255        95.2%       96.1%
+```
+
+The starfield is gone and the pearls are unambiguously the dominant objects again. The
+brightest mote is unchanged because the ones that remain are the glowing quarter, which light
+their own bodies through GI — which is the intended behaviour, not a leftover.
+
+**And it did nothing for the darkness, which was expected and is worth stating plainly:** the
+frame went from 95.2% to 96.1% below 2/255. Removing something that was too bright cannot make
+a black frame legible. B1 is next and is now unambiguously the main event.
 
 ---
 
