@@ -530,8 +530,8 @@ object DiveRenderer
                     surface.fillRect(RockFace.CREST_OUTER_HALF_WIDTH, topOfHeadland, rightHeadland, headlandHeight)
 
                 surface.setDrawColor(1f, 1f, 1f, 1f)
-                if (leftSlab > 0f) drawCliffTop(surface, normalMaps, leftSlab, topOfHeadland, LEFT_SIDE)
-                if (rightSlab > 0f) drawCliffTop(surface, normalMaps, rightSlab, topOfHeadland, RIGHT_SIDE)
+                if (leftHeadland > 0f) drawCliffTop(surface, normalMaps, leftHeadland, topOfHeadland, LEFT_SIDE)
+                if (rightHeadland > 0f) drawCliffTop(surface, normalMaps, rightHeadland, topOfHeadland, RIGHT_SIDE)
             }
         }
 
@@ -740,12 +740,27 @@ object DiveRenderer
         side: Float
     )
     {
-        val columns = RockFace.tileColumns(wallWidth + RockFace.EDGE_INSET_METRES)
+        val columns = RockFace.tileColumns(wallWidth)
         val width = columns * RockFace.TILE_WIDTH_METRES
         val height = RockFace.WALL_TOP_DEPTH - topOfHeadland
         if (height <= 0f) return
 
-        val centreX = side * (RockFace.QUAD_INNER_HALF_WIDTH + width * 0.5f)
+        // ANCHORED OUTWARD OF THE CREST, NOT ON THE COLUMN BOUNDARY, AND THAT IS THE WHOLE POINT.
+        //
+        // It used to start at [RockFace.QUAD_INNER_HALF_WIDTH] like the wall, which put opaque
+        // rock BEHIND the crest sprite — and the crest is mostly alpha on its inward side, so what
+        // showed through the summit's notches was this band's straight top edge instead of the
+        // sky. The owner, arrows on a capture of both top corners: "why is this fill needed?" It
+        // was not: it was filling in the silhouette the crest exists to cut.
+        //
+        // The lattice still matches the wall's, for free: [RockFace.CREST_OUTER_HALF_WIDTH] is
+        // exactly [RockFace.CREST_WIDTH_METRES] — one whole tile — outward of the wall's own
+        // anchor, so every vertical tile join still lines up with the wall's below.
+        //
+        // And where the frame ends before the crest does, [wallWidth] is negative, this is never
+        // called, and the summit is simply seen against the sky. That is the common case on a
+        // display narrower than about 1.75:1.
+        val centreX = side * (RockFace.CREST_OUTER_HALF_WIDTH + width * 0.5f)
         val centreY = RockFace.WALL_TOP_DEPTH - height * 0.5f
         val rows = cliffTopVerticalTiles(height)
 

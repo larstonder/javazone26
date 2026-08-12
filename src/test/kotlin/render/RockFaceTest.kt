@@ -639,9 +639,15 @@ class RockFaceTest
     {
         val code = File("src/main/kotlin/render/DiveRenderer.kt").readText()
 
-        // BOTH sides. Dropping one leaves the other, and a whole-file `contains` would not notice
-        // — which it did not, the first time this was written.
-        listOf("leftSlab, topOfHeadland, LEFT_SIDE", "rightSlab, topOfHeadland, RIGHT_SIDE").forEach {
+        // BOTH sides, and each named with the width it is passed. The band spans the frame OUTWARD
+        // OF THE CREST (leftHeadland/rightHeadland), not the whole wall slab: passing the slab put
+        // an opaque rectangle behind the crest sprite, whose inward side is mostly alpha, so the
+        // summit's notches showed this band's straight top edge instead of the sky. The owner put
+        // arrows on both top corners and asked why the fill was needed. It was not.
+        //
+        // Dropping one side leaves the other, and a whole-file `contains` would not notice — which
+        // it did not, the first time this was written.
+        listOf("leftHeadland, topOfHeadland, LEFT_SIDE", "rightHeadland, topOfHeadland, RIGHT_SIDE").forEach {
             assertTrue(
                 code.contains("drawCliffTop(surface, normalMaps, $it)"),
                 "drawCliffTop is not called with ($it), so that side's cliff top above the " +
