@@ -86,16 +86,19 @@ object CameraRig
      * size that means the same thing on every panel, so exactly 60 m of water was visible
      * vertically everywhere and a wider display simply revealed more water sideways. That second
      * half is what broke. Outside `Tuning.COLUMN_HALF_WIDTH` the extra water is ROCK, and the
-     * cliff art is one 13.5 m tile, so a wide panel showed it repeated -- four reflections a side
+     * cliff art is one 11.99 m tile, so a wide panel showed it repeated -- four reflections a side
      * at the owner's 2.389. See [Framing.VISIBLE_WIDTH_METRES].
      *
      * So the width now has a fit of its own and the LARGER wins, which caps how much world is on
      * screen horizontally:
      *
-     *  - at or below the design aspect of 1.783 the height fit is larger, nothing changes at all,
-     *    and 60 m of depth is still visible. **16:9 is 1.778, so the commonest panel is a no-op.**
+     *  - at or below the design aspect of 1.6419 the height fit is larger, nothing changes at all,
+     *    and 60 m of depth is still visible.
      *  - above it the width fit takes over: exactly the column plus one cliff a side is visible,
-     *    and the visible DEPTH shrinks (45.9 m at 21:9, 30.1 m at 32:9).
+     *    and the visible DEPTH shrinks (55.4 m at 16:9, 42.2 m at 21:9, 27.7 m at 32:9).
+     *    **16:9 is 1.778, so the commonest panel is in this second regime** — it was a no-op
+     *    against the art the cap was first built on, and the 2026-08-12 re-bake narrowed the
+     *    cliff, which narrowed the cap along with it.
      *
      * `max`, not `min`. `min` is the engine `Camera` entity's contain fit, which this file exists
      * to avoid: it would show LESS than 60 m of depth on a panel NARROWER than the design aspect,

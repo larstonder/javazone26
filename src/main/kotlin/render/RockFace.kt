@@ -14,8 +14,8 @@ import kotlin.math.ceil
  * The rock that bounds the play column: one vertically tiling cliff face, and the arithmetic
  * that decides how many copies of it go where.
  *
- * The art is a LEFT-hand cliff — solid stone down the first 396 of its 691 baked columns, then a
- * ragged alpha edge running out to column 624. That edge is the whole point: it is the
+ * The art is a LEFT-hand cliff — solid stone down the first 264 of its 614 baked columns, then a
+ * ragged alpha edge running out to column 475. That edge is the whole point: it is the
  * silhouette the water is seen against, so it must land on the column boundary and the solid
  * body must run outward from there, off the side of the frame. See [DiveRenderer.drawColumnWalls]
  * for how the right-hand wall gets the same edge.
@@ -25,13 +25,18 @@ import kotlin.math.ceil
  * The owner: *"The rocks should ALWAYS be exactly starting at the edge of the screen. ALWAYS."*
  *
  * The art above is not uniform across a tile, so it cannot be the thing that reaches the edge.
- * Going outward from a tile's inner end it is EMPTY for [EDGE_INSET_METRES] (1.31 m), RAGGED to
- * [BACKING_HALF_WIDTH] (5.76 m), and only then solid for the remaining 7.73 m. Tile it outward
- * from a fixed anchor and what lands at the frame edge is decided by
- * `(visibleHalfWidth − anchor) mod` [TILE_WIDTH_METRES] — and 43% of that period is not solid.
- * Measured on the code this replaced, at the extreme frame-edge column:
+ * Going outward from a tile's inner end it is EMPTY for [EDGE_INSET_METRES] (2.715 m, 139 texel
+ * columns), RAGGED for a further 4.121 m (211 columns) out to [BACKING_HALF_WIDTH], and only then
+ * solid for the remaining 5.156 m (264 columns). Tile it outward from a fixed anchor and what
+ * lands at the frame edge is decided by `(visibleHalfWidth − anchor) mod` [TILE_WIDTH_METRES] —
+ * and 6.836 of those 11.992 m, 57% of the period, is not solid. Measured on the code this
+ * replaced, at the extreme frame-edge column:
  *
  *     4:3  no rock at all | 16:10 solid | 16:9 EMPTY | 21:9 RAGGED | 32:9 EMPTY
+ *
+ * (Measured on the art as it stood then — a 13.496 m tile with a 1.31 m empty margin, so 43% of
+ * the period was not solid. The 2026-08-12 re-bake moved every one of those numbers and would
+ * move which five samples that row reports; it cannot move the mechanism, which is the modulus.)
  *
  * 16:9 is the likeliest booth panel. FIVE commits in a row moved the anchor or swapped the
  * mirror; each of them relocated the hole, because a modulus cannot be closed by choosing a
@@ -40,7 +45,7 @@ import kotlin.math.ceil
  *  - **EDGE** — this art, [TILE_WIDTH_METRES] wide, drawn exactly ONCE per side and never tiled
  *    horizontally. Its ragged silhouette lands on ±[Tuning.COLUMN_HALF_WIDTH], where the
  *    simulation stops the diver. Its non-solid region is then ONE fixed world interval,
- *    `[38.691, 44.453]`, at every aspect ratio there is.
+ *    `[37.285, 44.121]`, at every aspect ratio there is.
  *  - **BODY** — [bodyDiffuse], opaque at EVERY texel, tiled outward from [BODY_INNER_HALF_WIDTH]
  *    with a whole-tile count rounded UP ([bodyColumns]). [coverageOuterHalfWidth] therefore
  *    reaches at least the visible half-width by construction of `ceil`, with no modulus left
@@ -66,8 +71,9 @@ import kotlin.math.ceil
  * `vMax = height / textureSize`; a LINEAR tap just inside `vMax` reaches half a texel past it,
  * into the part of the layer nothing ever writes. On a vertically tiled quad `v -> vMax` is
  * exactly the tile seam, so a shorter texture puts a hairline across the wall every tile. At
- * `height == textureSize` the tap clamps onto the tile's own last row instead, and the tile is
- * wrap-blended so that row is the first row's neighbour anyway.
+ * `height == textureSize` the tap clamps onto the tile's own last row instead, and the art wraps
+ * at its full 1000 source rows — no crop and no blended overlap since the 2026-08-12 re-bake — so
+ * that row is the first row's neighbour anyway.
  *
  * **The filter, wrapping, format-family and mip count must stay identical to [DiverSprite]'s.**
  * `TextureBank.getOrCreateTextureArrayFor` reuses an array only when format, filter, wrapping AND
@@ -84,16 +90,16 @@ import kotlin.math.ceil
  *  - **There is no minification to absorb.** The game is orthographic and [CameraRig]'s scale is
  *    a fixed `framebufferHeight / VISIBLE_DEPTH_METRES`, so the rock is drawn at a constant
  *    texel-to-pixel ratio on a given display — there is no depth or distance falloff anywhere in
- *    the projection. The texture's real content is band-limited to the 889 source rows it was
- *    baked from, over [TILE_HEIGHT_METRES] of world: 22.2 rows per metre, against 18 px/m on a
+ *    the projection. The texture's real content is band-limited to the 1000 source rows it was
+ *    baked from, over [TILE_HEIGHT_METRES] of world: 25.0 rows per metre, against 18 px/m on a
  *    1080p panel and 30 px/m at 1800p. Mip level 0 is what a mipped sampler would pick across
  *    that whole range, and below it trilinear would only blur.
  *  - **Mips would create the seam this file exists to avoid.** `TextureArray.upload` calls
- *    `glGenerateMipmap` on the whole square layer, of which this texture is a 691-wide corner.
+ *    `glGenerateMipmap` on the whole square layer, of which this texture is a 614-wide corner.
  *    Every level past 0 averages the content with the never-written remainder, and the
  *    contaminated texels sit at `u = uMax` and `v = vMax` — the ragged inner edge, and the tile
  *    join. Buying clean mips would mean filling the layer, i.e. baking a 2048x2048 square from
- *    300x889 art.
+ *    300x1000 art.
  *  - `maxMipLevels` must be **1** and never **0**. `TextureArray` computes
  *    `min(maxMipLevels, floor(log2(size)) + 1)` with no `coerceAtLeast(1)` and hands it to
  *    `glTexStorage3D` as `levels`; `levels = 0` is `GL_INVALID_VALUE`, so no storage is allocated
@@ -108,7 +114,7 @@ object RockFace
      * here may become a resolution. `RockFaceTest` re-derives both from the committed PNG's IHDR
      * so a re-bake at a different `--rock-height` cannot leave them stale.
      */
-    const val TEXELS_WIDE = 691
+    const val TEXELS_WIDE = 614
     const val TEXELS_TALL = 2048
 
     /**
@@ -118,7 +124,7 @@ object RockFace
      * often enough to have to be seamless and rare enough not to read as wallpaper.
      *
      * It also sets the sampling density, which is the reason not to make it much larger: the
-     * texture's real content is its 889 source rows, so 40 m gives 22.2 rows per metre against
+     * texture's real content is its 1000 source rows, so 40 m gives 25.0 rows per metre against
      * 18-36 screen px/m on the panels this could ship on. See the class doc's mip argument.
      */
     const val TILE_HEIGHT_METRES = 40f
@@ -129,9 +135,10 @@ object RockFace
      * arrangement as [DiverSprite.widthForHeight], and for the same reason: two numbers that must
      * agree are one number too many.
      *
-     * 13.49 m at the shipped 691x2048. That is just wider than the 13.33 m of rock a 16:9 display
-     * shows outside the column, so the commonest aspect ratio needs exactly one tile across and
-     * has no vertical join on screen at all.
+     * 11.99 m at the shipped 614x2048. That is wider than the 9.26 m of rock a 16:9 display shows
+     * outside the column once [Framing.VISIBLE_WIDTH_METRES] has capped the frame — and the cap
+     * binds at every aspect ratio wider than that, so the commonest booth panel, and every panel
+     * wider than it, needs exactly one tile across and has no vertical join on screen at all.
      */
     const val TILE_WIDTH_METRES = TILE_HEIGHT_METRES * TEXELS_WIDE.toFloat() / TEXELS_TALL.toFloat()
 
@@ -154,7 +161,7 @@ object RockFace
     // committed PNG, so a re-bake cannot leave them stale.
 
     /**
-     * The first texel column that is NOT opaque in every single row: 396 of 691, u = 0.573.
+     * The first texel column that is NOT opaque in every single row: 264 of 614, u = 0.430.
      *
      * Everything to the left of it is solid stone at every depth of the tile, so a flat backing
      * drawn under it can never be seen. Everything to the right is the ragged edge, where the
@@ -164,7 +171,7 @@ object RockFace
      * Counted from [BORDER_TEXEL_COLUMNS], not from column 0: the bake forces that first column
      * fully transparent, so "solid at every row" begins one texel in.
      */
-    const val OPAQUE_TEXEL_COLUMNS = 396
+    const val OPAQUE_TEXEL_COLUMNS = 264
 
     /**
      * How many texel columns at `u = 0` the bake forces fully transparent — 1.
@@ -177,7 +184,8 @@ object RockFace
      * samples the `u = 0` column. On this art that column was solid stone, so every quad edge drew
      * one partially-covered pixel of opaque rock where the art is fully transparent.
      *
-     * Measured on the world surface at 3200x1800, in the sky above the waterline:
+     * Measured on the world surface at 3200x1800, in the sky above the waterline (on the art as it
+     * was then, a 691-texel tile — the mechanism is the quad's edge, not the art's width):
      * `RGBA(0, 0, 0, 64)` at the left crest's inner edge, `(0, 0, 0, 53)` at the right's,
      * `(0, 0, 0, 167)` at the cliff-top band's. Against the sunset that is a visible hairline down
      * each cliff — which is what the owner had been pointing at across several rounds.
@@ -197,10 +205,10 @@ object RockFace
      * the only metre-to-pixel conversion, and the booth's resolution is unknown. Making the
      * wrapped-to column transparent fixes it at every resolution at once.
      *
-     * ONLY THE BASE TEXTURES CARRY IT. Each mirror's `u = 0` is the base's `u = 690`, already
-     * inside the transparent margin — the wall's last 67 columns and the crest's last 177 hold no
-     * alpha at all — and the mirrors are derived from these outputs, so they inherit the border at
-     * `u = 690`, where it costs nothing.
+     * ONLY THE BASE TEXTURES CARRY IT. Each mirror's `u = 0` is the base's `u = 613`, already
+     * inside the transparent margin — the wall's last 139 columns hold no alpha at all, and so do
+     * the crest's, whose art ends at the same column 475 — and the mirrors are derived from these
+     * outputs, so they inherit the border at `u = 613`, where it costs nothing.
      *
      * It costs one texel column, 0.0195 m of world at [TILE_WIDTH_METRES], about 0.6 px at 1080p.
      * On the wall that lands on every horizontal tile join, where the flat backing sits behind it
@@ -210,21 +218,21 @@ object RockFace
     const val BORDER_TEXEL_COLUMNS = 1
 
     /**
-     * One past the last texel column holding any alpha at all: 624 of 691, u = 0.903.
+     * One past the last texel column holding any alpha at all: 475 of 614, u = 0.774.
      *
-     * The remaining 67 columns of the tile are completely empty. Anchoring the quad's inner edge
-     * on the column boundary — which is what the wall did until now — therefore left a 1.31 m
+     * The remaining 139 columns of the tile are completely empty. Anchoring the quad's inner edge
+     * on the column boundary — which is what the wall did until now — therefore left a 2.715 m
      * strip of nothing between the furthest reach of the rock and the place the simulation stops
      * the diver. That strip was invisible only because the opaque backing filled it in; take the
      * backing away and it becomes a uniform channel of water the diver cannot enter, which is
      * precisely the "stops dead in open water with no visual reason" failure the wall exists to
      * prevent. [QUAD_INNER_HALF_WIDTH] removes it.
      */
-    const val ALPHA_TEXEL_COLUMNS = 624
+    const val ALPHA_TEXEL_COLUMNS = 475
 
     /**
      * How far the quad's inner edge sits INSIDE [Tuning.COLUMN_HALF_WIDTH], so that the cliff's
-     * furthest-reaching texel lands exactly on the boundary the diver is stopped at. 1.31 m.
+     * furthest-reaching texel lands exactly on the boundary the diver is stopped at. 2.715 m.
      *
      * No rock is ever drawn inside the column: [ALPHA_TEXEL_COLUMNS] is one past the last texel
      * with any alpha, so the whole of the shifted overlap is empty. What moves is only the
@@ -237,7 +245,7 @@ object RockFace
     const val QUAD_INNER_HALF_WIDTH = Tuning.COLUMN_HALF_WIDTH - EDGE_INSET_METRES
 
     /**
-     * How much of the innermost tile is not solid at every depth: 5.76 m, the ragged edge plus the
+     * How much of the innermost tile is not solid at every depth: 6.836 m, the ragged edge plus the
      * empty margin behind it.
      */
     const val RAGGED_METRES = TILE_WIDTH_METRES * (TEXELS_WIDE - OPAQUE_TEXEL_COLUMNS) / TEXELS_WIDE
@@ -308,8 +316,8 @@ object RockFace
      * `maxMipLevels` as everything else here (see the class doc: differ in any one of them and
      * this allocates a second 251.7 MB array).
      *
-     * A horizontal mirror moves whole rows, so the vertical wrap-blend the bake solves for is
-     * preserved exactly — `RockFaceTest` asserts both that and the texel-exact mirror.
+     * A horizontal mirror moves whole rows, so the vertical wrap the bake checks for is preserved
+     * exactly — `RockFaceTest` asserts both that and the texel-exact mirror.
      */
     val mirrorDiffuse = rockTexture("rock-mirror-diffuse.png", "rock_mirror_diffuse", TextureFormat.SRGBA8)
     val mirrorNormal = rockTexture("rock-mirror-normal.png", "rock_mirror_normal", TextureFormat.RGBA8)
@@ -321,20 +329,34 @@ object RockFace
     // said so: *"we still don't use the top rock to stop the rock faces at the top"*. The crest
     // sprite is what gives the column an end, and it is the silhouette the sky sits behind.
     //
-    // Baked to the SAME WIDTH as the wall (both 691 texels, both drawn [TILE_WIDTH_METRES]
-    // across), so the two have identical texel sizes and the join carries no scale change. Its
-    // HEIGHT is not chosen — it falls out of the art's 300x500 proportions, and it is therefore
-    // how tall the cliff turns out to be. See `tools/build_backdrop.py`'s `bake_rock_top`, which
-    // also explains why it shares the wall's gain rather than solving for its own mean.
+    // Baked to the SAME WIDTH as the wall (both 614 texels, both drawn [TILE_WIDTH_METRES]
+    // across), so the two have identical texel sizes and the join carries no scale change. See
+    // `tools/build_backdrop.py`'s `bake_rock_top`, which also explains why it shares the wall's
+    // gain rather than solving for its own mean.
+    //
+    // ITS HEIGHT IS THE WALL'S 2048, AND MOST OF THAT IS TRANSPARENT PADDING. The art's own
+    // 300x500 proportions put it at 614x1023, which misses the 2048 texture arrays the diver's
+    // sheets already allocate BY TWO TEXELS: `TextureBank.getOrCreateTextureArrayFor` reuses an
+    // array only when `max(w, h) > arraySize / 2`, and 1023 is not > 1024. That would have opened
+    // a 1024x1024x4x50 array PER FORMAT — 419.4 MB — for a texture whose art is unchanged. So
+    // `pad_top_to_height` adds transparent rows at the TOP until the crest is as tall as the wall.
+    //
+    // The consequence is the one thing to remember here: the quad's top edge is no longer the
+    // summit. [CREST_TOP_DEPTH] is where the empty padding starts, 20 m of sky above the rock, and
+    // [CREST_SUMMIT_DEPTH] is where the cliff actually peaks. Anything that means "the top of the
+    // cliff" must read the latter.
 
     /** The crest, in TEXELS. `RockFaceTest` re-derives both from the committed PNG's IHDR. */
-    const val TOP_TEXELS_WIDE = 691
-    const val TOP_TEXELS_TALL = 1152
+    const val TOP_TEXELS_WIDE = 614
+    const val TOP_TEXELS_TALL = 2048
 
     /**
-     * How tall the crest is in metres: whatever keeps its texels square against the wall's.
-     * 22.49 m at the shipped 691x1152 — which, against the 24 m of sky the camera can show when
-     * the diver is at the surface, puts the summit just inside the top of the frame.
+     * How tall the crest QUAD is in metres: whatever keeps its texels square against the wall's.
+     * 40.0 m exactly at the shipped 614x2048, because the crest is now padded to the wall's own
+     * size — so this is the padded CANVAS and not the art. The rock inside it starts at
+     * [CREST_SUMMIT_DEPTH], -18.13 m, which against the 24 m of sky the camera can show when the
+     * diver is at the surface puts the summit just inside the top of the frame; everything above
+     * that is transparent.
      *
      * DERIVED, not declared, for the reason [TILE_WIDTH_METRES] is: two numbers that must agree
      * are one number too many, and a re-bake at a different size would otherwise stretch the crest.
@@ -361,7 +383,11 @@ object RockFace
     /** The depth the crest's bottom edge and the wall's top edge both sit at. */
     const val WALL_TOP_DEPTH = Tuning.SURFACE_DEPTH + CREST_SUBMERGENCE_METRES
 
-    /** The depth of the crest's top edge — the summit. */
+    /**
+     * The depth of the crest QUAD's top edge, -38.5 m — which is NOT the summit any more. The
+     * top 20 m of the quad are the transparent padding described above; [CREST_SUMMIT_DEPTH] is
+     * where the rock begins.
+     */
     const val CREST_TOP_DEPTH = WALL_TOP_DEPTH - TOP_HEIGHT_METRES
 
     /**
@@ -370,13 +396,17 @@ object RockFace
      * `98bbcb0` drew it with the wall's own argument list, `tileColumns(wallWidth)` copies across.
      * That is right for the wall, whose art is a repeating tile, and wrong for this, whose art is
      * a HEADLAND'S END: solid rock at its outward edge, falling away to a ragged inner edge and
-     * then to nothing by texel column 513 of 691. Repeating it produces one identical spire per
-     * [TILE_WIDTH_METRES] with open sky between them — a picket fence, not a cliff.
+     * then to nothing by texel column 475 of 614 — the same column the wall's art ends at.
+     * Repeating it produces one identical spire per [TILE_WIDTH_METRES] with open sky between them
+     * — a picket fence, not a cliff.
      *
      * MEASURED on a 3456x1218 capture at 0 m, which shows four copies per side. The rock/sky
      * transitions down the left wall land at world x = -79.2, -65.7 and -52.2 m: a pitch of
-     * exactly 13.50 m, against [TILE_WIDTH_METRES] = 13.496. Nothing else in the frame has that
-     * period. It is worse the wider the display, and the 4:3 dev window hid it almost entirely
+     * exactly 13.50 m, against the [TILE_WIDTH_METRES] of the art at the time, 13.496. (The
+     * 2026-08-12 re-bake took the tile to 11.992 m, so a repeat today would have that pitch
+     * instead; the capture is left as it was taken rather than rescaled.) Nothing else in the
+     * frame has that period. It is worse the wider the display, and the 4:3 dev window hid it
+     * almost entirely
      * (the whole wall is off-frame there), which is how it shipped.
      *
      * So the crest is drawn ONCE, [CREST_WIDTH_METRES] across, anchored on the same inner edge the
@@ -393,7 +423,7 @@ object RockFace
 
     /**
      * The first texel row of the crest that is opaque at its outward-most column that still
-     * carries art — 121 of 1152.
+     * carries art — 1050 of 2048.
      *
      * Column [BORDER_TEXEL_COLUMNS] of `rock-top-diffuse.png`, and the matching column in from the
      * far side of the mirrored copy; `RockFaceTest` re-derives both from the committed PNGs, and
@@ -401,10 +431,11 @@ object RockFace
      * stands at where it leaves the sprite, so it is what [CREST_SHOULDER_DEPTH] has to be for the
      * cliff-top band to meet the art without a step.
      *
-     * It was 120 — column 0 — until the bake started clearing that column to kill the quad-edge
-     * hairline. One row of 1152 is 0.02 m of world, so the band moved by less than a pixel.
+     * On the art this replaced it was 121, and reading column 0 instead of column
+     * [BORDER_TEXEL_COLUMNS] gave 120 — the bake had started clearing that column to kill the
+     * quad-edge hairline. One row is 0.0195 m of world, so the band moved by less than a pixel.
      */
-    const val TOP_SHOULDER_TEXEL_ROW = 121
+    const val TOP_SHOULDER_TEXEL_ROW = 1050
 
     /**
      * The depth of the cliff top OUTWARD of the crest sprite: the summit's shoulder, continued off
@@ -412,11 +443,41 @@ object RockFace
      *
      * Derived from [TOP_SHOULDER_TEXEL_ROW] rather than authored, so that a re-bake at a different
      * size or a redrawn summit moves the flat top with the art instead of leaving a step at the
-     * join. -18.66 m at the shipped crop, i.e. the headland stands about two diver-heights out of
-     * the water where it runs off frame, against the summit's 21 m.
+     * join. -17.99 m at the shipped crop, i.e. the headland stands about two diver-heights out of
+     * the water where it runs off frame, against the summit's 18.1 m.
      */
     const val CREST_SHOULDER_DEPTH =
         CREST_TOP_DEPTH + TOP_HEIGHT_METRES * TOP_SHOULDER_TEXEL_ROW / TOP_TEXELS_TALL
+
+    /**
+     * The first texel row of the crest carrying ANY alpha — 1043 of 2048 — i.e. where the summit
+     * actually is.
+     *
+     * ## THIS IS NOT [CREST_TOP_DEPTH], AND IT USED TO BE
+     *
+     * The crest's texture is now PADDED at the top with transparent rows, so that its largest side
+     * clears the engine's strict `max_dim > arraySize / 2` array-reuse test — see
+     * `pad_top_to_height` in `tools/build_backdrop.py` for the 419.4 MB of VRAM that buys. The quad
+     * therefore starts 20 m of empty sky above the rock, and [CREST_TOP_DEPTH] — which is the
+     * QUAD's top edge — stopped being the summit's depth the moment that padding was introduced.
+     *
+     * Two assertions in `RockFaceTest` were reading [CREST_TOP_DEPTH] as "the summit": that the
+     * cliff breaks the surface, and that it is not so high the frame can never show it whole. Both
+     * are still exactly the right questions; both were being asked of the wrong number, and the
+     * second failed loudly (the padded quad top is -38.5 m, above anything the camera reaches)
+     * rather than passing on a coincidence. They now read this.
+     *
+     * Re-derived from the committed PNG by `RockFaceTest`, on BOTH the base and the mirror, so
+     * padding that changed without this constant following it cannot go unnoticed.
+     */
+    const val TOP_SUMMIT_TEXEL_ROW = 1043
+
+    /**
+     * The depth of the summit itself — the highest point of the cliff that is actually drawn.
+     * -18.13 m, against the quad's own top edge at [CREST_TOP_DEPTH] = -38.5 m.
+     */
+    const val CREST_SUMMIT_DEPTH =
+        CREST_TOP_DEPTH + TOP_HEIGHT_METRES * TOP_SUMMIT_TEXEL_ROW / TOP_TEXELS_TALL
 
     // --- THE BODY: the rock that actually reaches the frame edge -------------------------------
     //
@@ -424,9 +485,9 @@ object RockFace
     // art could close it. Everything here is derived; nothing is typed.
 
     /**
-     * The body texture's width in TEXELS — 790, and DERIVED rather than declared.
+     * The body texture's width in TEXELS — 526, and DERIVED rather than declared.
      *
-     * `crop_body` takes the wall's columns `[BORDER_TEXEL_COLUMNS, OPAQUE_TEXEL_COLUMNS)` — 395 of
+     * `crop_body` takes the wall's columns `[BORDER_TEXEL_COLUMNS, OPAQUE_TEXEL_COLUMNS)` — 263 of
      * them, the run that is opaque in every single row — and concatenates that crop with its own
      * horizontal mirror. So the width is twice the crop, and if a re-bake moves either column
      * count this moves with it. `RockFaceTest` re-derives it from the committed PNG's IHDR as
@@ -435,7 +496,7 @@ object RockFace
     const val BODY_TEXELS_WIDE = 2 * (OPAQUE_TEXEL_COLUMNS - BORDER_TEXEL_COLUMNS)
 
     /**
-     * How wide one body tile is in metres — 15.43 m at the shipped 790 texels.
+     * How wide one body tile is in metres — 10.27 m at the shipped 526 texels.
      *
      * Expressed in [TEXEL_WIDTH_METRES] rather than as its own aspect ratio, because the body is
      * a CROP of the wall and must keep the wall's texel size exactly: the two are drawn edge to
@@ -459,8 +520,8 @@ object RockFace
      * same column, mirrored. A reflection, texel for texel.
      *
      * [BACKING_HALF_WIDTH] — the obvious alternative, "start where the edge art is provably solid"
-     * — does not do this: it lands on the boundary between the wall's columns 395 and 396, so the
-     * body's column 395 would butt against the wall's, and the art has no horizontal wrap period
+     * — does not do this: it lands on the boundary between the wall's columns 263 and 264, so the
+     * body's column 263 would butt against the wall's, and the art has no horizontal wrap period
      * to make that continuous (the bake measures the best candidate at 17.5x the interior
      * adjacency).
      *
@@ -484,7 +545,7 @@ object RockFace
      *
      * Same filter, wrapping and `maxMipLevels` as everything else in this file, for the reason the
      * class doc gives: differ in any one of them and this allocates a 251.7 MB texture array of
-     * its own instead of taking a free layer in the diver's. `max(790, 2048)` is 2048, so it lands
+     * its own instead of taking a free layer in the diver's. `max(526, 2048)` is 2048, so it lands
      * in the same bucket.
      */
     val bodyDiffuse = rockTexture("rock-body-diffuse.png", "rock_body_diffuse", TextureFormat.SRGBA8)

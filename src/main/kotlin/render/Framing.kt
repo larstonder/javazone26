@@ -36,13 +36,13 @@ object Framing
 
     /**
      * The MOST water that may be visible horizontally: the play column plus exactly one cliff at
-     * each side, 106.99 m.
+     * each side, 98.516 m.
      *
      * ## WHY THERE IS A CAP AT ALL
      *
      * [CameraRig] used to scale on HEIGHT alone, so a wider display simply revealed more water
      * sideways. Outside `Tuning.COLUMN_HALF_WIDTH` that water is rock, and the cliff art is one
-     * 13.5 m tile — so a wide panel showed the tile repeated. `RockFace.bodyDiffuse` is a
+     * 11.99 m tile — so a wide panel showed the tile repeated. `RockFace.bodyDiffuse` is a
      * mirror-doubled crop, which makes the repeat seamless but does not make it invisible: at the
      * owner's 2.389 the body needs two tiles a side, i.e. FOUR reflections of the same crop on
      * screen, and it reads as wallpaper. His words: *"for each aspect ratio we should only ever
@@ -50,7 +50,7 @@ object Framing
      *
      * ## WHY THIS NUMBER — IT IS THE EDGE ART'S OUTWARD END, NOT ITS QUAD'S
      *
-     * `2 * RockFace.BODY_INNER_HALF_WIDTH` = 104.336 m — the outward end of the edge art's OPAQUE
+     * `2 * RockFace.BODY_INNER_HALF_WIDTH` = 98.516 m — the outward end of the edge art's OPAQUE
      * region, which is one [RockFace.BORDER_TEXEL_COLUMNS] inside its outward end.
      *
      * That last texel matters. It is the transparent wrap border the bake writes to stop
@@ -61,24 +61,25 @@ object Framing
      * the last opaque column of the art, and the body's span is exactly zero so no body quad is
      * submitted at all.
      *
-     * The first version of this cap was `2 * (COLUMN_HALF_WIDTH + TILE_WIDTH_METRES)` = 106.99 m,
-     * reasoning that one cliff is one tile wide. That is true of the QUAD and false of the ART: a
-     * wall tile's last `RockFace.EDGE_INSET_METRES` (1.31 m, 67 texels) hold no alpha at all —
-     * that margin is exactly what lets the ragged silhouette land on `Tuning.COLUMN_HALF_WIDTH`.
-     * So the sprite's visible rock ends at [RockFace.CREST_OUTER_HALF_WIDTH] = 52.19 m, and a cap
-     * of 53.50 m left a 1.31 m strip — about a tenth of each cliff — that only the BODY could
-     * fill. The owner, on a capture of the capped build: *"still seems like we use at least two
-     * sprites for width at each side, can't we use only one?"*
+     * The first version of this cap was `2 * (COLUMN_HALF_WIDTH + TILE_WIDTH_METRES)` — 103.98 m
+     * on today's art, 106.99 m on the art it was written against — reasoning that one cliff is one
+     * tile wide. That is true of the QUAD and false of the ART: a wall tile's last
+     * `RockFace.EDGE_INSET_METRES` (2.715 m, 139 texels) hold no alpha at all — that margin is
+     * exactly what lets the ragged silhouette land on `Tuning.COLUMN_HALF_WIDTH`. So the sprite's
+     * visible rock ends at [RockFace.CREST_OUTER_HALF_WIDTH] = 49.28 m, and a cap of 51.99 m
+     * leaves a 2.715 m strip — nearly a quarter of each cliff — that only the BODY could fill. The
+     * owner, on a capture of the capped build: *"still seems like we use at least two sprites for
+     * width at each side, can't we use only one?"*
      *
      * Capping on the art's own outward end means one edge sprite covers each side exactly, and
      * the body is reduced to at most a single texel. `FramingTest` asserts both.
      *
      * ## WHAT IT COSTS, SAID PLAINLY
      *
-     * The design aspect is `104.375 / 60` = **1.7396**, and 16:9 is 1.7778 — so unlike the first
-     * version this one does NOT leave 16:9 alone. A 16:9 panel now shows 58.71 m of water instead
-     * of 60, a 2.2% loss, and every wider aspect loses about a metre too (44.7 m at 21:9, 29.4 m
-     * at 32:9).
+     * The design aspect is `98.516 / 60` = **1.6419**, and 16:9 is 1.7778 — so unlike the first
+     * version this one does NOT leave 16:9 alone. A 16:9 panel now shows 55.42 m of water instead
+     * of 60, a 7.6% loss, and every wider aspect loses more (42.2 m at 21:9, 41.2 m at the owner's
+     * 2.389, 27.7 m at 32:9).
      *
      * That is a gameplay change — how far ahead you can see is how far ahead you can plan — and it
      * was put to the owner as exactly that trade, twice, before it was made. He chose one sprite.

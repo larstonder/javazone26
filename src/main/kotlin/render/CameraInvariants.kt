@@ -126,9 +126,10 @@ object CameraInvariants
         // across, whichever binds. Two regimes, because `CameraRig.pixelsPerMetre` is the LARGER
         // of a height fit and a width fit:
         //
-        //   at or below the design aspect (1.783) the height binds -> exactly 60 m of depth,
+        //   at or below the design aspect (1.6419) the height binds -> exactly 60 m of depth,
         //   which is what this rule checked unconditionally before the cap existed;
-        //   above it the width binds -> exactly 106.99 m across, and the depth falls off.
+        //   above it the width binds -> exactly 98.516 m across, and the depth falls off
+        //   (55.42 m at 16:9, which is therefore in the second regime).
         //
         // Checking the old rule on a wide panel would warn once a second, at the booth, about the
         // cap working correctly. See [Framing.VISIBLE_WIDTH_METRES].

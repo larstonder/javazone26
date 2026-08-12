@@ -318,8 +318,9 @@ object LightShafts
      * in the 1200x900 dev window because [Framing.VISIBLE_DEPTH_METRES] is 60 m, so at 4:3 the
      * visible width is exactly 60 * 4/3 = 80 m = the full column and both edges sit precisely on
      * the screen border. At 16:9 — which is what a booth display almost certainly is — there are
-     * 13 m of water outside the column on each side and the seam is one of the first things the
-     * eye lands on.
+     * 9 m of water outside the column on each side (the frame is capped at
+     * [Framing.VISIBLE_WIDTH_METRES] there) and the seam is one of the first things the eye lands
+     * on.
      *
      * Measured on a 3200x1800 capture at 20 m, scanning for the largest single-pixel step along
      * each row (`wide20-0.png`, mainSurface post-composite):

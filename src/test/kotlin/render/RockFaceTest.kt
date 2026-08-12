@@ -117,7 +117,7 @@ class RockFaceTest
      * `height == textureSize` makes `vMax` exactly 1.0.
      *
      * `textureSize` is the smallest engine bucket that fits `max(w, h)`, so this is the assertion
-     * that the height is a bucket size AND is the larger side. Both halves matter: a 691x1024
+     * that the height is a bucket size AND is the larger side. Both halves matter: a 614x1024
      * bake would satisfy neither (1024 is a bucket, but it also fails the `> arraySize/2` reuse
      * test against the 2048 array and would open a 209.7 MB one of its own).
      */
@@ -243,7 +243,7 @@ class RockFaceTest
      * water the diver can swim through).
      *
      * Both halves are killed by mutation: anchoring the quad on the boundary itself, as the wall
-     * did before the backing was cut back, leaves the reach 1.31 m short.
+     * did before the backing was cut back, leaves the reach 2.715 m short.
      */
     @Test
     fun `the cliff's furthest reach lands exactly where the simulation stops the diver`()
@@ -310,7 +310,7 @@ class RockFaceTest
         }
         val outerEdge = RockFace.QUAD_INNER_HALF_WIDTH + (image.width - firstNotSolid) * perTexel
 
-        // A tenth of a millimetre of slack, because the constant and this line divide by 691 in a
+        // A tenth of a millimetre of slack, because the constant and this line divide by 614 in a
         // different order and may differ in the last bit. Nothing at that scale can be seen.
         assertTrue(
             RockFace.BACKING_HALF_WIDTH >= outerEdge - 1e-4f,
@@ -367,8 +367,9 @@ class RockFaceTest
      * FIVE COMMITS IN A ROW SHIPPED A VERSION THAT PASSED A FIVE-ASPECT-RATIO TEST AND STILL LEFT
      * A HOLE. The reason is that the wall art is not uniform across a tile, so with the old
      * structure what landed at the frame edge was a function of
-     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES` — and 43% of that period is empty or
-     * ragged. Measured on that code, at the extreme frame-edge column:
+     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES` — and 57% of that period is empty or
+     * ragged. Measured on that code, and on the art of the time (a 13.496 m tile, 43% of it not
+     * solid), at the extreme frame-edge column:
      *
      *     4:3  no rock at all | 16:10 solid | 16:9 EMPTY | 21:9 RAGGED | 32:9 EMPTY
      *
@@ -403,7 +404,9 @@ class RockFaceTest
         assertTrue(steps > 15_000, "the sweep only took $steps steps — it is not sweeping anything")
 
         // ...and the same statement at the shapes a panel is actually sold in. VISIBLE_DEPTH_METRES
-        // * aspect / 2 is the visible half-width, because CameraRig scales on HEIGHT.
+        // * aspect / 2 is the half-width the HEIGHT fit alone would show. Above the design aspect
+        // the width cap makes the real half-width smaller than that, so these are a superset of
+        // what any panel actually asks the rock to cover — which is the safe direction here.
         listOf(4f / 3f, 16f / 10f, 1.594f, 1.732f, 16f / 9f, 21f / 9f, 32f / 9f).forEach { aspect ->
             val h = Framing.VISIBLE_DEPTH_METRES * aspect * 0.5f
             val coverage = RockFace.coverageOuterHalfWidth(h)
@@ -664,7 +667,7 @@ class RockFaceTest
      * against that world line is the body's OUTERMOST column — and this asserts that column is a
      * copy of the wall's column [RockFace.BORDER_TEXEL_COLUMNS], which is what sits immediately
      * inward of the same line. A crop that started anywhere else (at column 0, or at
-     * [RockFace.BACKING_HALF_WIDTH]'s column 396) would put unrelated art on the two sides of that
+     * [RockFace.BACKING_HALF_WIDTH]'s column 264) would put unrelated art on the two sides of that
      * line, and the art has no horizontal wrap period to make that continuous.
      *
      * Checked on the base texture, which is the LEFT wall; the right is its baked mirror and the
@@ -713,7 +716,7 @@ class RockFaceTest
 
         // ...and it lands in the 2048 bucket, which is the one the diver's sheets already forced
         // into existence. TextureBank reuses an array only when max(w, h) > arraySize / 2, so a
-        // 790-wide texture is only free because it is 2048 TALL.
+        // 526-wide texture is only free because it is 2048 TALL.
         assertTrue(
             maxOf(RockFace.BODY_TEXELS_WIDE, RockFace.TEXELS_TALL) > 2048 / 2,
             "the body's largest side is ${maxOf(RockFace.BODY_TEXELS_WIDE, RockFace.TEXELS_TALL)}, " +
@@ -832,7 +835,10 @@ class RockFaceTest
     /**
      * THE CREST AND THE WALL MUST HAVE THE SAME TEXEL SIZE, or the join at the waterline carries a
      * scale change. Both are drawn [RockFace.TILE_WIDTH_METRES] across, so equal baked WIDTHS is
-     * the whole of it — and the crest's height then decides how tall the cliff is.
+     * the whole of it — and the crest's height then decides how tall the QUAD is. Not how tall the
+     * cliff is, which it did until the crest was padded at the top with transparent rows to clear
+     * the engine's array-reuse bound: the summit is [RockFace.CREST_SUMMIT_DEPTH] now, and the
+     * height asserted here is the padded canvas.
      */
     @Test
     fun `the crest is baked to the wall's width, and its height is the art's own proportion`()
@@ -861,12 +867,14 @@ class RockFaceTest
      * correct for a repeating wall tile, wrong for a headland's end. It put one identical spire
      * every [RockFace.TILE_WIDTH_METRES] with open sky between them; measured on a 3456x1218
      * capture at 0 m, the rock/sky transitions down the left wall landed at world -79.2, -65.7 and
-     * -52.2 m, a pitch of 13.50 m against the tile's 13.496.
+     * -52.2 m, a pitch of 13.50 m against the tile's 13.496 at the time. (The 2026-08-12 re-bake
+     * took the tile to 11.992 m; the capture is left as it was taken.)
      *
      * Two things have to hold for the fixed version, and neither is visible in one file alone:
      *
-     *  - the crest is drawn at its own art's proportions and is exactly one tile wide, so it
-     *    neither repeats nor stretches as the display gets wider;
+     *  - the crest is drawn at its own texture's proportions — the padded canvas, since the
+     *    re-bake — and is exactly one tile wide, so it neither repeats nor stretches as the
+     *    display gets wider;
      *  - the cliff BODY begins exactly one texel inward of where the sprite's outward edge ends,
      *    at exactly the depth the art is opaque to at that edge. Either being off leaves a step in
      *    the skyline — a notch of sky, or a shelf standing proud of the summit.
@@ -892,7 +900,7 @@ class RockFaceTest
 
         val dir = "src/main/resources/backdrop/"
         // JUST INSIDE THE WRAP BORDER on each side. The bake clears column 0 of the base (and
-        // therefore column 690 of the mirror), so the outward-most column that still carries the
+        // therefore column 613 of the mirror), so the outward-most column that still carries the
         // summit's profile is one texel in. See RockFace.BORDER_TEXEL_COLUMNS.
         val cases = listOf(
             "rock-top-diffuse.png" to RockFace.BORDER_TEXEL_COLUMNS,
@@ -918,12 +926,30 @@ class RockFaceTest
             "the shoulder depth is not derived from the art's own profile"
         )
         assertTrue(
-            RockFace.CREST_SHOULDER_DEPTH > RockFace.CREST_TOP_DEPTH &&
+            RockFace.CREST_SHOULDER_DEPTH > RockFace.CREST_SUMMIT_DEPTH &&
                 RockFace.CREST_SHOULDER_DEPTH < RockFace.WALL_TOP_DEPTH,
             "the cliff top at ${RockFace.CREST_SHOULDER_DEPTH} m is not between the summit " +
-            "(${RockFace.CREST_TOP_DEPTH} m) and the waterline join (${RockFace.WALL_TOP_DEPTH} m), " +
+            "(${RockFace.CREST_SUMMIT_DEPTH} m) and the waterline join (${RockFace.WALL_TOP_DEPTH} m), " +
             "so it either stands above the peak it is meant to continue or is drowned by it"
         )
+
+        // THE SUMMIT'S OWN ROW, re-derived the same way and from both copies. The shoulder above is
+        // the profile at the sprite's outward EDGE; this is the highest point anywhere across it,
+        // which is what decides whether the cliff breaks the surface and whether the frame can show
+        // it whole. They are different rows and only one of them survives a re-bake unchanged.
+        cases.forEach { (name, _) ->
+            val image = ImageIO.read(File(dir + name))
+            val firstDrawnRow = (0 until image.height).firstOrNull { y ->
+                (0 until image.width).any { x -> (image.getRGB(x, y) ushr 24 and 0xFF) > 0 }
+            }
+            assertEquals(
+                RockFace.TOP_SUMMIT_TEXEL_ROW, firstDrawnRow,
+                "$name first carries alpha at row $firstDrawnRow, not " +
+                "${RockFace.TOP_SUMMIT_TEXEL_ROW} — RockFace.CREST_SUMMIT_DEPTH is derived from " +
+                "that row, so the summit's world depth is wrong by " +
+                "${RockFace.TOP_HEIGHT_METRES * ((firstDrawnRow ?: 0) - RockFace.TOP_SUMMIT_TEXEL_ROW) / RockFace.TOP_TEXELS_TALL} m"
+            )
+        }
     }
 
     /**
@@ -1117,7 +1143,7 @@ class RockFaceTest
 
         // uTiling IS THE TILE COUNT, on BOTH maps. Pinning it to 1 leaves the quad the right
         // width — so the frame edge is still covered and the arithmetic sweep still passes — and
-        // stretches one 15.43 m tile across up to 60 m of frame instead. That is invisible to
+        // stretches one 10.27 m tile across up to 60 m of frame instead. That is invisible to
         // every pure test here, which is exactly why it is asserted at the draw site; and it has
         // to be the same on both maps, because drawNormalMap takes no uv arguments at all and a
         // normal map tiled differently from its albedo lights every facet from the wrong place.
@@ -1148,7 +1174,7 @@ class RockFaceTest
      *
      * `drawRockEdge` used to ask for `tileColumns(wallWidth + EDGE_INSET_METRES)` tiles — as many
      * as it took to reach the frame edge. That is what made the frame edge a function of
-     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES`, and 43% of that period is empty or
+     * `(visibleHalfWidth − anchor) mod TILE_WIDTH_METRES`, and 57% of that period is empty or
      * ragged, so at 16:9 the outermost pixel column of the screen had no rock in it at all.
      *
      * Putting a horizontal count back here is the single most likely way for this defect to
@@ -1204,14 +1230,27 @@ class RockFaceTest
             "the join is deeper than the near-surface haze reaches, so nothing is covering it"
         )
         // ...and the summit is above the water, or the cliff does not break the surface at all.
+        //
+        // CREST_SUMMIT_DEPTH, not CREST_TOP_DEPTH. Those were the same number until the crest's
+        // texture gained transparent padding at the top (see RockFace.TOP_SUMMIT_TEXEL_ROW), which
+        // put the quad's top edge 20 m of empty sky above the rock. Asking these two questions of
+        // the quad rather than of the art is how the second one started reporting a summit at
+        // -38.5 m that nothing draws.
         assertTrue(
-            RockFace.CREST_TOP_DEPTH < Tuning.SURFACE_DEPTH - WaterSurface.AMPLITUDE_METRES,
-            "the crest's summit at ${RockFace.CREST_TOP_DEPTH} m never clears the highest wave crest, so the cliff never breaks the surface"
+            RockFace.CREST_SUMMIT_DEPTH < Tuning.SURFACE_DEPTH - WaterSurface.AMPLITUDE_METRES,
+            "the crest's summit at ${RockFace.CREST_SUMMIT_DEPTH} m never clears the highest wave crest, so the cliff never breaks the surface"
         )
         // ...and not so far above it that it can never be seen whole.
         assertTrue(
-            RockFace.CREST_TOP_DEPTH > Framing.targetCameraDepth(Tuning.SURFACE_DEPTH),
-            "the summit at ${RockFace.CREST_TOP_DEPTH} m is above the highest the camera's top edge ever reaches, so the crest is cut off by the frame at every depth"
+            RockFace.CREST_SUMMIT_DEPTH > Framing.targetCameraDepth(Tuning.SURFACE_DEPTH),
+            "the summit at ${RockFace.CREST_SUMMIT_DEPTH} m is above the highest the camera's top edge ever reaches, so the crest is cut off by the frame at every depth"
+        )
+        // The padding is empty sky and must stay that way: if the art ever reached the quad's top
+        // edge, the summit would be cut off there instead of by the frame, and the two constants
+        // above would quietly become the same number again.
+        assertTrue(
+            RockFace.CREST_SUMMIT_DEPTH > RockFace.CREST_TOP_DEPTH,
+            "the crest's art starts at the very top of its quad, so there is no transparent padding left"
         )
     }
 
@@ -1233,7 +1272,7 @@ class RockFaceTest
     {
         // BOTH PAIRS. The crest has been baked mirrored since `98bbcb0`; the WALL joined it when
         // the 180-degree rotation was retired, and the wall is the one with something extra to
-        // lose — it tiles vertically, and its wrap-blend only survives because a horizontal mirror
+        // lose — it tiles vertically, and its vertical wrap only survives because a horizontal mirror
         // permutes each row within itself. That follows from the texel-exact check below rather
         // than needing its own case.
         listOf(
@@ -1260,7 +1299,7 @@ class RockFaceTest
         assertEquals(w to h, mirrorDiffuse.width to mirrorDiffuse.height, "$mirrorAlbedo is a different size from $baseAlbedo")
         assertEquals(w to h, mirrorNormal.width to mirrorNormal.height, "$mirrorNormalName is a different size from $baseNormalName")
 
-        // Sampled on a coprime lattice rather than every texel: 691x1152 is 796 032 texels and
+        // Sampled on a coprime lattice rather than every texel: 614x2048 is 1 257 472 texels and
         // four getRGB calls each is slow enough to notice in a test suite. 7 and 11 share no
         // factor with either dimension, so the walk covers the whole image including both edges.
         for (y in 0 until h step 11)

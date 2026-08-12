@@ -19,23 +19,27 @@ SOURCE ART PROVENANCE
 
 THE FIVE DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
 
-1. THE ROCK IS NOT A 1000-ROW TILE. Its wrap period is 889 and the remaining 111 rows
-   are the overlap to blend with. Butt-joining the file as delivered repeats a hard
-   line every tile. See backdrop/tile.py.
+1. WHETHER THE ROCK IS ALREADY A TILE IS MEASURED, NEVER ASSUMED. The art delivered on
+   2026-08-12 wraps at its full 1000 rows and is used as-is. The art before it did not:
+   its wrap period was 889 and the remaining 111 rows were an overlap to blend with, and
+   butt-joining that file repeated a hard line every tile. `tile.choose_period` tests the
+   full-height seam first and only searches for an overlap period if that fails - the
+   search has no defence against a source that already tiles and returns a degenerate
+   answer for one. See backdrop/tile.py.
 
 2. THE ROCK IS BAKED 2048 ROWS TALL, WHICH IS AN UPSCALE, ON PURPOSE. `vMax` is
    `height / arraySize`, and a LINEAR tap just inside `vMax` reaches half a texel into
    the never-written remainder of the array layer - which for a vertically tiled quad
    is EXACTLY the seam. height == arraySize makes vMax exactly 1.0. See
    backdrop/geometry.py, and note that the upscale costs nothing in VRAM (point 3) and
-   nothing in sharpness: the content stays band-limited to its native 889 rows, so the
+   nothing in sharpness: the content stays band-limited to its native 1000 rows, so the
    result cannot alias worse than the source could.
 
 3. VRAM IS BUCKETED AND SQUARE. Everything here is sized so that `max(w,h)` lands in
    the 2048 bucket, where the diver's two sheets have ALREADY forced a
    2048x2048x4x15 = 251.7 MB SRGBA8 array and an identical RGBA8 one into existence.
    Five more layers of fifteen cost nothing. The alternatives were measured, not
-   guessed: the rock at its native 300x889 falls into the 1024 bucket and allocates two
+   guessed: the rock at its native 300x1000 falls into the 1024 bucket and allocates two
    brand-new 209.7 MB arrays (+419.4 MB) AND keeps the contaminated seam; the
    silhouettes at their source 3000x3000 fall into the 4096 bucket and allocate a
    4096x4096x4x10 = 671.1 MB array for three flat masks.
@@ -210,6 +214,60 @@ def clear_wrap_border(rgba: np.ndarray) -> np.ndarray:
     return out
 
 
+def pad_top_to_height(rgba: np.ndarray, height: int, fill_rgb: tuple) -> np.ndarray:
+    """
+    Grow an RGBA image to `height` rows by prepending fully transparent ones.
+
+    ## WHY THE CREST NEEDS THIS, AND IT IS A VRAM DECISION RATHER THAN A VISUAL ONE
+
+    The crest is sized from its WIDTH, to match the wall's texel size at the join (see
+    `bake_rock_top`), so its height is whatever the art's proportions give - and NOTHING
+    keeps that on the right side of the engine's array-reuse test. `reuses_array` is
+    `arraySize >= max_dim and max_dim > arraySize // 2`, and the second half is STRICT, so
+    a crest whose largest side lands anywhere in 1..1024 is refused the 2048 arrays the
+    diver's sheets have already forced into existence and allocates a 1024x1024x4x50 =
+    209.7 MB array of its own instead - twice, once per format, because the normals are a
+    different format from the albedo.
+
+    That is not hypothetical. The art delivered on 2026-08-12 tiles at its full 1000 rows
+    rather than at 889, which took the wall's baked width from 691 to 614 - and the crest's
+    height with it, from 1152 to 1023. Two texels under the bound, for +419.4 MB, reported
+    by the bake as one word changing from True to False in a line nobody would reread.
+
+    ## WHY PAD RATHER THAN RESIZE
+
+    Scaling the crest up to clear the bound would change its texel size and put a scale
+    step at the join with the wall - the one thing `bake_rock_top`'s first decision exists
+    to prevent. Padding leaves every existing texel exactly where it was.
+
+    The padding goes at the TOP because the crest's quad is anchored by its BOTTOM edge, at
+    `RockFace.WALL_TOP_DEPTH`. `TOP_HEIGHT_METRES` grows with the padding and
+    `CREST_TOP_DEPTH` moves up by exactly the same amount, so every texel of actual art
+    keeps the world position it had; what grows is empty sky above the summit.
+    `CREST_SHOULDER_DEPTH` is derived from a texel ROW, which the padding shifts by the
+    same count, so it too is unmoved. `RockFaceTest` re-derives all of it from the
+    committed PNG.
+
+    Padding downward would instead push the summit up out of the sea, and padding
+    symmetrically would do half of that.
+    """
+    rows = rgba.shape[0]
+    if height < rows:
+        raise ValueError(f"cannot pad {rows} rows down to {height}")
+    if height == rows:
+        return np.array(rgba, copy=True)
+    # Alpha 0 throughout; `fill_rgb` is what sits UNDER it, and it is not free to choose.
+    # A LINEAR tap on the boundary row blends the padding's colour into the art's, so the
+    # fill has to be the neutral value for the map in question: transparent black for the
+    # albedo, and the flat (0, 0, 1) normal - which encodes to (128, 128, 255) - for the
+    # normals, matching what `bake_rock_top` already writes for an uncovered texel. A
+    # zero-length normal vector must never reach the renderer.
+    pad = np.zeros((height - rows,) + rgba.shape[1:], dtype=rgba.dtype)
+    for channel, value in enumerate(fill_rgb):
+        pad[..., channel] = value
+    return np.concatenate([pad, rgba], axis=0)
+
+
 class SourceError(RuntimeError):
     pass
 
@@ -297,10 +355,12 @@ def bake_rock(height: int, period_override, luminance_factor: float) -> dict:
     require_matching_alpha("rock", diffuse, normal)
 
     src_h, src_w = diffuse.shape[:2]
-    period = period_override or tile.find_wrap_period(diffuse.astype(np.float64))
+    period = period_override or tile.choose_period(diffuse.astype(np.float64), MAX_SEAM_RATIO)
+    already_tiles = period == src_h
     print(f"rock     source {src_w}x{src_h}, wrap period {period} "
-          f"(overlap error {tile.overlap_error(diffuse, period):.3f}/255 over "
-          f"{src_h - period} rows)")
+          + ("(already a tile at full height - no crop, no blend)" if already_tiles else
+             f"(overlap error {tile.overlap_error(diffuse, period):.3f}/255 over "
+             f"{src_h - period} rows)"))
 
     diffuse_tile = tile.wrap_blend(diffuse, period)
     normal_tile = tile.wrap_blend(normal, period)
@@ -533,7 +593,7 @@ def crop_body(diffuse_out: np.ndarray, normal_out: np.ndarray) -> dict:
     }
 
 
-def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
+def bake_rock_top(width: int, height: int, gain: float, ambient: np.ndarray) -> dict:
     """
     The cliff TOP: the summit that caps each wall at the waterline, and its horizontal
     mirror for the other side of the column.
@@ -546,6 +606,11 @@ def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
        invisible. Its height then follows from the art's 300x500 proportions and
        DECIDES how tall the cliff is - it is a consequence of the drawing, not a number
        anybody picked.
+
+       The CANVAS is then padded up to the wall's height with transparent rows, which
+       does not touch that: the art keeps its size and its world position, and only
+       empty sky is added above the summit. That is a VRAM constraint, not a visual
+       one - see `pad_top_to_height` for the 419.4 MB it exists to stop.
 
     2. IT INHERITS THE WALL'S GAIN AND AMBIENT RATHER THAN SOLVING FOR ITS OWN MEAN.
        `bake_rock` solves a gain so the wall's mean luminance lands on a multiple of
@@ -573,15 +638,30 @@ def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
     require_matching_alpha("rock top", diffuse, normal)
 
     src_h, src_w = diffuse.shape[:2]
-    out_w, out_h = geometry.fit_width(src_w, src_h, width)
+    out_w, art_h = geometry.fit_width(src_w, src_h, width)
+
+    # The art's own height is whatever its proportions give, and that is allowed to land on
+    # the wrong side of the engine's array-reuse bound - see `pad_top_to_height`, which is
+    # the whole reason this is not just `art_h`. Padding to the WALL's height settles it by
+    # construction at any source aspect, rather than by a number that happens to work today.
+    out_h = max(art_h, height)
     bucket = geometry.bucket_for(max(out_w, out_h))
-    print(f"rock top source {src_w}x{src_h} -> {out_w}x{out_h}, bucket {bucket}, "
-          f"reuses existing 2048 array: {geometry.reuses_array(max(out_w, out_h), 2048)}")
+    reuses = geometry.reuses_array(max(out_w, out_h), 2048)
+    print(f"rock top source {src_w}x{src_h} -> {out_w}x{art_h}"
+          + (f", padded to {out_w}x{out_h}" if out_h != art_h else "")
+          + f", bucket {bucket}, reuses existing 2048 array: {reuses}")
+    if not reuses:
+        raise SourceError(
+            f"the crest at {out_w}x{out_h} does not land in the 2048 texture arrays the "
+            f"diver's sheets already allocate, so it would allocate a "
+            f"{bucket}x{bucket}x4x{geometry.CAPACITIES[bucket]} array PER FORMAT "
+            f"({2 * geometry.array_bytes(bucket) / 1e6:.1f} MB). See pad_top_to_height."
+        )
 
     alpha = diffuse[..., 3] / 255.0
 
     linear = srgb_to_linear(diffuse[..., :3] / 255.0)
-    resized, resized_alpha, _ = _alpha_weighted_resize(linear, alpha, (out_w, out_h))
+    resized, resized_alpha, _ = _alpha_weighted_resize(linear, alpha, (out_w, art_h))
     resized = np.clip(resized, 0.0, None)   # LANCZOS undershoot, before the lift - see bake_rock
     lifted = reflectance.lift(resized, ambient, gain)
     diffuse_out = np.dstack([to_u8(linear_to_srgb(lifted)), to_u8(resized_alpha)])
@@ -605,13 +685,18 @@ def bake_rock_top(width: int, gain: float, ambient: np.ndarray) -> dict:
         )
 
     vectors = decode_normals(normal[..., :3])
-    resized_n, resized_alpha_n, covered = _alpha_weighted_resize(vectors, alpha, (out_w, out_h))
+    resized_n, resized_alpha_n, covered = _alpha_weighted_resize(vectors, alpha, (out_w, art_h))
     length = np.linalg.norm(resized_n, axis=-1, keepdims=True)
     unit = np.where(length > 1e-6, resized_n / np.maximum(length, 1e-6), np.array([0.0, 0.0, 1.0]))
     unit = np.where(covered[..., None], unit, np.array([0.0, 0.0, 1.0]))
     normal_out = np.dstack([to_u8((unit + 1.0) * 0.5), to_u8(resized_alpha_n)])
     baked_v = (normal_out[..., :3] / 255.0) * 2.0 - 1.0
     print(f"         normals mean |v| {np.linalg.norm(baked_v[opaque], axis=-1).mean():.4f}")
+
+    # After every measurement above, so the printed statistics describe the ART and are not
+    # diluted by padding, and before the mirrors, so they inherit it.
+    diffuse_out = pad_top_to_height(diffuse_out, out_h, (0, 0, 0))
+    normal_out = pad_top_to_height(normal_out, out_h, (128, 128, 255))
 
     diffuse_out = clear_wrap_border(diffuse_out)
     normal_out = clear_wrap_border(normal_out)
@@ -696,7 +781,7 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     # is what makes the two textures' texels the same size when both are drawn
     # TILE_WIDTH_METRES across, and it is not a number anybody should be able to get
     # wrong from the command line.
-    top = bake_rock_top(rock["size"][0], rock["gain"], rock["ambient"])
+    top = bake_rock_top(rock["size"][0], rock["size"][1], rock["gain"], rock["ambient"])
     # From the WALL'S OWN OUTPUT arrays, not from the source art: no second resample, and the
     # gain and ambient are inherited exactly rather than solved again. See crop_body.
     body = crop_body(rock["diffuse"], rock["normal"])

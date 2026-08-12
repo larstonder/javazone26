@@ -139,8 +139,9 @@ class CameraRigTest
     fun `the mapping is numerically identical to the transform it replaces`()
     {
         // ONLY where the HEIGHT fit binds. The migration was defined to be a no-op on screen and
-        // still is at and below DESIGN_ASPECT, which is every panel the game was built against —
-        // 16:9 included. Above it the width cap deliberately changes the scale, so the
+        // still is at and below DESIGN_ASPECT — which, since the 2026-08-12 re-bake narrowed the
+        // cliff art and the cap with it, is the 4:3 framebuffers in DISPLAYS and no longer 16:9.
+        // Above it the width cap deliberately changes the scale, so the
         // pre-migration formula is no longer the reference and asserting it would be asserting the
         // bug. `the frame shows the visible depth, or the visible width, whichever binds` is what
         // covers the wide regime.
@@ -269,9 +270,11 @@ class CameraRigTest
          * the list is reproduced here verbatim rather than quietly extended.)
          */
         /**
-         * The aspect at which the two fits in [CameraRig.pixelsPerMetre] are equal — 1.7832.
+         * The aspect at which the two fits in [CameraRig.pixelsPerMetre] are equal — 1.6419.
          * Below it the height binds and 60 m of depth is visible; above it the width binds and
-         * the depth falls off. 16:9 is 1.7778, so the commonest panel sits just inside it.
+         * the depth falls off. 16:9 is 1.7778, so the commonest panel sits OUTSIDE it and shows
+         * 55.42 m of depth — it sat just inside until the 2026-08-12 re-bake narrowed the cliff
+         * art and the cap with it.
          */
         val DESIGN_ASPECT = Framing.VISIBLE_WIDTH_METRES / Framing.VISIBLE_DEPTH_METRES
 

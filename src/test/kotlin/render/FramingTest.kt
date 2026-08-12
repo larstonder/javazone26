@@ -93,7 +93,7 @@ class FramingTest
      * He was right both times. The first cap was `COLUMN_HALF_WIDTH + TILE_WIDTH_METRES`, which is
      * one tile of QUAD; but a wall tile's last [RockFace.EDGE_INSET_METRES] hold no alpha — that
      * margin is what puts the ragged silhouette on the column boundary — so the visible rock ends
-     * at [RockFace.CREST_OUTER_HALF_WIDTH], 1.31 m short, and the body had to fill the rest.
+     * at [RockFace.CREST_OUTER_HALF_WIDTH], 2.715 m short, and the body had to fill the rest.
      *
      * Written because widening the cap survived every other case: the frame dutifully showed the
      * wider cap, the arithmetic stayed self-consistent, and the surplus came straight back as
@@ -129,8 +129,8 @@ class FramingTest
     /**
      * THE COST OF THAT CAP IS BOUNDED, AND DELIBERATE.
      *
-     * The design aspect is 1.7396 and 16:9 is 1.7778, so a 16:9 panel IS scaled by width and does
-     * lose depth. That is intentional — the owner chose one sprite over the last 1.3 m of water,
+     * The design aspect is 1.6419 and 16:9 is 1.7778, so a 16:9 panel IS scaled by width and does
+     * lose depth. That is intentional — the owner chose one sprite over the last 4.6 m of water,
      * and was shown this exact table before choosing.
      *
      * An earlier version of this file asserted the opposite (`designAspect >= 16f/9f`, "16:9 must
@@ -150,11 +150,28 @@ class FramingTest
             "the design aspect is $designAspect, at or above 16:9 — then 16:9 is not capped at all " +
             "and the body fills the surplus, which is the two-sprite state this cap replaced"
         )
+        // THE AGREED COST, AND IT HAS BEEN RENEGOTIATED ONCE. This was 5% when the cap was first
+        // built, against art whose tile was 13.496 m wide and whose transparent margin was 1.31 m.
+        // The rock redrawn on 2026-08-12 tiles at its full 1000 rows rather than at 889, which took
+        // the baked width from 691 to 614 texels and the margin from 67 to 139 of them — so the
+        // cliff reaches 2.9 m less far outward, the cap closes in to match, and 16:9 lands at
+        // 55.42 m. The owner was shown that number against the alternative (drawing the rock 44%
+        // larger, at TILE_HEIGHT_METRES 57.6 m, to hold 60 m) and chose to keep the art as drawn.
+        //
+        // 10% is that decision written down with a little room, NOT the assertion relaxed until it
+        // passed. It still fails on anything that would cost the player materially more sight-line
+        // than was agreed to — another re-bake at half this reach would sit at 22% and redden.
         assertTrue(
-            atSixteenNine > Framing.VISIBLE_DEPTH_METRES * 0.95f,
+            atSixteenNine > Framing.VISIBLE_DEPTH_METRES * 0.90f,
             "a 16:9 panel shows $atSixteenNine m of water against ${Framing.VISIBLE_DEPTH_METRES} m — " +
-            "more than 5% of the player's planning distance has been traded away for the framing, " +
+            "more than 10% of the player's planning distance has been traded away for the framing, " +
             "which is past what was agreed"
+        )
+        // ...and the cap must not have quietly stopped costing anything either, which is what a
+        // re-bake that widened the art would do: the cap would then be above 16:9 and inert there.
+        assertTrue(
+            atSixteenNine < Framing.VISIBLE_DEPTH_METRES,
+            "16:9 is not capped at all, so this test is asserting nothing about it"
         )
     }
 }

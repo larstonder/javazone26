@@ -2,11 +2,26 @@ import numpy as np
 import pytest
 
 from backdrop.tile import (
-    find_wrap_period, interior_error, overlap_error, seam_error, wrap_blend,
+    choose_period, find_wrap_period, interior_error, overlap_error, seam_error, wrap_blend,
 )
 
 PERIOD = 40
 BAND = 7
+
+# build_backdrop.MAX_SEAM_RATIO. Duplicated rather than imported so that a change to the
+# bake's threshold shows up here as a failing test rather than as a silently different
+# meaning for every case below.
+MAX_SEAM_RATIO = 1.5
+
+
+def seamless(rows=40, width=3):
+    """
+    A stand-in for the 2026-08-12 art: a full triangle period and nothing else, so the
+    file already tiles at its own height and there is no overlap anywhere in it.
+    """
+    phase = np.arange(rows) / rows
+    signal = 2.0 * np.abs(2.0 * (phase - np.floor(phase + 0.5)))
+    return signal[:, None] * np.ones((1, width))
 
 
 def periodic(period=PERIOD, band=BAND, width=3, slip=0.0):
@@ -88,9 +103,45 @@ def test_wrap_blend_leaves_the_tail_of_the_tile_untouched():
     assert np.allclose(wrap_blend(a, PERIOD)[BAND:], a[BAND:PERIOD])
 
 
-def test_wrap_blend_rejects_a_period_that_leaves_no_overlap():
+def test_wrap_blend_rejects_a_period_outside_the_source():
     a = periodic()
     with pytest.raises(ValueError):
-        wrap_blend(a, a.shape[0])
+        wrap_blend(a, a.shape[0] + 1)
     with pytest.raises(ValueError):
         wrap_blend(a, 0)
+
+
+def test_wrap_blend_at_full_height_is_the_identity():
+    # The already-a-tile case. It must not crop, and in particular must not do what a
+    # one-row band did to the delivered art: out[0] = src[-1], dropping row 0 entirely.
+    a = seamless()
+    assert np.array_equal(wrap_blend(a, a.shape[0]), a)
+
+
+def test_choose_period_leaves_a_source_that_already_tiles_alone():
+    a = seamless()
+    assert choose_period(a, MAX_SEAM_RATIO) == a.shape[0]
+
+
+def test_choose_period_still_finds_the_overlap_when_there_is_one():
+    a = periodic()
+    assert choose_period(a, MAX_SEAM_RATIO, lo=20, hi=PERIOD + BAND - 1) == PERIOD
+
+
+def test_the_search_alone_would_mangle_a_source_that_already_tiles():
+    """
+    The defect that made `choose_period` necessary, pinned so it cannot come back.
+
+    On a source with no overlap the score falls off monotonically towards the top of the
+    range - there is no local minimum to find - so the search returns its last candidate
+    and the blend then rebuilds the tile with its first row replaced by its last.
+    """
+    a = seamless()
+    hi = a.shape[0] - 1
+    scores = [overlap_error(a, p) for p in range(20, hi + 1)]
+    assert all(np.diff(scores) < 0), "expected a monotone fall-off, i.e. no true period"
+
+    mangled = wrap_blend(a, find_wrap_period(a, lo=20, hi=hi))
+    assert mangled.shape[0] == a.shape[0] - 1
+    assert np.allclose(mangled[0], a[-1])       # row 0 is gone, replaced by the last row
+    assert not np.allclose(mangled[0], a[0])
