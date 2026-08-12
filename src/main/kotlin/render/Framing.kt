@@ -48,23 +48,44 @@ object Framing
      * screen, and it reads as wallpaper. His words: *"for each aspect ratio we should only ever
      * see exactly one rock cliff on each end of the screen"*.
      *
-     * ## WHY THIS NUMBER
+     * ## WHY THIS NUMBER — IT IS THE EDGE ART'S OUTWARD END, NOT ITS QUAD'S
      *
-     * `2 * (COLUMN_HALF_WIDTH + RockFace.TILE_WIDTH_METRES)` = 106.99 m, which is an aspect of
-     * 1.783 against [VISIBLE_DEPTH_METRES]. **16:9 is 1.778.** So the commonest panel already sits
-     * a hair inside the cap and is completely unaffected — the cap only bites above it, which is
-     * exactly where the repeat begins. That coincidence is why this is the right constant and not
-     * a taste decision; `FramingTest` pins it to the rock's own tile width so a re-bake at a
-     * different size moves it rather than leaving it stale.
+     * `2 * RockFace.BODY_INNER_HALF_WIDTH` = 104.336 m — the outward end of the edge art's OPAQUE
+     * region, which is one [RockFace.BORDER_TEXEL_COLUMNS] inside its outward end.
+     *
+     * That last texel matters. It is the transparent wrap border the bake writes to stop
+     * `texture.frag`'s `fract` extrapolation sampling solid stone at a quad edge. Capping on
+     * `CREST_OUTER_HALF_WIDTH` instead put the frame edge exactly ON it, and the extreme pixel
+     * column came back transparent at every aspect — the hairline again, inverted. Measured: alpha
+     * 0 at the frame edge at 16:9, 2.389 and 32:9. One texel further in, the frame edge lands on
+     * the last opaque column of the art, and the body's span is exactly zero so no body quad is
+     * submitted at all.
+     *
+     * The first version of this cap was `2 * (COLUMN_HALF_WIDTH + TILE_WIDTH_METRES)` = 106.99 m,
+     * reasoning that one cliff is one tile wide. That is true of the QUAD and false of the ART: a
+     * wall tile's last `RockFace.EDGE_INSET_METRES` (1.31 m, 67 texels) hold no alpha at all —
+     * that margin is exactly what lets the ragged silhouette land on `Tuning.COLUMN_HALF_WIDTH`.
+     * So the sprite's visible rock ends at [RockFace.CREST_OUTER_HALF_WIDTH] = 52.19 m, and a cap
+     * of 53.50 m left a 1.31 m strip — about a tenth of each cliff — that only the BODY could
+     * fill. The owner, on a capture of the capped build: *"still seems like we use at least two
+     * sprites for width at each side, can't we use only one?"*
+     *
+     * Capping on the art's own outward end means one edge sprite covers each side exactly, and
+     * the body is reduced to at most a single texel. `FramingTest` asserts both.
      *
      * ## WHAT IT COSTS, SAID PLAINLY
      *
-     * Above 1.783 the scale is driven by width, so the visible DEPTH shrinks: 45.9 m at 21:9,
-     * 44.8 m at the owner's 2.389, 30.1 m at 32:9. That is a gameplay change on those displays —
-     * how far ahead you can see is how far ahead you can plan — and it was put to the owner as
-     * exactly that trade before it was made. It is a no-op at 16:9 and below.
+     * The design aspect is `104.375 / 60` = **1.7396**, and 16:9 is 1.7778 — so unlike the first
+     * version this one does NOT leave 16:9 alone. A 16:9 panel now shows 58.71 m of water instead
+     * of 60, a 2.2% loss, and every wider aspect loses about a metre too (44.7 m at 21:9, 29.4 m
+     * at 32:9).
+     *
+     * That is a gameplay change — how far ahead you can see is how far ahead you can plan — and it
+     * was put to the owner as exactly that trade, twice, before it was made. He chose one sprite.
+     * `FramingTest` bounds the cost rather than forbidding it, so that a re-bake which made the
+     * loss large would fail rather than pass quietly.
      */
-    const val VISIBLE_WIDTH_METRES = 2f * (dive.Tuning.COLUMN_HALF_WIDTH + RockFace.TILE_WIDTH_METRES)
+    const val VISIBLE_WIDTH_METRES = 2f * RockFace.BODY_INNER_HALF_WIDTH
 
     /** Where the camera tries to keep the diver vertically. */
     const val DIVER_SCREEN_FRACTION = 0.4f

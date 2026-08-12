@@ -84,40 +84,77 @@ class FramingTest
     }
 
     /**
-     * THE CAP IS EXACTLY ONE CLIFF AT EACH END, WHICH IS THE REQUIREMENT ITSELF.
+     * THE CAP IS EXACTLY ONE CLIFF SPRITE AT EACH END — THE ART'S EXTENT, NOT ITS QUAD'S.
      *
      * The owner, after five failed attempts at the symptom: *"for each aspect ratio we should only
-     * ever see exactly one rock cliff on each end of the screen"*. `CameraRig` caps the visible
-     * width at [Framing.VISIBLE_WIDTH_METRES], and every other test here asserts the RELATIONSHIP
-     * — that the frame shows that much and no more. None of them pins the number to one cliff.
+     * ever see exactly one rock cliff on each end of the screen"*, and then, on the first capped
+     * build: *"still seems like we use at least two sprites for width at each side"*.
      *
-     * Written because widening the cap to two cliffs a side survived every other case: the frame
-     * dutifully showed the wider cap, the arithmetic stayed self-consistent, and the repetition
-     * came straight back. A test that only checks "the frame shows the constant" cannot notice the
+     * He was right both times. The first cap was `COLUMN_HALF_WIDTH + TILE_WIDTH_METRES`, which is
+     * one tile of QUAD; but a wall tile's last [RockFace.EDGE_INSET_METRES] hold no alpha — that
+     * margin is what puts the ragged silhouette on the column boundary — so the visible rock ends
+     * at [RockFace.CREST_OUTER_HALF_WIDTH], 1.31 m short, and the body had to fill the rest.
+     *
+     * Written because widening the cap survived every other case: the frame dutifully showed the
+     * wider cap, the arithmetic stayed self-consistent, and the surplus came straight back as
+     * repeated art. A test that only checks "the frame shows the constant" cannot notice the
      * constant being wrong.
-     *
-     * Derived from the rock's own tile width, so a re-bake at a different size moves the cap with
-     * it rather than leaving this stale.
      */
     @Test
-    fun `the visible width is the play column plus exactly one cliff at each end`()
+    fun `the visible width is exactly one cliff sprite at each end`()
     {
-        val oneCliffEachEnd = 2f * (dive.Tuning.COLUMN_HALF_WIDTH + RockFace.TILE_WIDTH_METRES)
         assertEquals(
-            oneCliffEachEnd, Framing.VISIBLE_WIDTH_METRES, 1e-4f,
-            "the frame is capped at ${Framing.VISIBLE_WIDTH_METRES} m against ${oneCliffEachEnd} m for " +
-            "the column plus one cliff a side — anything wider is the cliff tile repeating, which is " +
-            "the whole defect this cap exists to make impossible"
+            2f * RockFace.BODY_INNER_HALF_WIDTH, Framing.VISIBLE_WIDTH_METRES, 1e-4f,
+            "the frame is capped at ${Framing.VISIBLE_WIDTH_METRES} m against " +
+            "${2f * RockFace.BODY_INNER_HALF_WIDTH} m for one cliff sprite a side. Capping on the " +
+            "QUAD's width leaves EDGE_INSET_METRES of empty margin that only the body can fill; " +
+            "capping on CREST_OUTER_HALF_WIDTH puts the frame edge on the transparent wrap border " +
+            "and the extreme pixel column comes back empty"
         )
 
-        // ...and the design aspect that falls out of it must still leave 16:9 in the unchanged
-        // regime. If a re-bake ever pushes it below 16:9, the commonest panel silently starts
-        // losing depth, and that is a gameplay change nobody asked for.
+        // ...and therefore NO body quad is submitted at all: its span at the cap is exactly zero.
+        // This is the "only one sprite" requirement stated as a consequence rather than a number.
+        val bodyVisible = Framing.VISIBLE_WIDTH_METRES * 0.5f - RockFace.BODY_INNER_HALF_WIDTH
+        assertEquals(
+            0f, bodyVisible, 1e-4f,
+            "the body is $bodyVisible m wide at the cap — a second sprite's worth of rock beside " +
+            "the edge art, which is exactly what this cap exists to remove"
+        )
+        assertEquals(
+            0, RockFace.bodyColumns(bodyVisible),
+            "a body quad is still submitted at the cap, for ${bodyVisible} m of screen"
+        )
+    }
+
+    /**
+     * THE COST OF THAT CAP IS BOUNDED, AND DELIBERATE.
+     *
+     * The design aspect is 1.7396 and 16:9 is 1.7778, so a 16:9 panel IS scaled by width and does
+     * lose depth. That is intentional — the owner chose one sprite over the last 1.3 m of water,
+     * and was shown this exact table before choosing.
+     *
+     * An earlier version of this file asserted the opposite (`designAspect >= 16f/9f`, "16:9 must
+     * never lose depth"). That assertion was correct for the cap of the time and is now wrong; it
+     * is replaced rather than deleted so the reversal is visible. What is asserted instead is that
+     * the loss stays SMALL — a re-bake that made the cliff art much narrower would shrink the cap,
+     * cost real depth, and fail here rather than pass quietly.
+     */
+    @Test
+    fun `capping the width costs a bounded amount of visible depth`()
+    {
         val designAspect = Framing.VISIBLE_WIDTH_METRES / Framing.VISIBLE_DEPTH_METRES
+        val atSixteenNine = Framing.VISIBLE_WIDTH_METRES / (16f / 9f)
+
         assertTrue(
-            designAspect >= 16f / 9f,
-            "the design aspect is $designAspect, below 16:9 (${16f / 9f}) — a 16:9 booth panel would " +
-            "start being scaled by WIDTH and would show less than ${Framing.VISIBLE_DEPTH_METRES} m of water"
+            designAspect < 16f / 9f,
+            "the design aspect is $designAspect, at or above 16:9 — then 16:9 is not capped at all " +
+            "and the body fills the surplus, which is the two-sprite state this cap replaced"
+        )
+        assertTrue(
+            atSixteenNine > Framing.VISIBLE_DEPTH_METRES * 0.95f,
+            "a 16:9 panel shows $atSixteenNine m of water against ${Framing.VISIBLE_DEPTH_METRES} m — " +
+            "more than 5% of the player's planning distance has been traded away for the framing, " +
+            "which is past what was agreed"
         )
     }
 }
