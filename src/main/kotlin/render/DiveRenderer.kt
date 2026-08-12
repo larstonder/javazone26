@@ -325,6 +325,21 @@ object DiveRenderer
         drawPearls(surface, sim, cam, iridescence)
         drawAnglerfish(surface, sim, cam, iridescence)
         drawDiver(surface, sim, cam, normalMaps, aimDegrees)
+
+        // THE MARINE SNOW, LAST, AND ON THIS SURFACE ON PURPOSE.
+        //
+        // It had a surface of its own until the owner said *"put them back on main so GI darkens
+        // them too"* — see `Motes`' class doc for the measurement that prompted it (a field
+        // exempt from the light map was the brightest thing in the Abyss). Being here is the whole
+        // point: the multiply that darkens the water darkens the motes with it, and only the
+        // glowing quarter, which lights its own body, survives the deep.
+        //
+        // LAST, so a mote is in front of the rock, the pearls and the diver — it is suspended
+        // matter between the camera and the world, which is what marine snow in front of a lens
+        // actually is. It is drawn AFTER the diver rather than before for that reason and not by
+        // accident; at MOTE_ALPHA 0.25 and a sub-metre quad, a speck crossing his silhouette is
+        // the effect rather than a defect.
+        Motes.render(surface, cam)
     }
 
     /**

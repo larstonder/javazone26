@@ -320,25 +320,6 @@ class MotesTest
         assertTrue(Motes.depthGain(Motes.SURFACE_FADE_METRES) > 0f, "the motes never fade in below the waterline")
     }
 
-    @Test
-    fun `the motes are subtle near the surface and strongest in the deep`()
-    {
-        val shallow = Motes.depthGain(DepthBlend.zoneMidpoint(Zone.SHALLOWS))
-        val kelp = Motes.depthGain(DepthBlend.zoneMidpoint(Zone.KELP))
-        val twilight = Motes.depthGain(DepthBlend.zoneMidpoint(Zone.TWILIGHT))
-        val trench = Motes.depthGain(DepthBlend.zoneMidpoint(Zone.TRENCH))
-        val abyss = Motes.depthGain(DepthBlend.zoneMidpoint(Zone.ABYSS))
-
-        assertTrue(shallow < kelp, "SHALLOWS ($shallow) is not dimmer than KELP ($kelp)")
-        assertTrue(kelp < twilight, "KELP ($kelp) is not dimmer than TWILIGHT ($twilight)")
-        assertTrue(twilight < trench, "TWILIGHT ($twilight) is not dimmer than TRENCH ($trench)")
-        assertTrue(trench < abyss, "TRENCH ($trench) is not dimmer than ABYSS ($abyss)")
-
-        // Design §11: "bioluminescence in the dark". The deep end has to be a different order of
-        // presence from the shallow end, not 10% brighter.
-        assertTrue(abyss > shallow * 3f, "the abyss ($abyss) is only ${abyss / shallow}x the shallows ($shallow) — the depth ramp is not doing the art direction's work")
-        assertEquals(Motes.PEAK_ALPHA, abyss, 1e-5f, "PEAK_ALPHA is meant to be the largest value the ramp can reach")
-    }
 
     @Test
     fun `the gain never exceeds the peak the brightness test is written against`()
@@ -609,66 +590,7 @@ class MotesTest
 
     // ---- The surface -----------------------------------------------------------------------
 
-    /**
-     * THE LAYERING, ASSERTED AS A RELATIONSHIP AND NOT AS A NUMBER.
-     *
-     * `GraphicsImpl` composites surfaces sorted by `-zOrder` ascending, so a SMALLER zOrder is
-     * drawn LATER, i.e. in front. `mainSurface` takes zOrder 0 (the engine's `lastZOrder` counter
-     * starts there and main is the first surface created), the sky sits behind it at `+10` and the
-     * HUD in front of everything at -90.
-     *
-     * The motes have to land strictly between the world and the HUD: behind the world they would be
-     * hidden by opaque water AND caught by the GI multiply, which is the whole reason they are on
-     * their own surface; in front of the HUD they would be ambient decoration drawn over the clock.
-     */
-    @Test
-    fun `the motes composite in front of the world and behind the HUD`()
-    {
-        val hudZOrder = Regex("""const val HUD_Z_ORDER = (-?\d+)""")
-            .find(File("src/main/kotlin/EnPustTil.kt").readText())
-            ?.groupValues?.get(1)?.toInt()
-            ?: error("EnPustTil no longer declares HUD_Z_ORDER — re-read this test before deleting it")
 
-        assertTrue(Motes.Z_ORDER_OFFSET < 0, "the motes' zOrder offset (${Motes.Z_ORDER_OFFSET}) does not put them in FRONT of mainSurface, so opaque water will hide them and the GI multiply will still reach them")
-        assertTrue(Motes.Z_ORDER_OFFSET > hudZOrder, "the motes' zOrder offset (${Motes.Z_ORDER_OFFSET}) puts them in front of the HUD ($hudZOrder) — ambient scenery must never be drawn over the clock or the initials entry")
-        assertTrue(Sky.Z_ORDER_OFFSET > 0, "the sky is no longer behind the world; the whole back-to-front stack this test describes has changed")
-        assertTrue(Sky.Z_ORDER_OFFSET > Motes.Z_ORDER_OFFSET, "the sky must be further back than the motes")
-    }
-
-    /**
-     * The surface's four load-bearing arguments, scanned out of the one place that can set them.
-     *
-     * A unit test cannot create a `Surface`, and every one of these fails SILENTLY: a null zOrder
-     * makes the layering depend on the order of the `createSurface` calls, the wrong camera puts
-     * the motes in screen pixels (the HUD's convention) rather than world metres, an opaque
-     * background paints a rectangle over the world, and the wrong blend function makes overlapping
-     * motes occlude instead of sum.
-     */
-    @Test
-    fun `the motes surface is created on the world camera, transparent, additive and explicitly ordered`()
-    {
-        val code = File("src/main/kotlin/EnPustTil.kt").readText()
-        val call = Regex("""engine\.gfx\.createSurface\(\s*name = Motes\.SURFACE_NAME,(.*?)\)""", RegexOption.DOT_MATCHES_ALL)
-            .find(code)?.groupValues?.get(1)
-            ?: error("EnPustTil.onCreate no longer creates a surface named Motes.SURFACE_NAME")
-
-        assertTrue(
-            call.contains("camera = engine.gfx.mainCamera"),
-            "the motes surface is not on the shared world camera, so a mote and the water it hangs in go through different matrices and will drift apart"
-        )
-        assertTrue(
-            call.contains("backgroundColor = Color.BLANK"),
-            "the motes surface's background is not transparent, so it will paint a rectangle over the whole world"
-        )
-        assertTrue(
-            call.contains("blendFunction = BlendFunction.ADDITIVE"),
-            "the motes surface is not additive, so overlapping motes occlude one another instead of summing into a brighter glow"
-        )
-        assertTrue(
-            call.contains("zOrder = engine.gfx.mainSurface.config.zOrder + Motes.Z_ORDER_OFFSET"),
-            "the motes surface's zOrder is not derived from mainSurface's; the engine's auto-decrementing counter would then make the layering depend on the order of the createSurface calls"
-        )
-    }
 
     /**
      * The clock is advanced from `onUpdate`, OUTSIDE the lifecycle gate, and drawn from `onRender`.
@@ -690,8 +612,44 @@ class MotesTest
         assertTrue(advance >= 0, "nothing advances the mote clock; the field will be frozen")
         assertTrue(gate in 0 until onUpdate, "onFixedUpdate's simulation gate moved — re-read this test")
         assertTrue(advance > onUpdate, "the mote clock is advanced from the fixed tick, which is gated on RunLifecycle.simulationAdvances and is FALSE in IDLE — the field would be frozen on the attract screen")
-        assertTrue(code.indexOf("Motes.render(") > onRender, "nothing draws the motes from onRender")
         assertTrue(code.contains("System.getenv(Motes.PIN_ENV)"), "EnPustTil no longer reads Motes.PIN_ENV (${Motes.PIN_ENV}), so a pinned capture cannot reproduce the field")
+    }
+
+    /**
+     * THE MOTES ARE ON `main`, WHICH IS WHAT SUBJECTS THEM TO THE GI MULTIPLY.
+     *
+     * They had a surface of their own until it was measured at 140 m: exempt from the light map,
+     * they were the brightest thing in the Abyss (peak 213.5 against the brightest pearl's 194.2)
+     * and the field read as a starfield. The owner's instruction was to remove the exemption.
+     *
+     * This is asserted structurally rather than by value because the failure is silent and total:
+     * a mote drawn to any other surface is simply not darkened by depth, and no unit test of the
+     * arithmetic could tell, since every number in `Motes` would be identical either way.
+     */
+    @Test
+    fun `the motes are drawn onto the world surface, so GI darkens them with everything else`()
+    {
+        val renderer = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+        val world = renderer.substringAfter("fun render(").substringBefore("\n    }")
+
+        assertTrue(
+            "Motes.render(surface, cam)" in world,
+            "DiveRenderer no longer draws the motes onto its own surface — if they have been given " +
+                "a surface of their own again they escape the GI multiply, and the Abyss gets its " +
+                "starfield back"
+        )
+        // LAST in the world pass: suspended matter sits between the camera and everything else.
+        assertTrue(
+            world.indexOf("Motes.render(") > world.indexOf("drawDiver("),
+            "the motes are drawn before the diver, so he floats in front of the water he is in"
+        )
+        // And nothing may quietly re-create a surface for them.
+        val app = File("src/main/kotlin/EnPustTil.kt").readText()
+        assertTrue(
+            "name = Motes.SURFACE_NAME" !in app && "\"motes\"" !in app,
+            "a motes surface has been created again; that is the exemption from the light map that " +
+                "this change removed"
+        )
     }
 
     // --- THE GLOWING SUBSET ---------------------------------------------------------------

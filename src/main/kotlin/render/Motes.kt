@@ -34,64 +34,42 @@ import kotlin.math.sin
  *  - **Zero allocation.** The render path is a double loop over `Int`s with primitive floats in
  *    and out, which is the rule `CLAUDE.md` states for everything in `render/`.
  *
- * ## THE SURFACE, WHICH IS THE CRUX
+ * ## THE SURFACE: THEY ARE ON `main`, AND THAT WAS RESOLVED THE HARD WAY
  *
  * `GlobalIlluminationSystem` MULTIPLIES `mainSurface` by the computed light map (`targetSurface`
  * is the literal string `"main"` — the citation is in `CLAUDE.md`'s platform constraints and in
- * [LightShafts]'s class doc). A mote drawn on `main` would therefore be scaled toward black
- * exactly where this whole feature is supposed to do its work: the deep. So the motes get their
- * own surface, [SURFACE_NAME], created in `EnPustTil.onCreate` — the same move [Sky] makes, for
- * the same reason, one step further forward in the composite.
+ * [LightShafts]'s class doc). The motes are drawn there, by [DiveRenderer], so the multiply
+ * applies to them exactly as it does to the water, the rock and the pearls.
  *
- * It shares `engine.gfx.mainCamera` with `main`, the sky and GI's local scene, so a mote at world
- * `(x, depth)` goes through the identical matrix as the water it is suspended in — built once per
- * frame in `gfx.initFrame` before any game code runs. It cannot drift from the world for the same
- * structural reason a light cannot drift from the square it lights.
+ * **They started on a surface of their own, and it was a mistake worth recording**, because the
+ * argument for it is seductive and wrong. It ran: the multiply scales a mote toward black exactly
+ * where the feature is supposed to work, the deep, so give it its own surface the way [Sky] does
+ * and let it escape. What that actually bought was a field that was EXEMPT from the thing that
+ * makes the deep dark — measured at 140 m with `EPT_DEPTH`, the motes were the brightest objects
+ * in the Abyss (peak 213.5 against the brightest pearl's 194.2), a starfield laid over a black
+ * frame, out-shining the pearls the game is about. The owner: *"put them back on main so GI
+ * darkens them too"*.
  *
- * ## THE BLEND FUNCTION, AND WHAT IT CAN AND CANNOT BUY
+ * The exemption also had two costs that were being paid without being noticed. Compositing an
+ * extra transparent surface put a mote's contribution through the backbuffer blend a second time,
+ * so it arrived cubed in alpha while its occlusion of the water was only squared — arithmetic
+ * `MOTE_ALPHA`'s doc used to have to reason about and no longer does. And ADDITIVE, the one thing
+ * the separate surface genuinely bought (overlapping motes summing rather than occluding), turned
+ * out to be unreachable against the world anyway: `BackBufferBaseState` hardcodes
+ * `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` once, before the loop over surfaces, and
+ * `glBlendFuncSeparate` appears nowhere in the jar. So the separate surface cost two composites
+ * and bought only intra-field additivity.
  *
- * The surface is created with [no.njoh.pulseengine.core.graphics.api.BlendFunction.ADDITIVE], and
- * it is worth being exact about what that does, because the obvious reading of it is wrong.
+ * **What replaces the exemption is better than it was.** In the Abyss an ordinary mote is now
+ * black, and the GLOWING quarter ([GLOW_IN]) still reads because each one lights its own body
+ * through GI. That is bioluminescence meaning bioluminescence — the specks that make their own
+ * light — rather than every speck being turned up by a table. And it gives the torch something to
+ * do: a beam sweeping the dark now reveals the unlit motes as dust, which a surface exempt from
+ * the light map could never have shown.
  *
- * `BatchRenderBaseState.onApply` reads `config.blendFunction` and issues
- * `glBlendFunc(src, dest)` before a surface's content is rasterised (read off the bytecode), and
- * `ADDITIVE` is `glBlendFunc(GL_SRC_ALPHA, GL_ONE)`. So **within this surface** two motes that
- * overlap SUM rather than occlude one another, which is what makes a cluster read as a brighter
- * glow instead of as the nearer dot winning. That is the whole of what ADDITIVE buys, and it is
- * worth having.
- *
- * **It does NOT make the motes additive against the world, and nothing can.**
- * `GraphicsImpl.renderOffscreenTargetsToBackBuffer` applies `BackBufferBaseState` ONCE, before the
- * loop over surfaces, and that state hardcodes `glBlendFunc(GL_SRC_ALPHA,
- * GL_ONE_MINUS_SRC_ALPHA)` — constants 770 and 771 in the disassembly. Every surface in the game
- * is composited with straight alpha and there is no per-surface hook on that stage.
- *
- * The consequence is arithmetic and is worth writing down, because it is the same double-alpha
- * effect [Sky.render] measured on `main` (alpha 191/255 inside a god ray) coming back from another
- * direction. A mote drawn at colour `c` and alpha `a` onto a `Color.BLANK` surface leaves
- * `(c * a, a * a)` in the texture — `glBlendFunc` applies to the alpha channel too, and nothing in
- * this engine uses `glBlendFuncSeparate` (grepped: the symbol does not appear in the jar) — and
- * the composite then reads that as straight alpha:
- *
- *     final = c * a^3 + world * (1 - a^2)
- *
- * So a mote's contribution is CUBED in alpha while its occlusion of the water behind it is only
- * squared. That is why [ALPHA_BY_ZONE] runs as high as it does in the deep: an alpha of 0.85 is a
- * 0.61 contribution, not a 0.85 one. Near the surface it works the other way and is exactly what
- * the art direction wants — at the Shallows' 0.18 the mote contributes `c * 0.006` and takes
- * `0.03` of the water away, i.e. a net change of well under one 8-bit level. Daylight washing them
- * out is not a fade we had to author; it is what the composite does on its own.
- *
- * **`SCREEN` was considered and rejected.** `BlendFunction.SCREEN` is `glBlendFunc(GL_ONE,
- * GL_ONE_MINUS_SRC_COLOR)`, whose `GL_ONE` source factor would leave the texture NON-premultiplied
- * — `(c, a)` — and the composite would then be a plain, correct `over`, with no cube. It is
- * unusable here for a reason specific to the texture: [LightEmitter]'s emitter is flat white in
- * RGB across the WHOLE 128x128 texel square and carries its disc entirely in alpha (that is the
- * convention its class doc argues at length). With a `GL_ONE` source factor a fragment in the
- * transparent CORNER of the quad still writes full colour, so every mote would paint its square
- * bounding box into the surface's RGB and neighbouring motes would brighten each other along
- * square edges. Under `GL_SRC_ALPHA` those fragments contribute exactly nothing. The emitter's
- * shape lives in alpha, so the blend has to be one that respects alpha.
+ * Being on `main` means sharing its camera by construction, so a mote at world `(x, depth)` goes
+ * through the identical matrix as the water it is suspended in — built once per frame in
+ * `gfx.initFrame` before any game code runs.
  *
  * ## COLOUR IS A GAME MECHANIC HERE, NOT AN ART PREFERENCE
  *
@@ -123,35 +101,6 @@ import kotlin.math.sin
  */
 object Motes
 {
-    /** The surface's name, in one place, because two files have to agree on it. */
-    const val SURFACE_NAME = "motes"
-
-    /**
-     * How far BELOW `mainSurface`'s own zOrder the motes sit, and therefore how far in FRONT of
-     * it they are composited.
-     *
-     * `GraphicsImpl` composites surfaces sorted by `-zOrder` ascending (the same comparator
-     * [Sky.Z_ORDER_OFFSET] cites), so a SMALLER zOrder is drawn LATER, i.e. on top. The three
-     * game surfaces therefore run sky (`main + 10`) -> world (`main`) -> motes (`main - 10`) ->
-     * HUD (`EnPustTil.HUD_Z_ORDER`, -90), back to front.
-     *
-     * Both ends of that are load-bearing and `MotesTest` asserts the RELATIONSHIP rather than the
-     * number:
-     *
-     *  - **In front of `main`** is the entire point. Behind it, the world's opaque water would
-     *    hide every mote; and `main` is where the GI multiply lands, which is what the motes are
-     *    on a separate surface to escape.
-     *  - **Behind the HUD** because the HUD is the readable layer and nothing ambient may be
-     *    drawn over the clock, the depth tape or the initials entry.
-     *
-     * -10 rather than -1 for the same reason the sky's is +10: it leaves room for another ambient
-     * layer between the world and the HUD without either end having to move, and it is well clear
-     * of the auto-decrementing `lastZOrder` counter the engine hands out when `zOrder` is left
-     * null (which starts at 0 — `mainSurface` itself takes it — and only ever decrements, so
-     * leaving this null would make the layering depend on the ORDER of the `createSurface` calls
-     * in `onCreate`).
-     */
-    const val Z_ORDER_OFFSET = -10
 
     // ---- The lattice ---------------------------------------------------------------------------
 
@@ -470,7 +419,7 @@ object Motes
     const val MAX_SIZE_METRES = 0.85f
 
     /**
-     * The spread of base brightness, as a multiplier on [ALPHA_BY_ZONE].
+     * The spread of base brightness, as a multiplier on [MOTE_ALPHA].
      *
      * Not a flat field: a mote field where every dot is the same brightness reads as a texture
      * pasted over the water. The range is asymmetric about 1 on purpose — most motes are dimmer
@@ -530,49 +479,43 @@ object Motes
     const val MOTE_BLUE = 1f
 
     /**
-     * Peak alpha per [Zone], blended across depth by [DepthBlend] — the established pattern in
-     * this codebase for anything that varies by zone (see `DiveLighting`'s ambient tables and
-     * `DiveRenderer`'s zone bands, and [DepthBlend]'s own doc for why the anchors are at zone
-     * MIDPOINTS rather than at boundaries).
+     * How opaque a mote is drawn, before its own brightness and pulse. **ONE NUMBER — the depth
+     * response is GI's job now, and it used to be a five-anchor table.**
      *
-     * ## The ramp is the art direction, stated as five numbers
+     * ## WHY THE TABLE WENT
      *
-     * Design §11 asks for shafts of light near the surface, deep blue falling to near-black, and
-     * bioluminescence in the dark. So the motes are nearly absent in the Shallows and strongest in
-     * the Abyss — which is also the only honest way round: near the surface there is daylight to
-     * be washed out by, and in the Abyss the water is essentially black and a faint blue point is
-     * the only thing there is to see.
+     * It ran 0.18 in the Shallows to 0.85 in the Abyss, on the reasoning that the art direction
+     * (§11: "bioluminescence in the dark") wants the motes strongest where the water is blackest.
+     * Measured at 140 m with `EPT_DEPTH`, that made them **the brightest thing in the Abyss** —
+     * peak 213.5 against the brightest pearl's 194.2, and 19.1% of every lit pixel against the
+     * pearls' 7.1%. A field meant to read as suspended matter read as a starfield, and out-shone
+     * the object the player is hunting.
      *
-     * ## Why the deep end is as high as 0.85, which looks aggressive and is not
+     * The table was only half the fault. The other half was the surface: the motes had their own,
+     * which meant they escaped the GI multiply that darkens everything else in the deep, so the
+     * ramp was fighting a composite it was exempt from. The owner's fix was to remove the
+     * exemption — *"put them back on main so GI darkens them too"* — and once the multiply applies,
+     * a depth ramp in the ALBEDO is not just redundant but backwards: it brightens the source
+     * exactly where the light map is about to multiply it toward zero.
      *
-     * Read the class doc's composite arithmetic first. A mote's contribution to the frame is
-     * `colour * alpha^3`, because the surface stores premultiplied RGB and a SQUARED alpha and the
-     * backbuffer composite then multiplies by that alpha a second time. 0.85 is a contribution of
-     * 0.61, and a typical mote (0.78 brightness, mid-pulse) sits at alpha 0.55, i.e. a
-     * contribution of 0.17 — `(11, 26, 42)` out of 255 against an Abyss that measures single
-     * digits. Bright enough to see, nowhere near a pearl.
+     * ## WHAT THE DEPTH RESPONSE IS INSTEAD
      *
-     * The Shallows' 0.18 is a contribution of 0.006 against an occlusion of 0.03, i.e. a net
-     * change of under one 8-bit level over lit water. That is the "daylight washes them out" half
-     * of the brief, and it comes free from the composite rather than from a curve.
+     * The light map. Near the surface it is bright, so a mote reads; in the Abyss it is
+     * effectively zero, so an ordinary mote is black — and the GLOWING quarter
+     * ([GLOW_IN]) still shows, because each one lights its own body. That is a better version of
+     * the same art direction than the table was: bioluminescence in the dark is now literally
+     * bioluminescence, the specks that make their own light, rather than every speck being turned
+     * up. It also gives the torch something to find — a beam sweeping the dark reveals the dark
+     * motes as dust, which the exempt surface could never have done.
      *
-     * ## And they must stay dimmer than the pearls
-     *
-     * Same §1.1 reasoning as the colour. `MotesTest` asserts that the brightest a mote can be —
-     * the peak of this table times the colour's relative luminance — is below the pearl's own
-     * albedo luminance, so raising this table until the motes compete with the thing the game is
-     * about fails the build.
+     * 0.25 is chosen against the SHALLOWS, which is now the bright end: it is the value at which
+     * the field reads as texture rather than as objects on lit water. The deep needs no value
+     * chosen for it at all.
      */
-    private val ALPHA_BY_ZONE = floatArrayOf(
-        0.18f,   // SHALLOWS
-        0.34f,   // KELP
-        0.55f,   // TWILIGHT
-        0.72f,   // TRENCH
-        0.85f    // ABYSS
-    )
+    internal const val MOTE_ALPHA = 0.25f
 
-    /** The largest value in [ALPHA_BY_ZONE] — what the brightest possible mote is scaled by. */
-    internal val PEAK_ALPHA = ALPHA_BY_ZONE.max()
+    /** What the brightest possible mote is scaled by. Kept as a name so the bound tests read. */
+    internal val PEAK_ALPHA = MOTE_ALPHA
 
     // --- THE GLOWING SUBSET: motes that are actually light sources ----------------------------
     //
@@ -657,10 +600,10 @@ object Motes
      * The alpha a mote of full brightness at full pulse would be drawn at, at [depth].
      *
      * The two factors say different things and are kept separate for that reason: [surfaceFade] is
-     * "is this water at all", and the [DepthBlend] over [ALPHA_BY_ZONE] is "how much
+     * "is this water at all", and [MOTE_ALPHA] is "how much
      * bioluminescence is there in this water". Either may be re-tuned without the other.
      */
-    internal fun depthGain(depth: Float) = surfaceFade(depth) * DepthBlend.blend(depth, ALPHA_BY_ZONE)
+    internal fun depthGain(depth: Float) = surfaceFade(depth) * MOTE_ALPHA
 
     /**
      * Below this the draw is skipped entirely.
