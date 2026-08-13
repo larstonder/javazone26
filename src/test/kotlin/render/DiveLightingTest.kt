@@ -2,6 +2,7 @@ package render
 
 import dive.DiveInput
 import dive.DiveSim
+import dive.Tuning
 import dive.Zone
 import java.io.File
 import javax.imageio.ImageIO
@@ -955,5 +956,92 @@ class DiveLightingTest
             assertTrue(shoulder > 0, "could not find a shoulder line in frame 0 of $SHEET")
             return (rows.size / 2f - shoulder) / rows.size
         }
+    }
+
+    // --- The ambient floor: the water's own glow (DiveLighting.AMBIENT_FLOOR_RED) --------------
+    //
+    // The whole point of the floor is that it is applied AFTER the daylight blend rather than
+    // typed into the tables, so that the two things derived from those tables — the god rays'
+    // depth ramp and the torch's — keep reading raw daylight and do not move. Three of the four
+    // tests below exist to make that separation break loudly if somebody ever "simplifies" it
+    // into the tables, because the symptoms of doing so (god rays in the Abyss; a torch that
+    // dims where it is the only light) are both a long way from the line that caused them.
+
+    @Test
+    fun `the ambient never falls below the water's own glow, at any depth`()
+    {
+        var depth = 0f
+        while (depth <= Tuning.MAX_DEPTH)
+        {
+            assertTrue(
+                DiveLighting.ambientRedAt(depth) >= DiveLighting.ambientFloor[0],
+                "red ambient at ${depth}m is ${DiveLighting.ambientRedAt(depth)}, under the floor"
+            )
+            assertTrue(
+                DiveLighting.ambientGreenAt(depth) >= DiveLighting.ambientFloor[1],
+                "green ambient at ${depth}m is ${DiveLighting.ambientGreenAt(depth)}, under the floor"
+            )
+            assertTrue(
+                DiveLighting.ambientBlueAt(depth) >= DiveLighting.ambientFloor[2],
+                "blue ambient at ${depth}m is ${DiveLighting.ambientBlueAt(depth)}, under the floor"
+            )
+            depth += 0.5f
+        }
+    }
+
+    /**
+     * THE SEPARATION, ASSERTED DIRECTLY. The floor lights objects in the deep; the daylight tables
+     * must still say there is NO daylight down there, because `shaftDaylightByZone` and
+     * `torchIrradianceByZone` are both computed from them.
+     *
+     * A floor typed into `ambientGreen`'s Abyss entry instead would satisfy the previous test and
+     * fail this one, which is exactly the mistake it is here to catch — `LightShaftsTest` would
+     * catch the god-ray half of the consequence, and nothing at all would catch the torch half
+     * except a player noticing the beam had gone dim at 140 m.
+     */
+    @Test
+    fun `the floor lights the abyss without giving it any daylight`()
+    {
+        val abyss = DepthBlend.zoneMidpoint(Zone.ABYSS)
+        assertEquals(
+            0f, DiveLighting.daylightGreenAt(abyss), 0f,
+            "the Abyss has daylight — the god rays' ramp and the torch's are both derived from " +
+                "this number, so the shafts would reach the Abyss and the torch would dim there"
+        )
+        assertTrue(
+            DiveLighting.ambientGreenAt(abyss) > DiveLighting.daylightGreenAt(abyss),
+            "the Abyss ambient is still the raw daylight, so nothing lights the diver down there"
+        )
+    }
+
+    /**
+     * The owner complained about the deep only. The Shallows and the Kelp already read correctly,
+     * and brightening them would be a regression rather than a fix — so the floor has to be inert
+     * above the Twilight, on all three channels.
+     */
+    @Test
+    fun `the floor is inert in the shallows and the kelp`()
+    {
+        for (zone in listOf(Zone.SHALLOWS, Zone.KELP))
+        {
+            val depth = DepthBlend.zoneMidpoint(zone)
+            assertEquals(DiveLighting.daylightRedAt(depth), DiveLighting.ambientRedAt(depth), 0f, "$zone red was lifted")
+            assertEquals(DiveLighting.daylightGreenAt(depth), DiveLighting.ambientGreenAt(depth), 0f, "$zone green was lifted")
+            assertEquals(DiveLighting.daylightBlueAt(depth), DiveLighting.ambientBlueAt(depth), 0f, "$zone blue was lifted")
+        }
+    }
+
+    /**
+     * The glow is WATER, not a lifted black level. Deep water absorbs red first — it is why every
+     * other colour in this game shifts toward blue with depth — so a neutral floor would read as
+     * grey fog sitting in front of the scene rather than as the water itself.
+     */
+    @Test
+    fun `the water's own glow is bluish rather than neutral`()
+    {
+        val (red, green, blue) = Triple(DiveLighting.ambientFloor[0], DiveLighting.ambientFloor[1], DiveLighting.ambientFloor[2])
+        assertTrue(blue > green, "the floor's blue ($blue) is not above its green ($green) — it will read as grey fog")
+        assertTrue(green > red, "the floor's green ($green) is not above its red ($red) — it will read as grey fog")
+        assertTrue(blue > red * 2f, "the floor's blue ($blue) is under twice its red ($red), which is not a water hue")
     }
 }

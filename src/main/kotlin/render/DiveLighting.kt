@@ -13,6 +13,7 @@ import no.njoh.pulseengine.modules.lighting.global.GlobalIlluminationSystem
 import no.njoh.pulseengine.modules.scene.systems.EntityRendererImpl
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.sin
 
 /**
@@ -576,9 +577,159 @@ object DiveLighting
     // hard-edged mapOf(Zone, Color) is exactly the "sharp jump" the zone bands also had.
     // Same anchor values as before (SHALLOWS reads without a lamp nearby, ABYSS ambient is
     // effectively zero), indexed by Zone.ordinal, blended by DepthBlend.blend.
+    //
+    // THESE THREE TABLES MEAN EXACTLY ONE THING: HOW MUCH DAYLIGHT REACHES THIS DEPTH. They are
+    // not "the ambient light", and the difference is what [AMBIENT_FLOOR_GREEN] exists to keep.
+    // Two other quantities are DERIVED from them and would move if a value here were re-typed to
+    // make the deep brighter — [shaftDaylightByZone] (god rays in the Abyss, a design guard rail)
+    // and [torchIrradianceByZone] (the torch would DIM exactly where it must be strongest). See
+    // the floor's own doc for why it is applied afterwards instead.
     private val ambientRed   = floatArrayOf(0.34f, 0.16f, 0.06f, 0.015f, 0.0f)
     private val ambientGreen = floatArrayOf(0.52f, 0.30f, 0.14f, 0.045f, 0.0f)
     private val ambientBlue  = floatArrayOf(0.68f, 0.44f, 0.24f, 0.09f,  0.003f)
+
+    /**
+     * # THE WATER'S OWN FAINT GLOW — a floor under the ambient, and it is NOT daylight
+     *
+     * ## The problem it solves
+     *
+     * The frame is `albedo x irradiance` (`2026-08-13-one-world-model.md` §2) and the deep was
+     * darkened TWICE by depth: [DiveRenderer]'s band colours ramped 0.52 -> 0.035 in blue AND the
+     * ambient they are multiplied by ramps 0.68 -> 0.003. The composite is a MULTIPLY, so the
+     * deep fell off QUADRATICALLY — four orders of magnitude between the Shallows and the Abyss,
+     * and 98.9% of a measured 140 m frame at or below 2/255 (a capture with all three phase pins
+     * set; `docs/superpowers/plans/2026-08-13-deep-water-lighting.md` §2b has the protocol).
+     *
+     * The two ramps are not the same kind of thing, and that is the whole of this fix:
+     *
+     *  - [DiveRenderer.drawZoneBands] colours each horizontal strip at ITS OWN depth, so that
+     *    ramp is the only thing producing the water's visible vertical gradient. It has to keep
+     *    ramping or the water becomes one flat colour.
+     *  - [updateAmbient] sets ONE ambient colour for the whole frame, from the DIVER's depth. It
+     *    is what lights every OBJECT — the diver, the rock, the pearls. Its collapse to zero is
+     *    why the diver was algebraically black: measured torso luminance 0.000/255 at 140 m.
+     *
+     * So the band colours keep the gradient and the ambient gets a floor. The owner's framing, and
+     * it is a better one than "make the deep brighter": *"could we dim the water with the absence
+     * of daylight instead of darkening everything?"*
+     *
+     * ## WHY IT IS A `max()` HERE AND NOT A RAISED ABYSS ENTRY IN THE TABLES
+     *
+     * Because the tables are consumed by two things that must NOT move, and both read them raw:
+     *
+     *  - [shaftDaylightByZone] is `ambientGreen[i] / ambientGreen[0]`. Raising `ambientGreen`'s
+     *    Abyss entry would put GOD RAYS IN THE ABYSS — a design guard rail (spec §11/§6b) that
+     *    `LightShaftsTest` asserts as an arithmetic identity rather than as a remembered cutoff.
+     *  - [torchIrradianceByZone] is `1 - shaftDaylightByZone`, so the same edit would DIM THE
+     *    TORCH exactly where the design (spec §17, 2026-08-12) makes it the primary light source.
+     *
+     * Applying the floor after the blend leaves both of those reading the same numbers they read
+     * before, so neither moves. That separation is the design, and it is a statement about
+     * physics rather than a trick to dodge two tests: **the tables are the daylight arriving from
+     * above, which really does run out; the floor is the water's own faint glow — scatter,
+     * bioluminescence, the light the diver's own lamp bounces off the column — which is a
+     * different quantity and does not ramp with depth.**
+     *
+     * ## THE VALUE IS THE KELP'S OWN DAYLIGHT, AND THAT IS NOT A COINCIDENCE
+     *
+     * (0.16, 0.30, 0.44) is exactly `ambientRed/Green/Blue[KELP]`. It is the LARGEST floor that
+     * leaves the Shallows and the Kelp bit-identical, because `max` is a no-op wherever the
+     * daylight already exceeds it and the Kelp's midpoint is where it stops doing so. The owner
+     * complained only about the deep, and brightening water that already reads correctly is a
+     * regression rather than a fix — so "as much as possible without touching what works" is the
+     * whole selection rule, and the boundary of the constraint is the value.
+     *
+     * Said as a sentence: **the water's own glow is the light of a kelp forest at 45 m, and
+     * however much deeper you go it never gets darker than that.** The Shallows and the Kelp are
+     * lit by daylight; everything below the Twilight is lit by the water.
+     *
+     * It is BLUISH because it is a water hue by construction — it is a row of the daylight table.
+     * A neutral grey floor would have read as a lifted black level, a fog in front of the scene,
+     * rather than as the water itself. `DiveLightingTest` asserts the hue ordering rather than the
+     * three numbers, because the ordering is the requirement.
+     *
+     * ## WHAT IT ACTUALLY BOUGHT, MEASURED — AND THE HALF IT COULD NOT BUY
+     *
+     * Real screen grabs, `EPT_DEPTH` at 20/70/140 with all three phase pins set, game window
+     * cropped out of a 3200x1856 capture. The headline is the diver, because he is the thing the
+     * owner could not see:
+     *
+     * ```
+     * diver's torso, mean luminance /255      before     after
+     *   20 m (Shallows)                        38.829    38.831     unchanged, as required
+     *   70 m (Twilight)                         1.244     9.785
+     *  140 m (Abyss)                            0.000    10.321     blue channel 0.0 -> 53.9
+     * ```
+     *
+     * At 140 m he was ALGEBRAICALLY black — `albedo x 0.003` — and the only thing at his position
+     * was his torch's own emitter core. He now reads as a whole figure.
+     *
+     * **The deep WATER is still pure black at 140 m, and no choice of these three numbers fixes
+     * that.** Measured 0.000 before and after. The reason is a hard clamp rather than a ramp, and
+     * it is worth writing down because §2d of the deep-water plan gets the arithmetic wrong in a
+     * way that hid it (see [DiveRenderer.zoneRed] for the corrected model): the composite happens
+     * in LINEAR space, and `color_grading.frag`'s contrast step subtracts a constant 0.00739 from
+     * every channel before ACES clamps at zero. The Abyss water's linear product is 0.0044 at
+     * these values, so it comes out negative and therefore black. To clear the clamp it would need
+     * a draw albedo of 0.31 against this ambient — nearly the Kelp's 0.36 — i.e. the depth
+     * gradient deleted. That was §2d's conclusion and it survives its own broken arithmetic.
+     *
+     * The lever that WOULD move it is the grade's `contrast`, which is `2026-08-13-one-world-model
+     * .md` §4's last step and deliberately not this one: at contrast 1.0 the same tables measure
+     * Twilight 17.6, Trench 10.3, Abyss 5.0 out of 255, because the subtraction is what the
+     * contrast term IS down there. One dial at a time.
+     *
+     * ## THE PREVIOUS ATTEMPT, AND WHY IT WAS A NO-OP
+     *
+     * This construction was built on 2026-08-13, measured as changing nothing, and reverted
+     * (`bec747d`). It was not wrong; it was too small and it was blocked. Its floor was about 0.09
+     * blue — the Trench's own daylight — and the reflectance floor was already holding the Abyss
+     * water's albedo up at 0.16 whatever the zone table asked for, so the only thing it could have
+     * lit was the objects, at a twentieth of the irradiance used here. What makes the difference
+     * is that this floor is five times that one and reaches the value the constraint allows rather
+     * than the next value down the daylight table.
+     */
+    private const val AMBIENT_FLOOR_RED = 0.16f
+
+    /** @see AMBIENT_FLOOR_RED — green, the channel Rec.709 weights at 0.7152 and therefore the one that decides whether the deep reads as lit. */
+    private const val AMBIENT_FLOOR_GREEN = 0.30f
+
+    /** @see AMBIENT_FLOOR_RED — blue, the highest of the three because deep water absorbs red first. */
+    private const val AMBIENT_FLOOR_BLUE = 0.44f
+
+    /**
+     * The ambient the GI is actually handed at [depth]: the daylight that reaches it, or the
+     * water's own glow, whichever is greater. Pure and exposed for the reason `CLAUDE.md`'s
+     * "pure-logic-extracted-for-testing" section gives — `DiveLightingTest` asserts the floor's
+     * relationship to the tables here rather than trying to observe a `Color` written into a GI
+     * system that needs a GL context to exist.
+     *
+     * Allocation-free (three primitive floats in, one out), called three times per fixed tick.
+     */
+    internal fun ambientRedAt(depth: Float): Float = max(DepthBlend.blend(depth, ambientRed), AMBIENT_FLOOR_RED)
+
+    /** @see ambientRedAt */
+    internal fun ambientGreenAt(depth: Float): Float = max(DepthBlend.blend(depth, ambientGreen), AMBIENT_FLOOR_GREEN)
+
+    /** @see ambientRedAt */
+    internal fun ambientBlueAt(depth: Float): Float = max(DepthBlend.blend(depth, ambientBlue), AMBIENT_FLOOR_BLUE)
+
+    /**
+     * The raw daylight at [depth], with NO floor — what the tables mean on their own. Exposed so
+     * `DiveLightingTest` can assert that the floor is the only difference between these and
+     * [ambientRedAt] and friends, i.e. that the tables were not quietly re-typed to brighten the
+     * deep (which would move the god rays and the torch with them).
+     */
+    internal fun daylightRedAt(depth: Float): Float = DepthBlend.blend(depth, ambientRed)
+
+    /** @see daylightRedAt */
+    internal fun daylightGreenAt(depth: Float): Float = DepthBlend.blend(depth, ambientGreen)
+
+    /** @see daylightRedAt */
+    internal fun daylightBlueAt(depth: Float): Float = DepthBlend.blend(depth, ambientBlue)
+
+    /** The water's own glow, per channel — exposed only so `DiveLightingTest` can assert against the constants rather than against copies of them. @see AMBIENT_FLOOR_RED */
+    internal val ambientFloor = floatArrayOf(AMBIENT_FLOOR_RED, AMBIENT_FLOOR_GREEN, AMBIENT_FLOOR_BLUE)
 
     /**
      * How much of the god rays a depth gets: **exactly the fraction of the surface's daylight
@@ -1118,14 +1269,18 @@ object DiveLighting
     /**
      * Ambient light as a continuous function of depth — see [DepthBlend]. Positional
      * independent of the camera, so unlike [render] it is fine to call from `onUpdate()`.
+     *
+     * The three channels come from [ambientRedAt] and friends, which are the daylight tables
+     * floored by the water's own glow — see [AMBIENT_FLOOR_RED] for why the floor lives on this
+     * side of the blend and not inside the tables.
      */
     fun updateAmbient(sim: DiveSim)
     {
         val depth = sim.depth
         ambientColor.setFromRgba(
-            DepthBlend.blend(depth, ambientRed),
-            DepthBlend.blend(depth, ambientGreen),
-            DepthBlend.blend(depth, ambientBlue),
+            ambientRedAt(depth),
+            ambientGreenAt(depth),
+            ambientBlueAt(depth),
             1f
         )
         gi?.ambientLight = ambientColor

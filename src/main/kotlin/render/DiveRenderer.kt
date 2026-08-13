@@ -51,13 +51,88 @@ import kotlin.math.sqrt
  */
 object DiveRenderer
 {
-    // Per-zone anchor colours for the zone bands, indexed by Zone.ordinal. Blended
-    // continuously across depth by DepthBlend rather than drawn as flat per-zone blocks —
-    // see drawZoneBands. Kept as parallel FloatArrays (not a Map<Zone, Color>) so blending
-    // is zero-allocation: DepthBlend.blend takes primitive floats in, floats out.
-    private val zoneRed   = floatArrayOf(0.10f, 0.06f, 0.03f, 0.015f, 0.004f)
-    private val zoneGreen = floatArrayOf(0.34f, 0.22f, 0.12f, 0.06f,  0.015f)
-    private val zoneBlue  = floatArrayOf(0.52f, 0.36f, 0.22f, 0.12f,  0.035f)
+    /**
+     * Per-zone anchor colours for the zone bands, indexed by Zone.ordinal. Blended continuously
+     * across depth by [DepthBlend] rather than drawn as flat per-zone blocks — see
+     * [drawZoneBands]. Kept as parallel FloatArrays (not a `Map<Zone, Color>`) so blending is
+     * zero-allocation: `DepthBlend.blend` takes primitive floats in, floats out.
+     *
+     * # THE DEEP END WAS LIFTED — a 2.9x ramp in blue where it used to be 15x
+     *
+     * Blue was `(0.52, 0.36, 0.22, 0.12, 0.035)`, and red and green fell with it. That was the
+     * ALBEDO half of a double count: the frame is `albedo x irradiance`, the composite is a
+     * MULTIPLY, and [DiveLighting]'s ambient was ALSO ramping to near-zero (0.68 -> 0.003), so
+     * the deep water fell off QUADRATICALLY — four orders of magnitude, with 98.9% of a measured
+     * 140 m frame at or below 2/255 and the open water at a flat 0.000.
+     *
+     * The fix is a SPLIT, and each half does a different job (`DiveLighting.AMBIENT_FLOOR_RED`
+     * carries the other half and the reasoning behind the split):
+     *
+     *  - these colours keep ramping, because a strip is coloured at ITS OWN depth and this table
+     *    is therefore the ONLY thing producing the water's visible vertical gradient. Flatten it
+     *    and the water becomes one colour from the surface to the floor;
+     *  - the global ambient gets a FLOOR, because it is set once per frame from the DIVER's
+     *    depth and is what makes objects exist at all.
+     *
+     * ## THE VALUES
+     *
+     * The Shallows and the Kelp are UNCHANGED, to the digit — verified as byte-identical water in
+     * a 20 m capture before and after. The owner's complaint was about the deep only, and
+     * brightening water that already reads correctly is a regression, not a fix.
+     *
+     * The bottom three rise as far as the DEPTH CUE allows and no further, which is what fixes the
+     * value rather than taste. `every zone still reads as its own colour at its own midpoint`
+     * requires the Abyss to stay at least 10x darker than the Shallows in relative luminance; this
+     * table measures **11.98x**, so a blue much above 0.18 would fail it. That test and this table
+     * are two ends of the same argument: the deep must be dimmer, and it must not be a void.
+     *
+     * RED AND GREEN ARE SCALED TO HOLD THE HUE, NOT RE-TUNED BY EYE. Each zone's red:green:blue
+     * ratio is carried over exactly — Trench 1 : 4 : 8 and Abyss 1 : 3.75 : 8.75 are the ratios
+     * the old table had, and the Twilight's 1 : 4 : 7.335 matches its old 1 : 4 : 7.333. So the
+     * water keeps shifting toward blue with depth at precisely the rate it did; only the level
+     * moved. `DiveRendererTest` asserts the ratios' ORDERING rather than the values, so a re-tune
+     * that quietly drains the hue fails.
+     *
+     * ## THE COLOUR GRADE'S MODEL, CORRECTED — the deep water is clamped, not dimmed
+     *
+     * `2026-08-13-deep-water-lighting.md` §2d multiplies the DRAW values together and grades that.
+     * It omits the sRGB round trip, and the round trip is the whole of the deep: `setDrawColor`
+     * packs an sRGB byte that `texture.vert` decodes with the ~2.4 power curve, so the multiply is
+     * in LINEAR space and a draw blue of 0.18 is a linear 0.027. The corrected chain, validated
+     * against three real captures spanning 0 to 87/255 (model 95.6, 0.00, 3.3 against measured 87,
+     * 0, 2):
+     *
+     *     linear = srgbToLinear(albedo) * srgbToLinear(ambient)
+     *     linear *= 2^exposure - 1                              // 1.1  -> x1.1435
+     *     linear  = (linear - 0.5) * (1 + 0.05*(contrast-1)) + 0.5   // 1.3 -> SUBTRACTS 0.00739
+     *     out     = srgbEncode(ACES(linear))                    // negative clamps to pure black
+     *
+     * The contrast term is a SUBTRACTION of a constant near black, not a scaling, which is why the
+     * deep water is a hard clamp and not a ramp. At these values the Twilight's water clears it
+     * (+0.0063 -> 6.6/255, measured 7) and the Trench just does (+0.0014 -> 1.1/255), while the
+     * ABYSS WATER IS STILL EXACTLY BLACK (-0.0024). Clearing it there would need a draw blue near
+     * 0.31 — the Kelp's 0.36 — i.e. the gradient deleted. The lever that would move it is
+     * `contrast`, which is the one-world-model plan's LAST step and not this one.
+     *
+     * ## THE REFLECTANCE FLOOR NO LONGER BITES, AND THAT IS THE POINT
+     *
+     * Re-checked rather than assumed, and it explains why the previous ambient floor measured as a
+     * no-op. THE OLD TABLE'S DEEP END WAS NEVER WHAT WAS DRAWN: its Abyss anchor had a linear
+     * length of 0.00325, six times under [GI_REFLECTANCE_FLOOR], so [floorBlueForReflectance]
+     * lifted blue 0.035 -> 0.1598 and the deepest water's albedo was the FLOOR'S choice rather
+     * than the table's. Any ambient floor was multiplying an albedo that was already as high as it
+     * was going to get.
+     *
+     * This table's minimum raw linear length over the whole reachable column is 0.02811 (at
+     * 135 m), above the 0.022 target, so the lift is now inert everywhere and the table says what
+     * the water looks like. `every zone band colour clears the GI reflectance floor once quantized`
+     * still sweeps the column and is what proves it — [floorBlueForReflectance] stays as the guard
+     * it was written to be, and `the reflectance floor leaves colours that already clear it
+     * untouched` still exercises its comparison branch at 90 m.
+     */
+    private val zoneRed   = floatArrayOf(0.10f, 0.06f, 0.0409f, 0.030f, 0.0206f)
+    private val zoneGreen = floatArrayOf(0.34f, 0.22f, 0.1636f, 0.120f, 0.0771f)
+    private val zoneBlue  = floatArrayOf(0.52f, 0.36f, 0.30f,   0.24f,  0.18f)
 
     /** Strip height for the zone-band gradient, in metres (resolution-independent). Small
      *  enough that DepthBlend's smoothstep easing reads as continuous rather than banded.
@@ -1302,7 +1377,17 @@ object DiveRenderer
      * is the entire point, since a step here is the bug.
      */
     internal fun zoneBlueAt(depth: Float): Float =
-        floorBlueForReflectance(zoneRedAt(depth), zoneGreenAt(depth), DepthBlend.blend(depth, zoneBlue))
+        floorBlueForReflectance(zoneRedAt(depth), zoneGreenAt(depth), rawZoneBlueAt(depth))
+
+    /**
+     * The band's blue BEFORE the reflectance floor — what [zoneBlue] asks for on its own.
+     *
+     * Exposed so `DiveRendererTest` can assert "the floor raises and never lowers" against the
+     * curve itself instead of against a TRANSCRIPTION of the table, which is what it used to do:
+     * a copy of `floatArrayOf(0.52f, ...)` in the test file passes forever after somebody edits
+     * the real one, which is exactly the change this comment is attached to.
+     */
+    internal fun rawZoneBlueAt(depth: Float): Float = DepthBlend.blend(depth, zoneBlue)
 
     /**
      * The blue channel raised, if required, to the smallest value that puts (r, g, blue) at

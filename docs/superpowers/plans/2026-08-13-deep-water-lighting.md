@@ -240,6 +240,20 @@ color.rgb = ((color.rgb - 0.5) * max(1.0 + 0.05*(contrast - 1), 0)) + 0.5; // 1.
 1.3 — but that is still enough to push anything below **0.00739** negative, where ACES clamps
 it to zero. A hard black clamp, not a curve.
 
+> **CORRECTION (2026-08-13, after step 2).** The model below is WRONG, and it was presented
+> here — and to the owner, twice — as "validated against the captures". It multiplies the DRAW
+> values and grades that, omitting the sRGB round trip: `setDrawColor` packs an sRGB byte which
+> `texture.vert` decodes with the ~2.4 power curve, so the multiply happens in LINEAR space and
+> a draw blue of 0.18 is a linear 0.027. It agreed with the Shallows capture by coincidence of
+> range, which is exactly how a wrong model survives a single check.
+>
+> The corrected chain is documented in `DiveRenderer.zoneRed`'s doc and is validated against
+> three captures spanning 0 to 87/255. Under it, the grade's `contrast` term near black is a
+> SUBTRACTION OF A CONSTANT 0.00739 rather than a ramp, so the deep water is a hard clamp.
+>
+> **The conclusion below survives its own broken arithmetic** — no ambient makes the Abyss water
+> read without deleting the gradient — but the numbers in the table are not to be reused.
+
 Modelled end to end and validated against the captures (the Shallows figure below is what a
 correctly-lit surface frame measures):
 

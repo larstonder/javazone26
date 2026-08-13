@@ -156,12 +156,129 @@ class DiveRendererTest
     {
         val justAboveTheFloor = 90f
         assertEquals(
-            DepthBlend.blend(justAboveTheFloor, floatArrayOf(0.52f, 0.36f, 0.22f, 0.12f, 0.035f)),
+            DiveRenderer.rawZoneBlueAt(justAboveTheFloor),
             DiveRenderer.zoneBlueAt(justAboveTheFloor),
             0f,
             "90m already clears the floor and must be passed through unchanged"
         )
     }
+
+    /**
+     * THE LIFT OF 2026-08-13, AND THE HALF OF IT THAT MUST NOT BE UNDONE BY EYE.
+     *
+     * The deep end of the band table was raised (blue 0.035 -> 0.14 in the Abyss) because the
+     * frame is `albedo x irradiance` and BOTH halves were ramping to near-zero, so the deep fell
+     * off quadratically — 98.9% of a measured 140 m frame at or below 2/255. See [zoneRed]'s doc.
+     *
+     * What that lift must not cost is the water's HUE. Deep water absorbs red first, and the old
+     * table encoded that as a red:green:blue ratio that grows steadily bluer with depth; a lift
+     * applied to blue alone, or eyeballed per channel, would have flattened it and left the deep
+     * a washed slate. So this asserts the RELATIONSHIP rather than the numbers: every zone's
+     * water is bluer than the zone above it, on both ratios.
+     *
+     * Sampled at zone MIDPOINTS because that is where [DepthBlend] anchors each zone's own value
+     * (`smoothstep` has zero derivative there), so a midpoint reading is that zone's entry.
+     */
+    @Test
+    fun `the water shifts further toward blue at every zone in turn`()
+    {
+        var previousBlueOverRed = 0f
+        var previousBlueOverGreen = 0f
+        for (zone in Zone.entries)
+        {
+            val depth = DepthBlend.zoneMidpoint(zone)
+            // The RAW blue: zoneBlueAt adds the reflectance floor, which is a constraint on the
+            // linear vector length and has nothing to say about the water's intended hue.
+            val blueOverRed = DiveRenderer.rawZoneBlueAt(depth) / DiveRenderer.zoneRedAt(depth)
+            val blueOverGreen = DiveRenderer.rawZoneBlueAt(depth) / DiveRenderer.zoneGreenAt(depth)
+            assertTrue(
+                blueOverRed > previousBlueOverRed,
+                "$zone water is not bluer than the zone above it: blue/red $previousBlueOverRed -> $blueOverRed"
+            )
+            assertTrue(
+                blueOverGreen > previousBlueOverGreen,
+                "$zone water is not bluer than the zone above it: blue/green $previousBlueOverGreen -> $blueOverGreen"
+            )
+            previousBlueOverRed = blueOverRed
+            previousBlueOverGreen = blueOverGreen
+        }
+    }
+
+    /**
+     * THE TWO ASSERTIONS THAT SPAN BOTH HALVES OF THE 2026-08-13 SPLIT, and the only place the
+     * quadratic collapse can be expressed at all.
+     *
+     * Neither table can state it alone. `every zone still reads as its own colour at its own
+     * midpoint` measures the ALBEDO, and the albedo alone never looked that bad — the reflectance
+     * floor was quietly holding the old Abyss blue at 0.160 against a table asking for 0.035, so
+     * the albedo ratio was 30x and not four orders of magnitude. What collapsed was the PRODUCT of
+     * the band colour and the ambient, because the composite is a multiply and BOTH were ramping.
+     * So the product is what has to be asserted, and it has to be run through the grade, because
+     * near black the grade is a hard clamp rather than a curve.
+     *
+     * ## WHAT EACH ONE CATCHES
+     *
+     *  - **The water.** The Twilight is the deepest water the grade lets through at all (see
+     *    [zoneRed]'s corrected model: the Trench is +0.0014 and the Abyss is still negative), so
+     *    it is the shallowest place the collapse can be caught. At the old values it was -0.0053
+     *    and measured 0.000/255 in a real 70 m capture; at these it is +0.0063 and measures 7.
+     *  - **The objects.** This is the owner's actual complaint — *"you can't see the diver"* —
+     *    and the ambient floor is what fixes it. A mid-grey object at the Abyss was -0.0074, i.e.
+     *    pure black at ANY albedo, because the ambient was 0.003. It is now +0.033. The diver's
+     *    suit is roughly this albedo and his torso measured 0.000 -> 10.3/255 at 140 m.
+     *
+     * BLUE, because blue is what carries deep water and is the channel the zone table lets fall
+     * the least. Red and green are further under the clamp at every depth.
+     */
+    @Test
+    fun `the deepest readable water clears the colour grade's black clamp`()
+    {
+        val twilight = DepthBlend.zoneMidpoint(Zone.TWILIGHT)
+        val graded = gradedBlue(DiveRenderer.zoneBlueAt(twilight), DiveLighting.ambientBlueAt(twilight))
+        assertTrue(
+            graded > 0f,
+            "the Twilight's water grades to $graded, which ACES clamps to pure black — albedo and " +
+            "ambient are both ramping again and the water below the Kelp has stopped existing"
+        )
+    }
+
+    @Test
+    fun `an object in the abyss clears the colour grade's black clamp`()
+    {
+        // A plain mid-grey, not a transcription of the diver's suit: the sheet's texels are not
+        // reachable from here, and the point is that NO albedo could survive an ambient of 0.003.
+        val graded = gradedBlue(0.5f, DiveLighting.ambientBlueAt(DepthBlend.zoneMidpoint(Zone.ABYSS)))
+        assertTrue(
+            graded > 0f,
+            "a mid-grey object in the Abyss grades to $graded, which ACES clamps to pure black — " +
+            "the diver is algebraically invisible down there whatever his albedo is"
+        )
+    }
+
+    /**
+     * The value entering ACES for one channel, given a draw albedo and a draw ambient. Negative
+     * means the colour grade clamps that channel to pure black.
+     *
+     * Reproduces `shaders/effects/color_grading.frag` and the linear-space composite exactly as
+     * [DiveRenderer.zoneRed]'s doc sets it out, including the two things the deep-water plan's §2d
+     * model got wrong: the multiply happens on the LINEAR side of `texture.vert`'s decode, and
+     * `contrast` enters the shader scaled by 0.05, which near black makes it a SUBTRACTION of a
+     * constant rather than a scaling. Validated against three captures spanning 0 to 87/255.
+     *
+     * The exposure and contrast values are the ones `DiveLighting.setup` constructs the
+     * `ColorGradingEffect` with. They are transcribed because the effect is an engine class with
+     * no accessor reachable from a unit test; if they move there and not here, this test goes
+     * quietly wrong, so it is worth a grep when either is touched.
+     */
+    private fun gradedBlue(albedoDraw: Float, ambientDraw: Float): Float
+    {
+        val linear = DiveRenderer.srgbToLinear(albedoDraw) * DiveRenderer.srgbToLinear(ambientDraw)
+        val exposed = linear * (Math.pow(2.0, GRADE_EXPOSURE.toDouble()).toFloat() - 1f)
+        return (exposed - 0.5f) * (1f + 0.05f * (GRADE_CONTRAST - 1f)) + 0.5f
+    }
+
+    private val GRADE_EXPOSURE = 1.1f
+    private val GRADE_CONTRAST = 1.3f
 
     // --- The strip walk (DiveRenderer.stripCount / stripTopDepth / stripCentreDepth) --------
     //
