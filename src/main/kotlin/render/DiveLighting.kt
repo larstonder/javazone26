@@ -160,16 +160,47 @@ object DiveLighting
      *
      * A pearl, unlike the diver, IS the light — so its emitter belongs within its own drawn
      * silhouette, where the pearl itself hides the shelf. The drawn disc is
-     * `IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES)` = 1.354 m across, and 1.2 m
-     * sits inside it with room to spare. It is stated as its own number rather than derived from
-     * the pearl's size for the reason [DIVER_LIGHT_SIZE_METRES] is: "as big as the body" is the
-     * coupling that caused this, and it happens to be harmless only while the body is small.
-     * `DiveLightingTest` pins the bound that matters — emitter <= drawn silhouette — so growing
-     * it back fails the build. It is also the size the torch already runs at, i.e. a known-good
-     * ~18 texels in the half-scale SDF (it was 9 while that scale was 0.25, which is what this
-     * size was originally chosen against), and well above `scene.vert:87`'s minimum quad size.
+     * `IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES)` = 1.354 m across. It is
+     * stated as its own number rather than derived from the pearl's size for the reason
+     * [DIVER_LIGHT_SIZE_METRES] is: "as big as the body" is the coupling that caused this, and it
+     * happens to be harmless only while the body is small.
+     *
+     * ## FITTING INSIDE THE BODY WAS NOT ENOUGH: 1.2 m WAS 89% OF THE SILHOUETTE, AND A PEARL WAS
+     * THEREFORE ITS OWN FLAT SHELF FROM RIM TO RIM
+     *
+     * An expert review and an independent measurement both landed on *"a pearl looks identical at
+     * every depth and barely responds to the torch"*, and the geometry above is half of why. At
+     * 1.2 m against a 1.354 m disc the emitter covered **79% of the pearl's AREA**, so four fifths
+     * of what a player sees of a pearl was the flat interior shelf — a region that, by the SDF
+     * argument above, receives exactly the emitter's own radiance whatever the world is doing.
+     *
+     * **0.5 m is 37% of the drawn diameter, i.e. 13.6% of its area.** The remaining 86% of the
+     * pearl is outside its own full-brightness core and is therefore lit by the world — which is
+     * what [PEARL_REACH_METRES], the other half of the fix, then puts a falloff across. Measured
+     * on pinned captures (window grab, all three phase pins, ~20-45 matched pearls per depth,
+     * against a same-build control pair that agreed to 0.01/255 on every statistic):
+     *
+     * ```
+     * pearl body, median luminance /255      20 m      75 m     140 m     open water at 140 m
+     *   1.2 m emitter, 3 m reach            113.59     83.03     88.43           0.29
+     *   0.5 m emitter, 0.25 m reach          88.03     52.65     56.90           0.29
+     * ```
+     *
+     * ## WHY NOT SMALLER, WHICH IS A RESOLUTION BOUND AND NOT A TASTE
+     *
+     * The emitter is rasterised into the HALF-SCALE local scene ([setup]'s `localSceneTexScale`),
+     * so its texel count is `size * pixelsPerMetre * 0.5` — 8.1 texels here at the 3200x1800 dev
+     * framebuffer and **4.9 at a 1080p booth panel**, where `CameraRig.pixelsPerMetre` is 19.5.
+     * `scene.vert:86-88` also floors a light quad at `pixelSizeInWorld * 1500 / camScale`, which
+     * for the local scene surface (`resolution.y` = framebuffer height x 0.5) is 0.051 m here and
+     * **0.142 m at 1080p** — so 0.5 m is 3.5x the floor on the smallest panel this could ship on.
+     * A 0.4 m probe was built and captured and its core came out visibly polygonal at 6.5 texels;
+     * there is no room below this and the numbers say where the room ran out.
+     *
+     * `DiveLightingTest` pins the relationship rather than the value — the emitter must be a CORE,
+     * at most half the drawn silhouette, so restoring the 1.2 m that caused this fails the build.
      */
-    internal const val PEARL_LIGHT_SIZE_METRES = 1.2f
+    internal const val PEARL_LIGHT_SIZE_METRES = 0.5f
 
     /**
      * The diver's torch: the size of the QUAD that emits it, in metres.
@@ -373,18 +404,66 @@ object DiveLighting
     internal const val TORCH_REACH_METRES = MAX_REACH_METRES
 
     /**
-     * How far a pearl is at full brightness, in metres — and it is deliberately SHORT.
+     * How far a pearl is at full brightness, in metres — and it is deliberately SHORTER THAN THE
+     * PEARL.
      *
      * A pearl is a marker glow and not a light source ([PEARL_IRRADIANCE_AT_ONE_METRE]), and with no
      * distance term it was lighting the whole frame it appeared in: the measured profile at
      * `radius = 0` still put 8% of a pearl's 1 m value on the water 3.2 m away, times thirty pearls.
-     * 3 m is a bit over two drawn pearl diameters — enough that a pearl reads as sitting IN water
-     * rather than pasted onto it, and little enough that a pearl 20 m away contributes
-     * `(3/20)^2 = 2.3%` of what it used to.
+     * The first cut at that was 3 m — a bit over two drawn pearl diameters.
+     *
+     * ## 3 m WAS STILL FIVE TIMES THE PEARL, SO IT CHANGED NOTHING ABOUT THE PEARL
+     *
+     * **R IS THE RADIUS OF FULL BRIGHTNESS — inside R there is no falloff whatsoever**
+     * ([attenuationAt] clamps at 1). A pearl's drawn disc is
+     * `IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES)` = 1.354 m across, i.e. a body
+     * RADIUS of 0.677 m, so at 3 m the whole pearl — and everything within two more pearl-widths of
+     * it — sat deep inside its own full-brightness zone. That is the second half of *"a pearl looks
+     * identical at every depth and barely responds to the torch"*: the falloff existed, was
+     * correctly converted, and was switched on at a distance nothing in the picture ever reached.
+     *
+     * ## 0.25 m IS THE EMITTER'S OWN RADIUS, AND THAT IS THE DERIVATION
+     *
+     * [PEARL_LIGHT_SIZE_METRES] is 0.5 m, so the emitter's radius is 0.25 m and the pearl's own
+     * light now falls off FROM ITS OWN SURFACE OUTWARD — which is what a glowing bead physically
+     * does, and it is the shortest statement of the rule. Across the pearl's own body:
+     *
+     * ```
+     *   at the emitter's rim   0.25 m from centre     1.00     (inside R, no falloff)
+     *   at the body's rim      0.677 m from centre    0.14     (0.25 / 0.677)^2
+     *   one pearl away         1.35 m                 0.034
+     *   in the neighbourhood   3 m                    0.0069
+     * ```
+     *
+     * — a bright core with a halo that is down to a seventh by the time it reaches the silhouette,
+     * which is the "core and halo" the review asked for and the opposite of the flat shelf it had.
+     *
+     * They are TWO NUMBERS AND NOT ONE EXPRESSION, deliberately. `LIGHT_CULL_MARGIN_METRES`'s doc
+     * records what happened the last time a reach was written as an emitter size; how far a light
+     * carries and how big its source looks are independent quantities that happen to coincide here.
+     *
+     * ## WHAT THIS GIVES UP, STATED PLAINLY
+     *
+     * A pearl no longer lights the water around it in any measurable way — 0.7% of its one-metre
+     * value at 3 m, against 8% before. The plan's *"pearls stop being exempt... a pearl still lights
+     * itself, but it now also lights its neighbourhood"* is half-repealed: it lights itself and
+     * nothing else. That is the design's own ordering (spec §17: the torch is the deep's light
+     * source, the pearls are what it finds), and the measured cost is nil — the open-water median at
+     * 140 m is 0.29/255 with the old 3 m reach and 0.29/255 with this one, i.e. the neighbourhood
+     * lighting that was being given up was already below the display's first step.
+     *
+     * ## AND WHAT IT DOES NOT FIX, WHICH IS THE REST OF THE REVIEW'S COMPLAINT
+     *
+     * A pearl still measures the same at 75 m as at 140 m, and no value here can change that: below
+     * the Kelp the irradiance a pearl receives is [AMBIENT_FLOOR_RED]'s flat (0.16, 0.30, 0.44),
+     * which does not ramp with depth by design, and a pearl's albedo carries no depth term the way
+     * `DiveRenderer.drawZoneBands`'s water does. See the floor's own doc; the pearl responds to the
+     * world between the Shallows and the Twilight (median 113.6 -> 83.0 before, 88.0 -> 52.7 after)
+     * and below that there is no world left to respond to.
      *
      * The lure shares it, necessarily: the disguise is that the two are the same light.
      */
-    internal const val PEARL_REACH_METRES = 3f
+    internal const val PEARL_REACH_METRES = 0.25f
 
     /**
      * How far a glowing mote is at full brightness, in metres. One metre — a mote lights ITSELF and
@@ -411,9 +490,34 @@ object DiveLighting
      * irradiance(1 m, on axis)  =  intensity x sizeMetres x coneMaskPeak(cone)
      * ```
      *
-     * The `1/d` and the `(R/d)^2` are both exactly 1 at d = 1 m (every reach above is >= 1 m), which
-     * is why one metre is the reference and not some other distance: it is the distance at which the
-     * geometry drops out and only the light's own strength is left.
+     * One metre is the reference because it is the distance at which the geometry drops out and only
+     * the light's own strength is left: `1/d` is exactly 1 there for every light in the game.
+     *
+     * ## THE PEARL NO LONGER DELIVERS ITS STATED VALUE AT ONE METRE, AND THAT IS SAID OUT LOUD
+     * RATHER THAN QUIETLY RESCALED
+     *
+     * This doc used to add *"and the `(R/d)^2` is 1 at d = 1 m too, since every reach is >= 1 m"*.
+     * That stopped being true when [PEARL_REACH_METRES] went to 0.25 m — a reach deliberately
+     * shorter than the pearl itself — and the honest consequence is:
+     *
+     * ```
+     * delivered irradiance at 1 m  =  irradianceAtOneMetre  x  attenuationAt(1 m, reach)
+     *
+     *   torch  reach 24 m     x 1.0        = 18.00     the stated number
+     *   mote   reach  1 m     x 1.0        =  0.0075   the stated number
+     *   pearl  reach  0.25 m  x 0.0625     =  0.011    a SIXTEENTH of the stated 0.18
+     * ```
+     *
+     * So for a pearl [irradianceAtOneMetre] is now a statement about the SOURCE — the radiance its
+     * emitter carries, which is what lights its own core and what [PEARL_FRACTION_OF_TORCH]'s
+     * playtested ratio was signed off against — and not about what arrives a metre away. It was
+     * left that way on purpose. Re-scaling the intensity by 16 to make the name true again would
+     * multiply the pearl's own core radiance by 16 and undo the entire fix; and the alternative,
+     * quoting each light at its own reach, would put the four lights back in four different units,
+     * which is the whole disease `2026-08-13-one-world-model.md` was written about. One unit, one
+     * conversion, and one documented exception with its factor written down.
+     *
+     * `DiveLightingTest` pins that factor, so a future reach change cannot move it silently.
      *
      * ## WHAT THIS SUBSUMES
      *
@@ -572,6 +676,26 @@ object DiveLighting
      * measured to actually do (which, at this value, is nothing: the scene has no occluders).
      */
     private const val AO_RADIUS_METRES = 4f
+
+    /**
+     * `GlobalIlluminationSystem.normalMapScale`, which [setup] deliberately leaves at the engine's
+     * default (see the two-knobs comment there). Stated here so that the one thing in the game
+     * that has to reason about it — [PearlNormalMap], whose hemisphere is shaded through it — can
+     * name it instead of typing a 4 beside a comment saying "this is the engine's default".
+     *
+     * **IT REACHES THE SHADER AS ITS RECIPROCAL, AND THAT INVERTS EVERY INTUITION ABOUT IT.**
+     * `GiRadianceCascades.kt:88` and `GiInterior.kt:52` both upload
+     * `if (normalMapScale != 0) 1 / normalMapScale else 100000`, and the shader then builds
+     * `lightDir = normalize(vec3(rayDir, normalMapScale))` (`radiance_cascades.frag:289`). So the
+     * property's 4 is an out-of-plane component of **0.25**: light is treated as arriving 14
+     * degrees out of the plane, i.e. very nearly sideways, which is the RIGHT assumption for a
+     * game whose only lights are in the scene with the objects. A larger property value means a
+     * MORE grazing light and therefore MORE shading, not less.
+     */
+    internal const val GI_NORMAL_MAP_SCALE = 4f
+
+    /** What [GI_NORMAL_MAP_SCALE] actually reaches the shader as. @see GI_NORMAL_MAP_SCALE */
+    internal const val GI_LIGHT_ELEVATION = 1f / GI_NORMAL_MAP_SCALE
 
     // Continuous ambient (see DepthBlend) replaces the old flat per-zone Color lookup — a
     // hard-edged mapOf(Zone, Color) is exactly the "sharp jump" the zone bands also had.
@@ -1354,14 +1478,19 @@ object DiveLighting
      * The margin stays for what it genuinely buys: a light just off the visible rect still
      * contributes to on-screen probes. Three metres, in metres, at any resolution.
      *
-     * IT IS NO LONGER THE ONLY THING BOUNDING A LIGHT'S REACH, and the reaches make it a BETTER
-     * number than it was rather than a stale one. A pearl's reach is [PEARL_REACH_METRES] = 3 m and
-     * a mote's is 1 m, so for the two lights this margin actually decides — there are thirty pearls
-     * and sixty motes and one torch — the margin is now exactly the distance beyond which the
-     * contribution has begun to fall off, instead of being a number with no relationship to
-     * anything. The torch's 24 m reach would want a wider one on paper; it never comes up, because
-     * `DiveCamera` follows the diver and a torch three metres outside the visible rect is a frame
-     * nobody will see. Left at 3 m deliberately, not by omission.
+     * IT IS NO LONGER THE ONLY THING BOUNDING A LIGHT'S REACH, and WHICH LIGHT DECIDES IT HAS NOW
+     * CHANGED HANDS. It used to be justified as "exactly the pearls' reach", which was true while
+     * that reach was 3 m. [PEARL_REACH_METRES] is 0.25 m now, so a pearl one metre off screen
+     * contributes 6% of its one-metre value and one three metres off contributes 0.7% — the pearls
+     * and the motes could be culled at well under a metre and nothing would change on screen.
+     *
+     * **So this number is now the TORCH's, and it is deliberately left at 3 m rather than tightened
+     * to the two lights that no longer need it.** The torch reaches 24 m ([TORCH_REACH_METRES]) and
+     * is culled by this same margin; on paper it wants a far wider one. It never comes up, because
+     * `DiveCamera` follows the diver, so a torch outside the visible rect is a frame nobody will
+     * see — but that argument bounds the margin from ABOVE, not from below, and shrinking it to
+     * suit the pearls would leave the one light that genuinely casts across the frame culled on the
+     * tightest of the three. Re-examined for the reach change and kept, not kept by omission.
      *
      * IT USED TO READ `= PEARL_LIGHT_SIZE_METRES` AND MUST NOT AGAIN. That was written when the
      * pearl's emitter was 3 m, so the two happened to be the same number; shrinking the emitter to

@@ -472,27 +472,114 @@ class DiveLightingTest
      * The torch was shrunk and the pearls were left at a 3 m quad around a 1.2 m body, which the
      * owner reported as a faintly visible box of lifted water about 2.5x the pearl's diameter,
      * clearest near the surface where ambient is high enough for its rim to read. It is not a
-     * shape problem — `LightEmitter` already makes the emitter round — it is that with
-     * `radius = 0` the inside of an emitter is a FLAT SHELF of irradiance with a hard rim, so any
-     * part of the quad sticking out past the body is a visible region. Confirmed by capture: the
-     * shelf's diameter tracks the constant one for one (12 m asked, 11.7 m measured).
+     * shape problem — `LightEmitter` already makes the emitter round — it is that the inside of an
+     * emitter is a FLAT SHELF of irradiance with a hard rim (the local SDF is signed, so a probe
+     * inside takes a zero first step and samples the emitter at its own texel), so any part of the
+     * quad sticking out past the body is a visible region. Confirmed by capture: the shelf's
+     * diameter tracks the constant one for one (12 m asked, 11.7 m measured).
      *
-     * The bound asserted is therefore the property that makes the shelf invisible: the emitter
-     * must fit inside the pearl's own DRAWN silhouette, so that the pearl itself covers it. That
-     * silhouette is the iridescence shader's inscribed disc, whose diameter is
-     * `equalAreaQuad(PEARL_SIZE_METRES)` — derived here rather than typed, so that re-tuning
-     * either the pearl's size or the equal-area scale moves this bound with it.
+     * ## "FITS INSIDE" WAS TOO WEAK A BOUND, AND THIS IS THE STRONGER ONE
+     *
+     * This asserted `emitter <= drawn silhouette`, which 1.2 m against 1.354 m satisfies — while
+     * covering **79% of the pearl's AREA**, so four fifths of every pearl was the flat shelf and a
+     * pearl was its own light from rim to rim whatever the world was doing. That is half of the
+     * *"a pearl looks identical at every depth"* review finding.
+     *
+     * What is required is that the emitter is a CORE: at most half the silhouette's diameter, so
+     * at least three quarters of the pearl's area is outside its own full-brightness zone and is
+     * therefore lit by the world. Stated against `equalAreaQuad(PEARL_SIZE_METRES)` rather than
+     * typed, so re-tuning the pearl's size or the equal-area scale moves the bound with it.
      */
     @Test
-    fun `a pearl's emitter fits inside the pearl, so its shelf of light has nowhere to show`()
+    fun `a pearl's emitter is a core inside the pearl and not the whole of it`()
     {
         val drawnDiameter = IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES)
+        val areaFraction = (DiveLighting.PEARL_LIGHT_SIZE_METRES / drawnDiameter).let { it * it }
 
         assertTrue(
-            DiveLighting.PEARL_LIGHT_SIZE_METRES <= drawnDiameter,
+            DiveLighting.PEARL_LIGHT_SIZE_METRES <= drawnDiameter * 0.5f,
             "a pearl's emitter is ${DiveLighting.PEARL_LIGHT_SIZE_METRES}m across a pearl drawn " +
-            "${drawnDiameter}m across — the part that pokes out is a flat shelf of irradiance " +
-            "with a hard rim, which is the halo the owner reported around every pearl"
+            "${drawnDiameter}m across — ${(areaFraction * 100).toInt()}% of its area is the " +
+            "emitter's own flat shelf of irradiance, which is the same brightness at every depth " +
+            "and in or out of the torch beam. It has to be a core, not the pearl"
+        )
+    }
+
+    /**
+     * THE OTHER HALF OF THE SAME FINDING: **R IS THE RADIUS OF FULL BRIGHTNESS, so a reach larger
+     * than the object is a falloff that never happens.**
+     *
+     * `PEARL_REACH_METRES` was 3 m against a pearl whose drawn radius is 0.677 m, so every pixel
+     * of a pearl — and everything within two more pearl-widths of it — sat inside its own
+     * `clamp(..., 0, 1)` ceiling. The distance term was present, correctly converted
+     * ([DiveLighting.falloffRadius]) and switched on at a distance nothing in the picture reached.
+     * Measured consequence: peak luminance 129.4 at 75 m and 130.4 at 140 m while the water around
+     * it fell from 1.58 to 0.29.
+     *
+     * The relationship asserted is the one that makes a pearl read as a core with a halo: its own
+     * light must have fallen off SUBSTANTIALLY by the time it crosses its own silhouette. Both
+     * radii are derived from the drawn geometry, so this cannot be satisfied by re-typing a
+     * number that no longer relates to the pearl.
+     */
+    @Test
+    fun `a pearl's own light falls off across its own body`()
+    {
+        val bodyRadius = IridescenceRenderer.equalAreaQuad(Framing.PEARL_SIZE_METRES) * 0.5f
+        val atTheRim = DiveLighting.attenuationAt(bodyRadius, DiveLighting.PEARL_REACH_METRES)
+
+        assertTrue(
+            atTheRim < 0.25f,
+            "a pearl's rim still receives $atTheRim of its core's brightness — its reach " +
+            "(${DiveLighting.PEARL_REACH_METRES}m) is not short enough against its own ${bodyRadius}m " +
+            "body radius for the falloff to happen anywhere a player can see it, so the pearl is a " +
+            "flat disc of its own emission again"
+        )
+
+        // ...and the core itself must still BE a core: full brightness out to the emitter's own
+        // rim, or the bright middle a player picks out at range is not there either.
+        assertEquals(
+            1f,
+            DiveLighting.attenuationAt(DiveLighting.PEARL_LIGHT_SIZE_METRES * 0.5f, DiveLighting.PEARL_REACH_METRES),
+            1e-6f,
+            "the pearl's own emitter rim is already past its full-brightness radius, so there is no " +
+            "bright core left — only a halo"
+        )
+    }
+
+    /**
+     * THE UNIT'S ONE DOCUMENTED EXCEPTION, PINNED SO IT CANNOT DRIFT.
+     *
+     * [DiveLighting.irradianceAtOneMetre] means "what this light delivers a metre away" for every
+     * light whose reach is at least a metre, because both geometric terms are exactly 1 there. A
+     * pearl's reach is now 0.25 m — deliberately shorter than the pearl — so a pearl delivers
+     * `(0.25)^2 = 1/16` of its stated value at one metre, and its stated value is a statement
+     * about the SOURCE rather than about what arrives.
+     *
+     * That is a real hole in the one-unit model and it is documented on [intensityFor] rather than
+     * papered over with a compensating multiplier (which would multiply the pearl's own core
+     * radiance by sixteen and undo the fix). What this asserts is that the exception is exactly
+     * one light and that its factor is the one written down — so a future reach change either
+     * keeps the arithmetic or comes here and restates it.
+     */
+    @Test
+    fun `the one-metre unit is exact for every light except the pearl, whose factor is stated`()
+    {
+        listOf(
+            "torch" to DiveLighting.TORCH_REACH_METRES,
+            "mote" to DiveLighting.MOTE_REACH_METRES
+        ).forEach { (name, reach) ->
+            assertEquals(
+                1f, DiveLighting.attenuationAt(1f, reach), 1e-6f,
+                "the $name's reach (${reach}m) is under a metre, so `irradianceAtOneMetre` no " +
+                "longer means what it says for it — see intensityFor's documented exception"
+            )
+        }
+
+        assertEquals(
+            1f / 16f, DiveLighting.attenuationAt(1f, DiveLighting.PEARL_REACH_METRES), 1e-6f,
+            "a pearl delivers a different fraction of its stated one-metre irradiance than the " +
+            "sixteenth intensityFor's doc states; the doc is the only place this exception is " +
+            "written down, so it has to be true"
         )
     }
 
@@ -504,9 +591,14 @@ class DiveLightingTest
      * that is on it — a pop while panning, invisible in any still.
      *
      * The relationship asserted is that the margin outlives the emitter: it must stay clear of
-     * BOTH emitter sizes by a wide factor. `radius = 0` means there is no distance falloff to
-     * make an off-screen light negligible, and the measured contribution profile backs the
-     * number — a pearl still puts 8% of its 1 m value on the water 3.2 m away.
+     * BOTH emitter sizes by a wide factor.
+     *
+     * WHICH LIGHT THE MARGIN IS FOR HAS CHANGED HANDS, and the constant's own doc records it. It
+     * used to be justified by the pearls' 3 m reach and the 8% of a pearl's one-metre value that
+     * was measured on the water 3.2 m away. At `PEARL_REACH_METRES` = 0.25 m that is 0.7%, so the
+     * margin is now the TORCH's — the one light that reaches across the frame — and this test is
+     * left guarding the thing it was always really about: that the number is not re-derived from
+     * whichever emitter happens to be handy.
      */
     @Test
     fun `the cull margin is not tied to an emitter's size, because reach and size are independent`()
@@ -705,14 +797,27 @@ class DiveLightingTest
     }
 
     /**
-     * A PEARL MUST LIGHT ITS NEIGHBOURHOOD AND NOT THE FRAME, AND THE TORCH THE OTHER WAY ROUND.
+     * A PEARL MUST NOT LIGHT THE FRAME AND THE TORCH MUST, AND A MOTE MUST NEVER OUT-LIGHT A PEARL.
      *
-     * This is the plan's *"pearls stop being exempt"* stated as a relationship rather than as two
-     * decimals: a pearl at 20 m must have become negligible while the torch at 20 m must not, or
-     * the deep is lit by scenery again — the arrangement spec §17 replaced on 2026-08-12.
+     * The first two halves are spec §17's ordering — the torch is the deep's light source, the
+     * pearls are what it finds — stated as a relationship rather than as two decimals.
+     *
+     * ## THE MOTE CLAUSE USED TO COMPARE REACHES, AND THAT COMPARISON STOPPED MEANING ANYTHING
+     *
+     * It read `MOTE_REACH_METRES < PEARL_REACH_METRES`, which was a proxy for *"the mote field is
+     * not a second lighting rig"* while the two lights' brightnesses were an order of magnitude
+     * apart and only their reaches were in question. `PEARL_REACH_METRES` is now 0.25 m against a
+     * mote's 1 m, so that proxy is false while the property it stood for is still comfortably
+     * true — a mote delivers a twenty-fourth of a pearl's irradiance and the pearl's shorter reach
+     * costs it a sixteenth, so a pearl out-delivers a mote at every distance, by 1.5x at worst.
+     *
+     * So the proxy is replaced by the quantity itself, swept across the whole visible column
+     * rather than sampled: at NO distance may one mote put more light into the water than one
+     * pearl. That is what "second lighting rig" actually means, it is the statement that survives
+     * a reach change on either side, and it is strictly stronger than the ordering it replaces.
      */
     @Test
-    fun `a pearl's reach is a neighbourhood and the torch's is the frame`()
+    fun `a pearl's reach is its own body, the torch's is the frame, and a mote never outshines a pearl`()
     {
         val across = 20f
         assertTrue(
@@ -725,10 +830,21 @@ class DiveLightingTest
             1f, DiveLighting.attenuationAt(across, DiveLighting.TORCH_REACH_METRES), 1e-6f,
             "the torch has stopped reaching across the frame, so nothing replaces the daylight"
         )
-        assertTrue(
-            DiveLighting.MOTE_REACH_METRES < DiveLighting.PEARL_REACH_METRES,
-            "a mote reaches at least as far as a pearl — the field is a second lighting rig again"
-        )
+
+        var distance = 0.1f
+        while (distance <= Framing.VISIBLE_DEPTH_METRES)
+        {
+            val pearl = DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE *
+                DiveLighting.attenuationAt(distance, DiveLighting.PEARL_REACH_METRES)
+            val mote = DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE *
+                DiveLighting.attenuationAt(distance, DiveLighting.MOTE_REACH_METRES)
+            assertTrue(
+                mote < pearl,
+                "at ${distance}m one mote delivers $mote against a pearl's $pearl — the mote field " +
+                "is a second lighting rig again, which is what it was before 2026-08-13"
+            )
+            distance += 0.1f
+        }
     }
 
     /**

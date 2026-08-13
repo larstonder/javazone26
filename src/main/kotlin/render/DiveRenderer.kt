@@ -397,8 +397,8 @@ object DiveRenderer
 
         drawColumnWalls(surface, cam, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
         drawAirPockets(surface, sim, cam)
-        drawPearls(surface, sim, cam, iridescence)
-        drawAnglerfish(surface, sim, cam, iridescence)
+        drawPearls(surface, sim, cam, iridescence, normalMaps)
+        drawAnglerfish(surface, sim, cam, iridescence, normalMaps)
         drawDiver(surface, sim, cam, normalMaps, aimDegrees)
 
         // THE MARINE SNOW, LAST, AND ON THIS SURFACE ON PURPOSE.
@@ -1085,13 +1085,19 @@ object DiveRenderer
         }
     }
 
-    private fun drawPearls(surface: Surface, sim: DiveSim, cam: Camera, iridescence: IridescenceRenderer?)
+    private fun drawPearls(
+        surface: Surface,
+        sim: DiveSim,
+        cam: Camera,
+        iridescence: IridescenceRenderer?,
+        normalMaps: NormalMapRenderer?
+    )
     {
         val size = Framing.PEARL_SIZE_METRES
         sim.pearls.forEach { pearl ->
             if (pearl.collected) return@forEach
             if (!cam.showsSquare(pearl.x, pearl.depth, size)) return@forEach
-            drawPearlSurface(surface, iridescence, pearl.x, pearl.depth)
+            drawPearlSurface(surface, iridescence, normalMaps, pearl.x, pearl.depth)
         }
     }
 
@@ -1108,11 +1114,17 @@ object DiveRenderer
      * risk stops existing. So both go through [drawPearlSurface], and
      * `AnglerfishDisguiseTest` fails the build if this method ever draws anything else.
      */
-    private fun drawAnglerfish(surface: Surface, sim: DiveSim, cam: Camera, iridescence: IridescenceRenderer?)
+    private fun drawAnglerfish(
+        surface: Surface,
+        sim: DiveSim,
+        cam: Camera,
+        iridescence: IridescenceRenderer?,
+        normalMaps: NormalMapRenderer?
+    )
     {
         val fish = sim.anglerfish ?: return
         if (!cam.showsSquare(fish.x, fish.depth, Framing.PEARL_SIZE_METRES)) return
-        drawPearlSurface(surface, iridescence, fish.x, fish.depth)
+        drawPearlSurface(surface, iridescence, normalMaps, fish.x, fish.depth)
     }
 
     /**
@@ -1132,8 +1144,32 @@ object DiveRenderer
      * The draw colour is set on every call rather than hoisted out of the pearl loop, because
      * `drawTexture` MODULATES by it and the fallback path shares it with every other primitive
      * on this surface — the same trap `drawDiver` documents in the other direction.
+     *
+     * ## THE NORMAL IS PART OF THE SAME DESCRIPTION, and this is the second place in the game
+     * where one world rect goes to two surfaces
+     *
+     * A pearl used to submit nothing at all to `gi_normal_map`, so GI lit it as what it
+     * geometrically is on that surface — a flat quad — and it had no lit side and no dark side
+     * (measured at -0.3% at 140 m; [PearlNormalMap]'s class doc has the numbers). The albedo pass
+     * has the right normal and cannot share it: a `BatchRenderer` draws to one surface, and GI
+     * reads normals from a different one through a TEXTURE. So the hemisphere is generated at load
+     * and submitted here, on the SAME world rect, exactly as [drawDiver] submits the diver's.
+     *
+     * The second call's arguments are a literal COPY of the first's and must stay one — see
+     * [drawDiver], whose doc has why deriving them twice is the shape of a shipped bug.
+     *
+     * It is inside the iridescence branch on purpose. The fallback is a flat `fillRectCentred`
+     * square, and a flat square's true normal is the flat one GI already assumes; giving a square
+     * a hemisphere would light a shape that is not there. So the normal follows the disc, and the
+     * two are one description with one `if`.
      */
-    private fun drawPearlSurface(surface: Surface, iridescence: IridescenceRenderer?, centreX: Float, depth: Float)
+    private fun drawPearlSurface(
+        surface: Surface,
+        iridescence: IridescenceRenderer?,
+        normalMaps: NormalMapRenderer?,
+        centreX: Float,
+        depth: Float
+    )
     {
         val size = Framing.PEARL_SIZE_METRES
         val exposure = pearlAlbedoExposure()
@@ -1150,6 +1186,14 @@ object DiveRenderer
             // which has the measurement of what not doing this did to the abyss's exposure.
             val quad = IridescenceRenderer.equalAreaQuad(size)
             iridescence.draw(centreX, depth, quad, quad, IridescentMaterial.PEARL)
+
+            // The copied argument list. If you change one of these four numbers, change it above.
+            // No angle, for `IridescenceRenderer.draw`'s reason: a hemisphere is radially
+            // symmetric, so a rotation provably cannot change a texel.
+            normalMaps?.drawNormalMap(
+                PearlNormalMap.normals(),
+                centreX, depth, quad, quad, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN
+            )
         }
         else surface.fillRectCentred(centreX, depth, size, size)
     }

@@ -27,6 +27,7 @@ import render.Hud
 import render.IridescenceRenderer
 import render.LightEmitter
 import render.Motes
+import render.PearlNormalMap
 import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
@@ -692,13 +693,16 @@ class EnPustTil : PulseEngineGame()
         Backdrop.load(engine)
 
         // The GENERATED assets: the round emitter every point light in DiveLighting shapes its
-        // light from, and the long tapered one the god rays emit from. Same queue, same
-        // asynchronous upload, same gate-and-warn arrangement — though the two gates differ on
-        // purpose (LightEmitter.emitter falls back to Texture.BLANK, i.e. to the old square, while
-        // LightEmitter.shaftEmitter returns null and draws no shafts at all; see them for why a
-        // fallback is right for one and not the other). Neither has a file behind it, so both must
-        // be filled before they are queued — which is what LightEmitter.load does.
+        // light from, and the hemisphere normal that tells GI a pearl is a bead and not a flat
+        // quad. Same queue and the same asynchronous upload as every file-backed asset above, and
+        // the same gate-and-warn arrangement — though the two gates differ on purpose
+        // (LightEmitter.emitter falls back to Texture.BLANK, i.e. to the old square emitter, while
+        // PearlNormalMap.normals returns null, which normal_map.frag reads as the flat normal the
+        // pearls had before it existed; see them for why a fallback is right for one and not the
+        // other). Neither has a file behind it, so both must be FILLED before they are queued —
+        // which is what their `load` does and is the whole reason they are not in loadAll above.
         LightEmitter.load(engine)
+        PearlNormalMap.load(engine)
 
         DiveLighting.setup(engine)
 
