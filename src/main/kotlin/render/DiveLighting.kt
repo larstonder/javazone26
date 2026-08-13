@@ -5,7 +5,7 @@ import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.graphics.api.Camera
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.BloomEffect
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect
-import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect.ToneMapper.ACES
+import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect.ToneMapper.UNCHARTED2
 import no.njoh.pulseengine.core.graphics.surface.Surface
 import no.njoh.pulseengine.core.shared.primitives.Color
 import no.njoh.pulseengine.modules.lighting.global.GiSceneRenderer
@@ -1070,6 +1070,17 @@ object DiveLighting
     /** Aim-angle smoothing rate, per second — same `1 - e^(-k*dt)` family as DiveCamera. */
     private const val AIM_SMOOTHING_RATE = 6f
 
+    /**
+     * The colour grade's `contrast`, at the engine's own default — see [setup], which has the
+     * measurement and the reason no tone mapper can make a value above 1 safe.
+     *
+     * A named constant only so that `DiveLightingTest` can assert the bound rather than scan the
+     * source for a decimal: `color_grading.frag:124` turns anything above 1 into a subtraction of a
+     * constant near black, and it happens BEFORE the tone mapper, so it clamps the deep to true
+     * black whichever curve follows it.
+     */
+    internal const val GRADE_CONTRAST = 1.0f
+
     private var gi: GlobalIlluminationSystem? = null
     private val ambientColor = Color(0f, 0f, 0f, 1f)
 
@@ -1360,8 +1371,49 @@ object DiveLighting
         engine.scene.addSystem(system)
         gi = system
 
+        // THE TONE MAPPER, AND IT IS THE DIAL THAT GOVERNS THE DEEP — not `contrast`, not `exposure`,
+        // and not the ambient. Read `shaders/effects/color_grading.frag`'s six curves as x -> 0+:
+        //
+        //     ACES        ~0.214x   the STEEPEST black crush of the six, and what we shipped
+        //     LOTTES      x^1.6/c   superlinear crush; NaN on negative input, never use it
+        //     FILMIC      hard clip  `max(0, x - 0.004)` — everything under 0.004 becomes exactly 0
+        //     NONE        1.0x
+        //     REINHARD    1.0x      x/(1+x), faithful to near-black, no shoulder
+        //     UNCHARTED2  ~2.3x     LIFTS shadows, and keeps a shoulder on the highlights
+        //
+        // We had chosen the harshest of the six and then spent two commits fighting it — `f9414d4`
+        // took `contrast` 1.3 -> 1.0 for no reason but to stop the grade subtracting a constant into
+        // ACES's clamp. `2026-08-14-engine-native-lighting.md` §2 diagnosed that; this is the fix.
+        //
+        // MEASURED, at 20 / 75 / 140 m with all three phase pins, against a same-build control pair
+        // (window grabs; `EPT_SCREENSHOT` is not passive and its output is not the frame):
+        //
+        //                        rock p99 @140   diver torso @140   % below 2/255 @140   water median @20
+        //     ACES (control)          9.24            19.59              85.4                7.39
+        //     REINHARD               19.17            27.74              12.4               15.69
+        //     UNCHARTED2             15.53            23.87              40.0               13.11
+        //
+        // UNCHARTED2 over REINHARD on two grounds, and both are constraints rather than taste.
+        // **The Abyss stays frightening** (spec §11): REINHARD takes the deep frame from 85% below
+        // 2/255 to 12%, which is not a dark room any more; UNCHARTED2 leaves 40% of it under the
+        // display's first step while still nearly doubling the rock. And **the Shallows must not
+        // move** (§7): at 20 m REINHARD moves the frame mean +18.7% against UNCHARTED2's +7.3%.
+        //
+        // THE SUNSET IS UNAFFECTED BY THIS CHOICE, AND THAT IS STRUCTURAL RATHER THAN LUCKY. It is
+        // drawn to the `"sky"` surface (`Sky.SURFACE_NAME`), and this effect is attached to
+        // `mainSurface`, so no tone mapper can reach it — measured BIT-IDENTICAL at (248.2, 117.0,
+        // 79.1) and chroma 0.681 under all three. What changes at 20 m is the water and the rock.
+        //
+        // `contrast` STAYS AT THE ENGINE'S DEFAULT OF 1.0, and no tone mapper can make 1.3 safe
+        // again — which is worth stating because the obvious reading of the table above is that a
+        // 2.3x near-black slope has room to absorb it. It does not: `color_grading.frag:124` applies
+        // contrast BEFORE the mapper, as `(c - 0.5) * (1 + 0.05*(contrast - 1)) + 0.5`, i.e. near
+        // black it SUBTRACTS a constant 0.00739, and a negative input is negative going into every
+        // one of the six curves. Probed rather than argued: UNCHARTED2 with contrast 1.3 measures
+        // rock p99 5.88 and an open-water median of exactly 0.000 at 140 m, i.e. worse than the ACES
+        // control it replaced. One correction, in the right place.
         engine.gfx.mainSurface.addPostProcessingEffect(
-            ColorGradingEffect(toneMapper = ACES, vignette = 0.25f, exposure = 1.1f, contrast = 1.0f)
+            ColorGradingEffect(toneMapper = UNCHARTED2, vignette = 0.25f, exposure = 1.1f, contrast = GRADE_CONTRAST)
         )
         engine.gfx.mainSurface.addPostProcessingEffect(
             BloomEffect().apply { intensity = 1.2f; radius = 0f; threshold = 1.4f }

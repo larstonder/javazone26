@@ -1160,4 +1160,58 @@ class DiveLightingTest
         assertTrue(green > red, "the floor's green ($green) is not above its red ($red) — it will read as grey fog")
         assertTrue(blue > red * 2f, "the floor's blue ($blue) is under twice its red ($red), which is not a water hue")
     }
+    // --- The colour grade's shadow response (DiveLighting.setup) -------------------------------
+    //
+    // `2026-08-14-engine-native-lighting.md` §2 read all six of `color_grading.frag`'s curves as
+    // x -> 0+ and found we had shipped the harshest one, then bent `contrast` to compensate. The
+    // two cases below pin the two halves of the fix. Neither can be asserted against the effect
+    // object — `ColorGradingEffect` is an engine class with no accessor a unit test can reach, the
+    // same reason `DiveRendererTest.gradedBlue` transcribes its arguments — so the mapper is read
+    // off the source and the contrast off the constant it is now constructed with.
+
+    /**
+     * ACES's near-black slope is 0.214x, the steepest of the six, and it is what made the deep
+     * unreadable: at 140 m it left 85.4% of the frame at or below 2/255 with the rock's p99 at
+     * 9.24. UNCHARTED2's is ~2.3x — it LIFTS shadows — and measures 40.0% and 15.53 on the same
+     * pinned frame. FILMIC and LOTTES are worse than ACES (a hard clip at 0.004, and a superlinear
+     * crush that returns NaN on negative input); NONE and REINHARD are the only other candidates
+     * and REINHARD takes the Abyss to 12.4% below 2/255, i.e. it stops being dark at all.
+     *
+     * So the requirement is a near-black slope of at least 1, and the three that cannot supply one
+     * are named rather than the one that can — a future switch to REINHARD or NONE is a judgement
+     * about the Abyss, and a switch back to ACES is the bug this fixed.
+     */
+    @Test
+    fun `the colour grade does not use a tone mapper that crushes the deep to black`()
+    {
+        val source = File("src/main/kotlin/render/DiveLighting.kt").readText()
+        val grade = source.substringAfter("ColorGradingEffect(toneMapper = ").substringBefore(",")
+        for (crushing in listOf("ACES", "FILMIC", "LOTTES"))
+        {
+            assertTrue(
+                grade.trim() != crushing,
+                "the colour grade is back on $crushing, whose near-black slope is below 1 — the " +
+                    "Abyss goes back to a hard clamp and the rock stops reading at 140 m"
+            )
+        }
+    }
+
+    /**
+     * AND THE SECOND HALF, WHICH IS THE ONE THAT LOOKS SAFE AND IS NOT. `color_grading.frag:124`
+     * applies contrast as `(c - 0.5) * (1 + 0.05*(contrast - 1)) + 0.5` BEFORE the tone mapper, so
+     * near black any value above 1 is a SUBTRACTION of a constant — 0.00739 at the 1.3 this used to
+     * be — and a negative input is negative going into all six curves. No mapper can rescue it.
+     *
+     * Probed rather than reasoned about: UNCHARTED2 with contrast 1.3 measures a rock p99 of 5.88
+     * and an open-water median of exactly 0.000 at 140 m, worse than the ACES control it replaced.
+     */
+    @Test
+    fun `the colour grade's contrast stays at the engine default, which is the only safe value`()
+    {
+        assertTrue(
+            DiveLighting.GRADE_CONTRAST <= 1f,
+            "the grade's contrast is ${DiveLighting.GRADE_CONTRAST}; anything above 1 subtracts a " +
+                "constant from every channel before the tone mapper and clamps the deep to black"
+        )
+    }
 }
