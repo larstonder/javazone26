@@ -1237,7 +1237,7 @@ object DiveLighting
         gi = system
 
         engine.gfx.mainSurface.addPostProcessingEffect(
-            ColorGradingEffect(toneMapper = ACES, vignette = 0.25f, exposure = 1.1f, contrast = 1.3f)
+            ColorGradingEffect(toneMapper = ACES, vignette = 0.25f, exposure = 1.1f, contrast = 1.0f)
         )
         engine.gfx.mainSurface.addPostProcessingEffect(
             BloomEffect().apply { intensity = 1.2f; radius = 0f; threshold = 1.4f }
