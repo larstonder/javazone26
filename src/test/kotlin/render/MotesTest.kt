@@ -727,24 +727,42 @@ class MotesTest
     /**
      * THE FIELD IS A WASH, NOT A SECOND LIGHTING RIG.
      *
-     * The torch was made the deep's primary light source at the owner's request on 2026-08-12
-     * (`DiveLighting.diverIntensityByZone`, 2.0 at the surface rising to 6.0 in the Abyss) and the
-     * pearls were cut to a marker glow so that the beam is what reveals them. Motes that emit are
-     * the third thing in that balance and must not disturb it: a single mote has to be far below a
-     * pearl, which is itself far below the torch.
+     * The torch was made the deep's primary light source at the owner's request on 2026-08-12 and
+     * the pearls were cut to a marker glow so that the beam is what reveals them. Motes that emit
+     * are the third thing in that balance and must not disturb it: a single mote has to be far
+     * below a pearl, which is itself far below the torch.
+     *
+     * ## THIS TEST USED TO BE WORTHLESS AND IS CORRECTED HERE
+     *
+     * It compared `Motes.GLOW_INTENSITY * PEAK_ALPHA` with `DiveLighting.pearlIntensity()` with
+     * `diverIntensityForDepth(MAX_DEPTH)` — three `drawLight` intensities with three different
+     * emitter sizes and two different cone widths behind them, i.e. **three different quantities**,
+     * so the inequalities between them meant nothing. `2026-08-13-deep-water-lighting.md` §2b found
+     * it passing while the motes were measurably the BRIGHTEST thing in the Abyss, out-shining the
+     * pearls they are camouflage for.
+     *
+     * The one unit (`DiveLighting.irradianceAtOneMetre`) is what makes the comparison legitimate,
+     * and the three values are now a single anchor and two stated fractions of it — so this
+     * asserts the ORDER, which is the design requirement, and `DiveLightingTest` asserts the
+     * fractions that produce it.
+     *
+     * It is still a statement about EMISSION and not about the composited frame. That gap is real
+     * and cannot be closed in a unit test: what reaches the screen also depends on the light map,
+     * the multiply, ACES and a thresholded bloom, none of which exist without a GL context. §2b has
+     * the capture protocol that does close it.
      */
     @Test
     fun `a glowing mote is dimmer than a pearl, which is dimmer than the torch`()
     {
-        val brightestMote = Motes.GLOW_INTENSITY * Motes.PEAK_ALPHA
-        val pearl = DiveLighting.pearlIntensity()
-        val torchInTheDark = DiveLighting.diverIntensityForDepth(Tuning.MAX_DEPTH)
+        val brightestMote = DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE
+        val pearl = DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE
+        val torchInTheDark = DiveLighting.torchIrradianceForDepth(Tuning.MAX_DEPTH)
 
         assertTrue(
             brightestMote < pearl * 0.5f,
-            "the brightest mote emits $brightestMote against a pearl's $pearl — a mote at half a " +
-                "pearl's output stops being an ambient wash and starts competing with the thing " +
-                "the player is hunting for"
+            "the brightest mote delivers $brightestMote at one metre against a pearl's $pearl — a " +
+                "mote at half a pearl's output stops being an ambient wash and starts competing " +
+                "with the thing the player is hunting for"
         )
         assertTrue(
             pearl < torchInTheDark,
@@ -772,9 +790,12 @@ class MotesTest
                 "the emitters and the dots are derived separately and can drift apart"
         )
         assertTrue(
-            lighting.contains("intensity = Motes.GLOW_INTENSITY * alpha"),
-            "a glowing mote's emission no longer carries its own alpha, so it can light the water " +
-                "from a depth at which the mote itself is invisible"
+            lighting.contains("intensity = moteIntensity(size, alpha)"),
+            "a glowing mote's emission no longer carries its own SIZE and ALPHA through " +
+                "DiveLighting.moteIntensity. The alpha is what stops a mote lighting the water " +
+                "from a depth at which the mote itself is invisible; the size is what stops a big " +
+                "mote casting 2.4x what a small one does on top of the alpha spread that is " +
+                "supposed to be the field's only variation"
         )
     }
 }

@@ -1170,7 +1170,8 @@ object DiveRenderer
      * ## THIS IS NOW INERT, AND THAT IS THE CORRECT OUTCOME RATHER THAN A REGRESSION
      *
      * The depth ramp above no longer exists: the owner removed it so that the torch, not the
-     * pearl's own glow, is how you find pearls in the deep — see [DiveLighting.PEARL_INTENSITY].
+     * pearl's own glow, is how you find pearls in the deep — see
+     * [DiveLighting.PEARL_FRACTION_OF_TORCH], which is what the flat emission is now stated as.
      * With emission flat at the Shallows' own 0.6, `here` and the reference are the same number,
      * so this returns exactly 1 and removes no albedo at any depth.
      *

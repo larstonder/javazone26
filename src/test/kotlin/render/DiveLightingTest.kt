@@ -73,13 +73,18 @@ class DiveLightingTest
     @Test
     fun `the torch overwhelms a pearl's own glow, so the beam is what reveals one`()
     {
-        val pearl = DiveLighting.pearlIntensity()
+        // COMPARED IN THE ONE UNIT, which is the point of this file's 2026-08-13 rework: the two
+        // numbers used to be `drawLight` intensities with different cone widths and different
+        // emitter sizes behind them, i.e. not the same quantity, and a ratio of two of those is
+        // not a ratio of anything. Irradiance at one metre is comparable by construction.
+        val pearl = DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE
         Zone.entries.forEach { zone ->
-            val torch = DiveLighting.diverIntensityForDepth(DepthBlend.zoneMidpoint(zone))
+            val torch = DiveLighting.torchIrradianceForDepth(DepthBlend.zoneMidpoint(zone))
             assertTrue(
                 torch > pearl * 10f,
-                "in $zone the torch emits $torch against a pearl's own $pearl — under 10x, a pearl " +
-                    "lights its own body about as hard as the beam does and stops responding to it"
+                "in $zone the torch delivers $torch at one metre against a pearl's own $pearl — " +
+                    "under 10x, a pearl lights its own body about as hard as the beam does and " +
+                    "stops responding to it"
             )
         }
     }
@@ -92,7 +97,7 @@ class DiveLightingTest
         // correct while pearls were the deep's light source, and backwards the moment the torch
         // became it. Asserted as monotone across every zone rather than just at the ends, because
         // the curve is derived from the ambient table and a re-tune there moves all of it.
-        val byZone = Zone.entries.map { DiveLighting.diverIntensityForDepth(DepthBlend.zoneMidpoint(it)) }
+        val byZone = Zone.entries.map { DiveLighting.torchIrradianceForDepth(DepthBlend.zoneMidpoint(it)) }
         for (i in 1 until byZone.size)
         {
             assertTrue(
@@ -114,10 +119,126 @@ class DiveLightingTest
     {
         // The deep was the complaint; brightening the Shallows would be a change nobody asked for,
         // and the derivation is built to make the surface a fixed point (1 - daylight = 0 there).
+        //
+        // 6 IS NOT A NEW NUMBER, and writing it as the product it is rather than as `6f` is what
+        // makes that checkable. The torch used to hand `drawLight` a nominal 2.0 corrected by
+        // `TORCH_BALANCE_SIZE_METRES / DIVER_LIGHT_SIZE_METRES` for its emitter's size; the same
+        // light in the 2026-08-13 unit is that nominal times the balance size, because irradiance
+        // at one metre is `intensity x size x coneMaskPeak` and the surface beam's cone peak is 1.
+        val nominalBeforeTheUnit = 2.0f
+        val emitterSizeTheBalanceWasTunedAt = 3.0f
         assertEquals(
-            2.0f * DiveLighting.TORCH_SIZE_COMPENSATION,
-            DiveLighting.diverIntensityForDepth(0f), 1e-4f,
-            "the torch no longer emits its original 2.0 at the surface"
+            nominalBeforeTheUnit * emitterSizeTheBalanceWasTunedAt,
+            DiveLighting.torchIrradianceForDepth(0f), 1e-4f,
+            "the torch no longer delivers what its original surface value did"
+        )
+    }
+
+    /**
+     * THE CONVERSION IS ITS OWN INVERSE, WHICH IS THE WHOLE CLAIM THE UNIT MAKES.
+     *
+     * `intensityFor` is the only place a design quantity becomes a `drawLight` argument, and the
+     * property that makes it a UNIT rather than a fudge factor is that it round-trips: state an
+     * irradiance, hand the resulting intensity to a light of any size and cone, and the irradiance
+     * that light delivers at one metre is the one you stated. Asserted across the three cone widths
+     * and both emitter sizes actually in the game, because the failure this catches — a size or a
+     * cone term dropped from one side — is invisible at any single pairing.
+     */
+    @Test
+    fun `stating an irradiance and reading it back gives the same number at every size and cone`()
+    {
+        for (irradiance in listOf(0.0075f, 0.18f, 6f, 18f))
+            for (size in listOf(0.35f, 1.2f, 0.85f))
+                for (cone in listOf(50f, 150f, 360f))
+                {
+                    val intensity = DiveLighting.intensityFor(irradiance, size, cone)
+                    assertEquals(
+                        irradiance,
+                        DiveLighting.irradianceAtOneMetre(intensity, size, cone), irradiance * 1e-4f,
+                        "a light of ${size}m at $cone degrees asked for $irradiance at one metre and " +
+                        "delivers something else — the two halves of the unit have come apart"
+                    )
+                }
+    }
+
+    /**
+     * THE FOUR LIGHTS ARE ONE ANCHOR AND THREE RATIOS, and that is asserted as an identity rather
+     * than as four decimals, because four decimals is exactly the arrangement this replaced.
+     *
+     * `docs/superpowers/plans/2026-08-13-one-world-model.md` §1.4: *"EVERY INTENSITY WAS TUNED
+     * AGAINST A DIFFERENT REFERENCE [...] No two of these numbers are in the same unit, so no two
+     * can be reasoned about together — which is why each of the last four days' fixes moved one and
+     * broke the balance with another."* The defence against that returning is that only the torch
+     * is a free number: re-tune it and the other three follow, and adding a fifth light means
+     * choosing its fraction rather than choosing its brightness.
+     */
+    @Test
+    fun `every light's brightness is a stated fraction of the torch's`()
+    {
+        assertEquals(
+            DiveLighting.TORCH_ABYSS_IRRADIANCE * DiveLighting.PEARL_FRACTION_OF_TORCH,
+            DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE, 1e-6f,
+            "a pearl's brightness has stopped being a fraction of the torch's and become a number " +
+            "of its own — which is how the pearls and the beam came to be untunable together"
+        )
+        assertEquals(
+            DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE * DiveLighting.MOTE_FRACTION_OF_PEARL,
+            DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE, 1e-9f,
+            "a mote's brightness has stopped being a fraction of a pearl's"
+        )
+        // And the ORDER, which is the design requirement the ratios exist to express: the torch is
+        // the deep's primary light (spec §17), a pearl is a marker glow, a mote is suspended matter.
+        assertTrue(
+            DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE < DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE,
+            "a mote is no longer dimmer than a pearl"
+        )
+        assertTrue(
+            DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE < DiveLighting.TORCH_ABYSS_IRRADIANCE,
+            "a pearl is no longer dimmer than the torch it is meant to be found with"
+        )
+    }
+
+    /**
+     * A MOTE'S CAST NO LONGER DEPENDS ON HOW BIG IT HAPPENS TO BE.
+     *
+     * Motes run 0.35 m to 0.85 m, and a light's cast is linear in its emitter's size — so the old
+     * flat `Motes.GLOW_INTENSITY` made the largest mote cast 2.4x what the smallest did, on top of
+     * the alpha spread that is supposed to be the field's only variation. `MotesTest.the glowing
+     * subset is decorrelated from how big a mote looks` guards the same intent one level up (glow
+     * must not track size); this is the half of it the lighting owns.
+     */
+    @Test
+    fun `every mote delivers the same light whatever size it happens to be`()
+    {
+        val alpha = Motes.MOTE_ALPHA
+        val reference = DiveLighting.irradianceAtOneMetre(
+            DiveLighting.moteIntensity(Motes.MIN_SIZE_METRES, alpha), Motes.MIN_SIZE_METRES, 360f
+        )
+        for (size in listOf(Motes.MIN_SIZE_METRES, 0.5f, 0.7f, Motes.MAX_SIZE_METRES))
+        {
+            assertEquals(
+                reference,
+                DiveLighting.irradianceAtOneMetre(DiveLighting.moteIntensity(size, alpha), size, 360f),
+                reference * 1e-4f,
+                "a ${size}m mote casts a different amount of light than a ${Motes.MIN_SIZE_METRES}m one"
+            )
+        }
+        // And a mote at the field's peak alpha is exactly the stated fraction of a pearl — the
+        // normalisation by MOTE_ALPHA is what makes that comparison mean anything.
+        assertEquals(
+            DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE, reference, 1e-9f,
+            "a mote at full alpha no longer delivers MOTE_IRRADIANCE_AT_ONE_METRE"
+        )
+        // And it is PROPORTIONAL to the alpha, not merely "less than". A strict inequality here
+        // passed against a moteIntensity that ignored alpha altogether, on float rounding alone:
+        // `(E/0.35)*0.35` and `(E/0.5)*0.5` are not the same Float, and one of them happened to be
+        // the smaller. The relationship is what has to be asserted.
+        assertEquals(
+            reference * 0.5f,
+            DiveLighting.irradianceAtOneMetre(DiveLighting.moteIntensity(0.5f, alpha * 0.5f), 0.5f, 360f),
+            reference * 1e-4f,
+            "a mote drawn at half alpha no longer emits half as much. The alpha is what stops a " +
+            "mote lighting the water from a depth at which the mote itself is invisible"
         )
     }
 
@@ -223,20 +344,38 @@ class DiveLightingTest
     {
         // The moving beam is known-good and must not regress. 25x at 50 degrees is what it
         // has always sent to drawLight; the normalisation below has to reproduce it exactly.
+        //
+        // READ BACK THROUGH THE UNIT rather than compared with a bare intensity: `base` is an
+        // irradiance at one metre since 2026-08-13, and `beamIntensity` now divides by the
+        // emitter's size as well as by the cone mask, so `base * 25` is no longer the number the
+        // shader is handed. What has to be preserved is the light DELIVERED, which is what
+        // irradianceAtOneMetre reads back — and it is unchanged to the last bit.
         assertEquals(50f, DiveLighting.beamConeAngle(1.5f), 1e-4f)
-        assertEquals(base * 25f, DiveLighting.beamIntensity(base, 1.5f), 0.01f)
-        assertEquals(base * 25f, DiveLighting.beamIntensity(base, 40f), 0.01f)
+        val focused = base * 25f * DiveLighting.coneMaskPeak(50f)
+        listOf(1.5f, 40f).forEach { speed ->
+            assertEquals(
+                focused,
+                DiveLighting.irradianceAtOneMetre(
+                    DiveLighting.beamIntensity(base, speed), DiveLighting.DIVER_LIGHT_SIZE_METRES, 50f
+                ), 0.01f,
+                "the focused beam at ${speed}m/s no longer delivers the 25x-at-50-degrees it did"
+            )
+        }
     }
 
     @Test
     fun `hovering is no brighter on-axis than the old omnidirectional light was`()
     {
-        // The blob complaint is about total light, not about the diver going dark. Peak
-        // on-axis radiance is intensity * coneMaskPeak, and holding that at the old omni
-        // value (base * 1.0) means nothing anywhere on screen gets brighter than it is
-        // today — the fix only ever removes light, from the sides and from behind.
-        val peakRadiance = DiveLighting.beamIntensity(base, 0f) * DiveLighting.coneMaskPeak(DiveLighting.beamConeAngle(0f))
-        assertEquals(base, peakRadiance, 0.01f)
+        // The blob complaint is about total light, not about the diver going dark. Holding the
+        // hovering beam's on-axis delivery at the old omnidirectional value (base * 1.0) means
+        // nothing anywhere on screen gets brighter than it was — the fix only ever removes light,
+        // from the sides and from behind.
+        val delivered = DiveLighting.irradianceAtOneMetre(
+            DiveLighting.beamIntensity(base, 0f),
+            DiveLighting.DIVER_LIGHT_SIZE_METRES,
+            DiveLighting.beamConeAngle(0f)
+        )
+        assertEquals(base, delivered, 0.01f)
     }
 
     @Test
@@ -390,23 +529,205 @@ class DiveLightingTest
      * the emitter's size and leaving a hand-typed multiplier behind, which is exactly what
      * `fd036f7` did in the other direction.
      *
-     * The physics: `radius = 0` disables `radiance_cascades.frag`'s distance term, so a probe's
-     * irradiance from a light is the fraction of its rays that hit it, which is proportional to
-     * the light's angular size, i.e. to `size / distance`. `size * intensity` is therefore the
-     * conserved quantity at every distance, and it must come out at the size the beam's balance
-     * was signed off against no matter what emitter size is chosen.
+     * The physics: a probe's irradiance from a light is the fraction of its rays that hit it,
+     * which is proportional to the light's angular size, i.e. to `size / distance`. `size *
+     * intensity` is therefore conserved at every distance — which is precisely why the one unit is
+     * `intensity x size x coneMaskPeak` and why this now follows from the unit rather than from a
+     * `TORCH_SIZE_COMPENSATION` someone has to remember to move.
      */
     @Test
     fun `the torch's cast is conserved when its emitter is resized`()
     {
+        val surface = DiveLighting.torchIrradianceForDepth(0f)
         for (size in listOf(0.4f, 1.2f, 3f, 6f, 9f))
         {
             assertEquals(
-                DiveLighting.TORCH_BALANCE_SIZE_METRES,
-                size * DiveLighting.torchIntensityFor(size), 1e-3f,
-                "an emitter of ${size}m casts a different amount of light than the ${DiveLighting.TORCH_BALANCE_SIZE_METRES}m one the beam was balanced at"
+                surface,
+                size * DiveLighting.intensityFor(surface, size, 360f), 1e-3f,
+                "an emitter of ${size}m casts a different amount of light than the beam's stated $surface"
             )
         }
+    }
+
+    // ---- Distance falloff ------------------------------------------------------------
+    //
+    // Every drawLight passed `radius = 0f` until 2026-08-13, which in `radiance_cascades.frag` is
+    // not "unbounded radius" but "skip the distance term entirely". These cover the conversion that
+    // switched it on. See DiveLighting.falloffRadius for the derivation off the shader source.
+
+    /**
+     * THE ONE PROPERTY THE WHOLE CONVERSION EXISTS FOR: a light's reach in METRES must not depend
+     * on the framebuffer.
+     *
+     * `radiance_cascades.frag`'s attenuation is `clamp(radius * camScale / dist^2, 0, 1)` with
+     * `dist` in FRAMEBUFFER PIXELS, so `radius` has dimension length^2 x pixels/length and a
+     * hardcoded one would give the booth panel a vote on how far the torch shines. `CLAUDE.md`
+     * forbids that in the strongest terms it uses, and the failure would be invisible on the
+     * machine it was tuned on.
+     *
+     * Asserted by reproducing the shader's own expression at four wildly different framebuffers and
+     * requiring the same answer in metres. Not a restatement of `falloffRadius`: this multiplies by
+     * `camScale` and divides by `(d * camScale)^2` exactly as the shader does, so a `falloffRadius`
+     * that forgot the scale, squared the wrong term, or used a length would fail here.
+     */
+    @Test
+    fun `a light's reach in metres is the same at every framebuffer size`()
+    {
+        val framebuffers = listOf(
+            1600f to 900f,      // the dev window
+            3200f to 1800f,     // the same window on a Retina display
+            3840f to 2160f,     // a 4K booth panel
+            3440f to 1440f      // an ultrawide, which is a different camera REGIME (see CameraRig)
+        )
+        for (reachMetres in listOf(1f, 3f, 24f))
+            for ((w, h) in framebuffers)
+            {
+                val camScale = CameraRig.pixelsPerMetre(w, h)
+                val radius = DiveLighting.falloffRadius(reachMetres, camScale)
+                for (distanceMetres in listOf(0.5f, 1f, 5f, 20f, 60f))
+                {
+                    // radiance_cascades.frag:125-126, verbatim, with dist in framebuffer pixels.
+                    val distPixels = distanceMetres * camScale
+                    val shader = (radius * camScale / (distPixels * distPixels)).coerceIn(0f, 1f)
+                    assertEquals(
+                        DiveLighting.attenuationAt(distanceMetres, reachMetres), shader, 1e-4f,
+                        "a ${reachMetres}m light attenuates differently at ${w}x$h than the model " +
+                        "says — its reach in metres depends on the display, which is the exact " +
+                        "failure the conversion exists to prevent"
+                    )
+                }
+            }
+    }
+
+    @Test
+    fun `a light is at full brightness inside its reach and falls off as the inverse square outside`()
+    {
+        // Inside: exactly 1, so switching the falloff on cannot brighten anything — it only ever
+        // removes light from beyond a light's stated reach. That is what makes this step safe to
+        // land before the daylight floor, and it is why the deep is expected to stay dark.
+        assertEquals(1f, DiveLighting.attenuationAt(0f, 10f), 1e-6f)
+        assertEquals(1f, DiveLighting.attenuationAt(1f, 10f), 1e-6f)
+        assertEquals(1f, DiveLighting.attenuationAt(10f, 10f), 1e-6f)
+
+        // Outside: (R/d)^2. Doubling the distance quarters it.
+        assertEquals(0.25f, DiveLighting.attenuationAt(20f, 10f), 1e-6f)
+        assertEquals(0.0625f, DiveLighting.attenuationAt(40f, 10f), 1e-6f)
+    }
+
+    /**
+     * `radius` REACHES THE SHADER THROUGH A HALF FLOAT, AND SATURATING IT IS SILENT.
+     *
+     * `scene.frag`'s last line packs it into `metadata.a`, and `gi_local_scene` is created with
+     * `createSurface`'s default `textureFormat`, which is RGBA16F. Above 65504 a half float is
+     * +inf, `inf / d^2` clamps to 1, and the light quietly goes back to having no falloff at all —
+     * no GL error, no log, and nothing visible except at whatever resolution crosses the bound.
+     *
+     * The bound is genuinely reachable rather than theoretical: at 8K a 30 m reach is 66 240.
+     */
+    @Test
+    fun `no light's radius can saturate the half float it is packed into`()
+    {
+        val hugestPlausiblePanel = CameraRig.pixelsPerMetre(7680f, 4320f)
+        val reaches = listOf(
+            "torch" to DiveLighting.TORCH_REACH_METRES,
+            "pearl" to DiveLighting.PEARL_REACH_METRES,
+            "mote" to DiveLighting.MOTE_REACH_METRES
+        )
+        reaches.forEach { (name, reach) ->
+            assertTrue(
+                reach <= DiveLighting.MAX_REACH_METRES,
+                "the $name reach (${reach}m) is above MAX_REACH_METRES (${DiveLighting.MAX_REACH_METRES}m)"
+            )
+            assertTrue(
+                DiveLighting.falloffRadius(reach, hugestPlausiblePanel) < HALF_FLOAT_MAX,
+                "the $name light's radius is ${DiveLighting.falloffRadius(reach, hugestPlausiblePanel)} " +
+                "at 8K, which a half float rounds to infinity — the falloff silently switches off"
+            )
+        }
+        // And the cap is not slack: 25% more reach than the cap allows really does saturate, so
+        // this is a bound someone could cross rather than a comfortable margin.
+        assertTrue(
+            DiveLighting.falloffRadius(DiveLighting.MAX_REACH_METRES * 1.25f, hugestPlausiblePanel) > HALF_FLOAT_MAX,
+            "MAX_REACH_METRES is far below where the half float actually saturates, so it is not " +
+            "the bound it claims to be and the comment on it is wrong"
+        )
+    }
+
+    /**
+     * EVERY LIGHT IN THE GAME HAS A REACH, AND THE CONVERSION HAPPENS IN EXACTLY ONE PLACE.
+     *
+     * Asserted on the source, because what is being checked is a property of the four `drawLight`
+     * CALL SITES and there is no way to run one without a GL context — the same instrument, and the
+     * same reasoning, as `MainCameraOwnershipTest` and `DrawTest`.
+     *
+     * Two halves, and both are the thing that actually goes wrong. `radius = 0f` is the state the
+     * whole of `2026-08-13-one-world-model.md` §1.1 is about — *"a pearl 50 m away contributes
+     * exactly what a pearl 2 m away does"* — and it is one careless copy-paste away at any new
+     * light. And a `radius` computed anywhere but [DiveLighting.falloffRadius] is a second place
+     * where a metre becomes a pixel count, which is the shape of `6ea1f53`'s shipped bug.
+     */
+    @Test
+    fun `every drawLight states a reach, and only falloffRadius converts one`()
+    {
+        val source = stripComments(File("src/main/kotlin/render/DiveLighting.kt").readText())
+
+        // Anchored at the start of a line, which is what makes it a named ARGUMENT rather than any
+        // assignment: `BloomEffect().apply { ...; radius = 0f; ... }` in `setup` is a different
+        // `radius` entirely and an unanchored scan reports it, and the mote loop's hoisted
+        // `val radius = ...` is a definition rather than a call site.
+        val radiusArguments = Regex("^\\s*radius = (.+)$", RegexOption.MULTILINE)
+            .findAll(source).map { it.groupValues[1].trim() }.toList()
+        assertEquals(
+            4, radiusArguments.size,
+            "expected exactly four drawLight radius arguments (torch, pearl, lure, mote), found " +
+            "$radiusArguments — a light has been added or removed without this test being read"
+        )
+        radiusArguments.forEach { argument ->
+            assertTrue(
+                argument == "radius" || argument.startsWith("falloffRadius("),
+                "a drawLight passes `radius = $argument`. Every light states its reach in METRES " +
+                "and converts through falloffRadius, which is the only place that knows the engine's " +
+                "radius is not a length; `0f` in particular is the no-falloff world this replaced"
+            )
+        }
+
+        // The local the motes hoist must itself come from the one conversion — otherwise the check
+        // above is satisfied by a name and the arithmetic behind it is unguarded.
+        assertTrue(
+            Regex("val radius = falloffRadius\\(").containsMatchIn(source),
+            "drawMoteLights hoists a `radius` local that no longer comes from falloffRadius"
+        )
+        assertEquals(
+            1, Regex("fun falloffRadius\\(").findAll(source).count(),
+            "there must be exactly one definition of falloffRadius"
+        )
+    }
+
+    /**
+     * A PEARL MUST LIGHT ITS NEIGHBOURHOOD AND NOT THE FRAME, AND THE TORCH THE OTHER WAY ROUND.
+     *
+     * This is the plan's *"pearls stop being exempt"* stated as a relationship rather than as two
+     * decimals: a pearl at 20 m must have become negligible while the torch at 20 m must not, or
+     * the deep is lit by scenery again — the arrangement spec §17 replaced on 2026-08-12.
+     */
+    @Test
+    fun `a pearl's reach is a neighbourhood and the torch's is the frame`()
+    {
+        val across = 20f
+        assertTrue(
+            DiveLighting.attenuationAt(across, DiveLighting.PEARL_REACH_METRES) < 0.05f,
+            "a pearl still delivers " +
+            "${DiveLighting.attenuationAt(across, DiveLighting.PEARL_REACH_METRES)} of its full " +
+            "brightness ${across}m away — it is lighting the frame it appears in, not its own water"
+        )
+        assertEquals(
+            1f, DiveLighting.attenuationAt(across, DiveLighting.TORCH_REACH_METRES), 1e-6f,
+            "the torch has stopped reaching across the frame, so nothing replaces the daylight"
+        )
+        assertTrue(
+            DiveLighting.MOTE_REACH_METRES < DiveLighting.PEARL_REACH_METRES,
+            "a mote reaches at least as far as a pearl — the field is a second lighting rig again"
+        )
     }
 
     /**
@@ -581,6 +902,24 @@ class DiveLightingTest
     private companion object
     {
         private const val SHEET = "src/main/resources/sprites/diver-diffuse.png"
+
+        /**
+         * The largest finite IEEE 754 binary16 value. `radius` reaches the shader through
+         * `metadata.a` on an RGBA16F attachment, and anything above this is +inf — which clamps
+         * the attenuation to 1 and silently restores the pre-2026-08-13 "no falloff" behaviour.
+         */
+        private const val HALF_FLOAT_MAX = 65504f
+
+        /**
+         * Comments stripped, exactly as `DrawTest` and `MainCameraOwnershipTest` do it: this
+         * file's subject is documented at length in prose that names `radius = 0f` several times,
+         * and a scan that read the prose would report the explanation as the offence.
+         */
+        fun stripComments(source: String): String = source
+            .lineSequence()
+            .filterNot { val t = it.trimStart(); t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") }
+            .map { it.substringBefore("//") }
+            .joinToString("\n")
 
         /**
          * Alpha coverage per row of frame 0 of the committed sheet, top of the cell first. The

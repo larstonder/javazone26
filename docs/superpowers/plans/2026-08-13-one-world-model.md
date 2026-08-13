@@ -64,8 +64,27 @@ definition outside whatever model the multiply expresses.
 
 Three of the five faults die immediately as consequences rather than as separate fixes:
 
-- **The diver becomes visible** because his torch is 1.2 m from his body and `1/d²` lights him.
-  He stops needing a special case; he is lit by the world like the rock is.
+- ~~**The diver becomes visible** because his torch is 1.2 m from his body and `1/d²` lights
+  him.~~ **THIS WAS WRONG, ON BOTH HALVES, AND STEP 1 DISPROVED IT.** Struck rather than
+  deleted because it is the reason step 1 was expected to produce a visible headline and did
+  not.
+
+  The torch is not 1.2 m from his body — 1.2 m is the EMITTER's size; it is carried
+  `TORCH_FORWARD_FRACTION` (0.40) × `DIVER_HEIGHT_METRES` (9 m) = **3.6 m ahead** along the
+  heading. And distance is not what stops it lighting him: `radiance_cascades.frag:114-117` is
+  `dotK = max(dot(coneDir, -rayDir), 0); color *= clamp(dotK - cos(coneAngle), 0, 1)`, so a
+  probe BEHIND a directional emitter gets `clamp(0 - cos(halfAngle), 0, 1)` = **exactly zero at
+  every distance**. The diver is always behind his own beam, hovering or swimming.
+
+  Falloff could never have fixed this, for a reason that should have been obvious before the
+  work rather than after it: the distance term CLAMPS AT 1, so it can only ever REMOVE light.
+  It cannot create illumination that was not there. Measured: the diver's torso is 0.000/255 at
+  140 m both before and after.
+
+  What will actually light him is step 2 (at the proposed Abyss daylight of 0.15 his suit puts
+  him near 10/255), or a fifth light — a co-located, omnidirectional, much dimmer "lantern" at
+  the torch, which is `2026-08-13-deep-water-lighting.md` §3.2 and is a NEW light rather than a
+  property of an existing one.
 - **Pearls stop being exempt.** With a radius their emission still lights their own body — but
   it also lights the water around them, falls off, and is comparable with the torch in the same
   unit. A pearl in the beam gets brighter, which is what "affected by the light" means.
@@ -112,11 +131,21 @@ values are chosen.
 
 ## 4. Order of work
 
-1. **Switch on distance falloff.** Give every `drawLight` a real `radius` and re-express the
-   four intensities in one unit. This is the change that makes the rest coherent, and it is
-   also the one that will look most different — every existing intensity was tuned in a world
-   with no falloff, so all four numbers are wrong by construction and must be re-derived rather
-   than carried over.
+1. ~~**Switch on distance falloff.**~~ **DONE.** Every `drawLight` states a reach in metres and
+   every intensity is stated as irradiance at one metre (`E1 = intensity × sizeMetres ×
+   coneMaskPeak`), which subsumed the four separate size-correction constants that each existed
+   to answer the same question against a different reference size. `radius = R² × camScale`,
+   established both from the bytecode and by measuring a pearl's halo in METRES at two
+   framebuffer sizes (mean disagreement 0.0019, against 0.0117 predicted if the radius were
+   hardcoded).
+
+   **It changed almost nothing visually, which is the correct outcome and was not the
+   prediction.** The distance term clamps at 1, so it only removes light; the frame at 140 m
+   went from 0.225 to 0.245 mean. What it bought is structural — one unit, so the four
+   intensities can be reasoned about together — plus two latent faults found on the way: a
+   reach above ~24 m saturates the RGBA16F `metadata.a` to `+inf` and silently restores
+   no-falloff, and motes of different sizes were casting different amounts of light for the
+   same nominal intensity.
 2. **Set the daylight floor** from §3, once the owner picks.
 3. **Re-check the pearls' exemption.** With falloff on, a pearl's own shelf may still dominate
    its body; if so, the fix is the emitter's SIZE relative to its silhouette, which

@@ -558,18 +558,25 @@ object Motes
     internal fun glows(cellX: Int, cellY: Int) = pick(cellX, cellY, STREAM_GLOW, GLOW_IN) == 0
 
     /**
-     * What a glowing mote emits, before its own alpha scales it.
+     * # `GLOW_INTENSITY` LIVED HERE AND HAS MOVED TO `DiveLighting`, on purpose.
      *
-     * **It must stay far below the torch, and that is checked.** The torch runs 2.0 at the surface
-     * to 6.0 in the Abyss (`DiveLighting.diverIntensityByZone`) precisely so that it, and not the
-     * scenery, is what reveals a pearl. A field of 25-60 motes at 0.05 each aggregates to something
-     * comparable to ONE pearl's 0.12 spread over the whole frame — an ambient wash, which is what
-     * was asked for, rather than a second lighting rig competing with the beam.
+     * It was a flat `0.05f`, handed to `drawLight` as `GLOW_INTENSITY * alpha`, and it is now
+     * `DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE` — stated as a twenty-fourth of a pearl's, in the
+     * one unit all four of the game's lights are now expressed in. The whole diagnosis is in
+     * `docs/superpowers/plans/2026-08-13-one-world-model.md` §1.4; the short version is that this
+     * file's own doc used to have to explain, in prose, how 0.05 compared with a pearl's 0.12 and a
+     * torch's 2.0-to-6.0, and it could not — the three numbers had different cone widths and
+     * different emitter sizes behind them and were not the same quantity.
      *
-     * Scaled by the mote's own alpha at the draw site, so the same depth ramp that fades the dots
-     * near the surface fades their light with them: a mote cannot glow where it cannot be seen.
+     * WHAT THE MOTES KEEP is everything about the FIELD: how many there are ([GLOW_IN]), how big
+     * they are ([sizeMetres]), how bright they are drawn ([MOTE_ALPHA] and the ramps around it),
+     * and where they go. What they give up is an opinion about how much light one of them casts,
+     * which was never a property of the mote field so much as of its place in the lighting.
+     *
+     * `DiveLighting.moteIntensity` reads [MOTE_ALPHA] back out of here to normalise a mote's own
+     * alpha, so the depth ramp that fades the dots near the surface still fades their light with
+     * them: a mote cannot glow where it cannot be seen.
      */
-    internal const val GLOW_INTENSITY = 0.05f
 
     /**
      * How many metres below `Tuning.SURFACE_DEPTH` the motes take to fade in, and why there is a

@@ -65,7 +65,8 @@ import kotlin.math.sin
  * you see the emitter instead of the light. The diver's torch was drawn from a quad the height of
  * the diver, and read as a hard-edged rectangle wheeling around him; making it round only turned
  * it into a hard-edged circle. It is now 1.2 m — see [DIVER_LIGHT_SIZE_METRES], which has the
- * whole diagnosis, and [TORCH_SIZE_COMPENSATION], which is how the cast survives the shrink.
+ * whole diagnosis, and [TORCH_REACH_METRES], which is where its reach comes from now that the
+ * emitter's size no longer decides it.
  *
  * All three `drawLight` calls below then pass [LightEmitter.emitter] rather than `Texture.BLANK`,
  * because `drawLight` takes the emitter's shape from the texture and BLANK means "no texture",
@@ -75,7 +76,7 @@ import kotlin.math.sin
  *
  * The pearls then needed the SIZE half of the same fix, which they had not had: an emitter is a
  * flat shelf of irradiance with a hard rim, so a 3 m one around a 1.2 m pearl is a visible box of
- * lifted water whatever its shape. See [PEARL_LIGHT_SIZE_METRES] and [PEARL_SIZE_COMPENSATION].
+ * lifted water whatever its shape. See [PEARL_LIGHT_SIZE_METRES] and [PEARL_REACH_METRES].
  */
 object DiveLighting
 {
@@ -170,65 +171,6 @@ object DiveLighting
     internal const val PEARL_LIGHT_SIZE_METRES = 1.2f
 
     /**
-     * How much the pearls' intensity is raised to pay for the shrink above. **1.1, MEASURED — and
-     * emphatically NOT the 2.5 the arithmetic asks for.**
-     *
-     * [PEARL_INTENSITY] — and the five-value depth ramp it replaced — was tuned by eye against the
-     * old 3 m quad, so this is a correction relative to 3 m and there is deliberately no
-     * `PEARL_BALANCE_SIZE_METRES`
-     * constant beside it — see the last paragraph for why a size the compensation could be
-     * DERIVED from would be a trap rather than a convenience.
-     *
-     * ## The arithmetic, which is right about the light map and wrong about the frame
-     *
-     * `radius = 0` makes irradiance linear in the quad's size ([torchIntensityFor] has the
-     * derivation), so `size * intensity` is conserved and the honest compensation for a
-     * 3 m -> 1.2 m shrink is 2.5. That is exactly the lever `006512b` pulled for the torch, and
-     * on the LIGHT MAP it is correct here too: with the bloom removed, a 1.2 m emitter at 2.5x
-     * intensity puts +18.5% on the light's contribution to the frame mean, i.e. the cast really
-     * is conserved to within a fifth.
-     *
-     * With the bloom back on, the same build reads:
-     *
-     *     depth 12 Shallows   frame mean 9.033 -> 11.206     +24%
-     *     depth 75 Twilight               2.946 -> 23.773    +707%
-     *     depth 140 Abyss                 3.757 -> 21.444    +471%
-     *
-     * The Abyss becomes an orange wash. THE REASON IS THAT SHRINKING AN EMITTER WHILE CONSERVING
-     * ITS CAST NECESSARILY RAISES ITS PEAK RADIANCE — the same flux leaves a fifth of the area —
-     * and `setup`'s bloom is thresholded at 1.4 and therefore super-linear in exactly that peak.
-     * Where ambient is near zero the bloom around the pearls IS the visible frame, and there are
-     * thirty of them on screen, so their haloes add. The torch got away with the same lever
-     * because there is one of it and it is a cone.
-     *
-     * ## The measured number
-     *
-     * Frame means against a same-build control pair (which agreed to 0.0004/255 at 140 m and was
-     * bit-identical at 12 m), as a percentage of the 3 m baseline at each depth:
-     *
-     *     intensity x     d12 Shallows    d75 Twilight    d140 Abyss
-     *     1.00              -10.7%          -34.9%          -24.6%
-     *     1.10               -9.3%          -14.0%           -1.0%
-     *     1.25                 -               -            +40.8%
-     *     1.50                 -               -           +122.4%
-     *     2.50              +24.1%         +707.0%         +470.8%
-     *
-     * 1.1 is the only value in that sweep that is within 15% of the baseline in all three zones,
-     * and the cliff between 1.10 and 1.25 in the Abyss is the bloom threshold being crossed by a
-     * whole population of pearls at once. What it costs is stated plainly: the Shallows and the
-     * Twilight sit about 9-14% below where they were, because the far-field cast is genuinely
-     * weaker (a 1.2 m emitter at 1.1x casts roughly half what a 3 m one at 1.0x did) and the
-     * bloom only partly makes it up. That is the price of the halo, and it is small enough that a
-     * side-by-side capture of the Shallows reads as the same frame with rounder pearls.
-     *
-     * **RE-MEASURE THIS IF [PEARL_LIGHT_SIZE_METRES] CHANGES.** It is deliberately NOT a function
-     * of the size, because it is not derivable from the size — the table above is not a curve
-     * anyone would have guessed, and `LightEmitter`'s own class doc records the previous time an
-     * analytic compensation for this post chain came out fifty times too big.
-     */
-    internal const val PEARL_SIZE_COMPENSATION = 1.1f
-
-    /**
      * The diver's torch: the size of the QUAD that emits it, in metres.
      *
      * ## A TORCH HEAD, NOT A BODY — and the history matters, because this has now been wrong in
@@ -262,7 +204,7 @@ object DiveLighting
      * at any resolution), and 1.2 m is 18 texels across in the half-scale local SDF — it was 9 when
      * this size was chosen, which was coarse but already enough for the JFA to build a shape from.
      *
-     * ## Where the reach comes from now: [TORCH_SIZE_COMPENSATION]
+     * ## Where the reach comes from now: [TORCH_REACH_METRES]
      *
      * A CORRECTION TO WHAT THIS COMMENT USED TO CLAIM: `upscaleSmallSources` does NOT apply here.
      * `GlobalIlluminationSystem` sets it on the GI_GLOBAL_SCENE renderer only
@@ -272,44 +214,233 @@ object DiveLighting
      */
     internal const val DIVER_LIGHT_SIZE_METRES = 1.2f
 
-    /**
-     * The emitter size the beam's balance was tuned at, in metres. `d92c723` set
-     * [BEAM_INTENSITY_MULT] and [STATIONARY_PEAK_RADIANCE] against a 3 m quad; `fd036f7` then
-     * doubled the quad to 6 m as a side effect of resizing the diver, which doubled the beam's
-     * reach without anyone choosing to. This is the number that balance belongs to.
-     */
-    internal const val TORCH_BALANCE_SIZE_METRES = 3f
+    // ================================================================================================
+    // ONE WORLD MODEL: every light states its REACH in metres and its BRIGHTNESS in one unit
+    //
+    // Until 2026-08-13 every `drawLight` below passed `radius = 0f`, and the four intensities had each
+    // been tuned against a different reference — the pearls against "a marker glow", the torch against
+    // `1 - daylight`, the motes against "an ambient wash". No two were in the same unit, so no two
+    // could be reasoned about together, and each of the previous week's fixes moved one and broke the
+    // balance with another. `docs/superpowers/plans/2026-08-13-one-world-model.md` is the diagnosis.
+    //
+    // What replaces it is two statements per light and nothing else:
+    //
+    //   REACH      how far it is at full brightness, in METRES  ->  [falloffRadius]
+    //   BRIGHTNESS the irradiance it delivers at ONE METRE      ->  [intensityFor]
+    //
+    // Both go through exactly one conversion, below, so there is one place where a metre becomes an
+    // engine number and one place where a design quantity becomes a `drawLight` argument.
+    // ================================================================================================
 
     /**
-     * The nominal intensity multiplier that makes an emitter of [emitterSizeMetres] cast exactly
-     * what the [TORCH_BALANCE_SIZE_METRES] one did. At our 1.2 m that is 2.5.
+     * The engine's `radius` for a light that is at FULL BRIGHTNESS out to [fullBrightnessMetres] and
+     * falls off as the inverse square beyond it.
      *
-     * IT IS A RATIO OF SIZES BECAUSE THE FALLOFF IS ANGULAR, NOT RADIAL. We pass `radius = 0`,
-     * which in `radiance_cascades.frag` is not "unbounded radius" but "skip the distance term
-     * altogether" — so what a probe receives from a light is its radiance times the FRACTION OF
-     * ITS RAYS THAT HIT IT, and that fraction is proportional to the light's angular size, i.e.
-     * to `size / distance`. Irradiance is therefore linear in the quad's size at every distance,
-     * and dividing the quad by 2.5 while multiplying the intensity by 2.5 leaves the cast
-     * identical everywhere while shrinking the visible source to a fifth of its area.
+     * ## `radius` IS NOT A LENGTH, AND IT IS NOT RESOLUTION-INDEPENDENT. THIS IS THE WHOLE POINT.
      *
-     * A FUNCTION rather than a bare constant so that the RELATIONSHIP is what is written down and
-     * what is tested: the failure mode this is guarding against is precisely someone changing the
-     * emitter's size and leaving a hand-typed multiplier behind, which is how `fd036f7` came to
-     * double the beam without anyone noticing.
+     * The neighbouring `aoRadius` (see [setup]) reads like a zoom knob and is not one — its camera
+     * scale cancels and it is already scale-invariant in world units. This one is the opposite trap
+     * resolved the other way, so the derivation is written out rather than asserted. From
+     * `shaders/lighting/global/radiance_cascades.frag`:
      *
-     * It also restores the `d92c723` balance exactly rather than approximately, and the
-     * hovering-versus-moving ramp survives it untouched by construction: [beamIntensity] is
-     * expressed entirely in MULTIPLES of the base intensity it is handed, so scaling that base
-     * moves both ends of the ramp together and cannot change their ratio. `DiveLightingTest`'s
-     * ramp cases assert against `base` for that reason and are unaffected.
+     * ```glsl
+     * sampleScene:126   float dist = distance(hitPos, originPos) / lightTexScale;
+     *                   color.rgb *= clamp((radius * camScale) / (dist * dist), 0.0, 1.0);
+     * ```
+     *
+     * Follow the two positions back to a unit, which is the step that decides it:
+     *
+     *  - `main:204,219` builds `probeCenterPos` from `uv * lightTexRes`, i.e. in LIGHT-TEXTURE pixels
+     *    (`lightTexRes` is uploaded as the cascade FBO's own size — `GiRadianceCascades.applyEffect`,
+     *    `setUniform("lightTexRes", fbo.getTexture().width, .height)`), and hands it to `getRadiance`
+     *    as `probeCenter` — which passes it STRAIGHT THROUGH to `sampleScene` as `originPos`, without
+     *    the `localSdfScaleRatio` scaling it applies to the ray endpoints (`getRadiance:135-136`).
+     *  - `sampleScene:122-124` takes the hit the other way: `hitPosUv * localSdfRes /
+     *    localSdfScaleRatio`. `localSdfRes` is the local scene texture's size (framebuffer x
+     *    `localSceneTexScale`) and `localSdfScaleRatio` is uploaded as `localSceneTexScale /
+     *    lightTexScale`, so that quotient is also LIGHT-TEXTURE pixels. The two agree, as they must.
+     *  - `/ lightTexScale` then converts light-texture pixels to FRAMEBUFFER pixels.
+     *
+     * So `dist` is in framebuffer pixels, i.e. `d_metres * camScale`, and `camScale` is uploaded as
+     * `localSceneSurface.camera.scale.x` — the local scene surface is created with
+     * `camera = engine.gfx.mainCamera` (GlobalIlluminationSystem.kt:78), whose `scale.x` is written by
+     * [CameraRig.applyTo] as [CameraRig.pixelsPerMetre]. Substituting:
+     *
+     * ```
+     * attenuation = radius * camScale / (d * camScale)^2  =  radius / (d^2 * camScale)
+     * ```
+     *
+     * **`radius` therefore has dimension length^2 x pixels/length, and a value that is right on one
+     * framebuffer is wrong on another.** Setting it to `R^2 * camScale` is what makes the whole term
+     * collapse to a pure world-space quantity:
+     *
+     * ```
+     * attenuation = clamp((R / d)^2, 0, 1)
+     * ```
+     *
+     * — full brightness inside R metres, inverse-square outside it, IDENTICAL AT EVERY RESOLUTION.
+     * That is [attenuationAt], and it is the model everything else in this file is tuned against.
+     * Hardcoding a `radius` would pin a light's reach to the booth panel's pixel count, which
+     * `CLAUDE.md` forbids outright and which no capture at one resolution could reveal.
+     *
+     * ## MEASURED, NOT MERELY DERIVED — and this is the half the algebra cannot supply
+     *
+     * The pinned attract frame at `EPT_DEPTH=20` (the Shallows, where the water is bright enough
+     * for a pearl's halo to read at all — in the Abyss it is 0.000/255 one metre from a pearl and
+     * there is nothing to measure), captured FOUR times: this build against a probe build with
+     * `PEARL_REACH_METRES = 0.7f`, each at 1600x900 and at 800x450. Both are 16:9, so
+     * [CameraRig.pixelsPerMetre] is exactly halved (30.672 -> 15.336) while the visible world rect
+     * is identical, i.e. the same pearls at the same world positions.
+     *
+     * The quantity is the RATIO of the two builds' mean luminance in annuli measured in METRES
+     * around each of ~35 matched pearls — which cancels the water, the daylight and the vignette
+     * and leaves only what the reach changed:
+     *
+     * ```
+     *   r (m)          1.2    1.5    1.8    2.1    2.4    2.7    3.0    3.6    4.2    4.5
+     *   3200x1800    0.986  0.966  0.957  0.957  0.959  0.960  0.962  0.968  0.976  0.980
+     *   1600x900     0.976  0.965  0.958  0.956  0.957  0.958  0.961  0.967  0.975  0.980
+     * ```
+     *
+     * The two curves agree to a mean of **0.0019** and dip at the same 2.1 m. The discrimination is
+     * the point: a HARDCODED `radius` — the thing this function exists not to be — would have made
+     * the half-resolution build's effective reach `sqrt(2)` times larger in metres, shifting the
+     * curve along r by 41%; interpolating the full-res curve by that shift predicts a half-res
+     * curve differing from the observed one by a mean of 0.0117, **six times the agreement
+     * actually measured**. The reach really is in metres.
+     *
+     * IT DOES NOT SHOW UP ON THE TORCH, and that is worth knowing before anyone tries. Against the
+     * black of the Abyss the beam's own axial profile is already under 0.1/255 seven metres from
+     * the emitter, so [TORCH_REACH_METRES] at 24 m is inert there — its falloff is real and simply
+     * has nothing left to attenuate. The pearls in the Shallows are the only place in this game
+     * where the term is currently measurable at all.
+     *
+     * ## THE UPPER BOUND, WHICH FAILS SILENTLY
+     *
+     * `radius` reaches the shader through `metadata.a` (`scene.frag`'s last line), and the metadata
+     * attachment of `gi_local_scene` is created with `createSurface`'s default `textureFormat`, which
+     * is **RGBA16F** (Graphics.kt's synthetic defaults constructor; the surface itself passes `null`).
+     * A half float saturates to +inf above 65504, and `inf / d^2` clamps to 1 — which is exactly the
+     * old `radius = 0` behaviour, with no error and no log. [MAX_REACH_METRES] is the guard, and
+     * `DiveLightingTest` fails the build if any reach could cross it on a plausible panel.
      */
-    internal fun torchIntensityFor(emitterSizeMetres: Float): Float =
-        TORCH_BALANCE_SIZE_METRES / emitterSizeMetres
+    internal fun falloffRadius(fullBrightnessMetres: Float, pixelsPerMetre: Float): Float =
+        fullBrightnessMetres * fullBrightnessMetres * pixelsPerMetre
 
-    // `internal` rather than private, matching PEARL_SIZE_COMPENSATION: `DiveLightingTest` pins the
-    // torch's surface intensity against it, so that "the Shallows were not re-lit" can be asserted
-    // without a magic number standing in for the size correction.
-    internal val TORCH_SIZE_COMPENSATION = torchIntensityFor(DIVER_LIGHT_SIZE_METRES)
+    /**
+     * What [falloffRadius] buys, expressed in world terms: the fraction of a light's radiance that
+     * survives the trip to a probe [distanceMetres] away. A transcription of
+     * `radiance_cascades.frag`'s clamp once `radius = R^2 * camScale` has been substituted into it,
+     * so it is pure, testable, and carries no pixels.
+     *
+     * NOT the whole falloff, and the difference matters when reading the numbers below. A probe's
+     * irradiance is its radiance times the FRACTION OF ITS RAYS THAT HIT the light, and that fraction
+     * is proportional to the light's angular size, i.e. to `size / distance` — see [intensityFor].
+     * So irradiance already fell as `1/d` before this change; what this adds is a second `(R/d)^2`
+     * beyond R. Inside R it is exactly 1, so **switching the falloff on cannot brighten anything** —
+     * it only ever removes light from beyond a light's stated reach.
+     */
+    internal fun attenuationAt(distanceMetres: Float, fullBrightnessMetres: Float): Float
+    {
+        if (distanceMetres <= 0f) return 1f
+        val r = fullBrightnessMetres / distanceMetres
+        return (r * r).coerceIn(0f, 1f)
+    }
+
+    /**
+     * The largest reach any light in the game may state, in metres, and the reason there is a cap.
+     *
+     * `falloffRadius(MAX_REACH_METRES, ppm)` must stay under a half float's 65504 (see
+     * [falloffRadius]'s second section) on any panel the booth could plausibly be given. At 8K —
+     * 7680x4320, [CameraRig.pixelsPerMetre] = 73.6 — a 24 m reach is 42 400 and a 30 m reach is
+     * 66 240, i.e. the bound is genuinely reachable and is not a theoretical one. 24 m is also
+     * roughly 2.7 diver-heights and a bit over a third of the visible depth at 16:9, which is as far
+     * ahead as a torch has any business reaching in a game about not being able to see.
+     */
+    internal const val MAX_REACH_METRES = 24f
+
+    /**
+     * How far the torch is at full brightness, in metres. See [MAX_REACH_METRES], which this is.
+     *
+     * The beam's reach USED TO BE AN ARTEFACT OF ITS QUAD SIZE — with no distance term, irradiance is
+     * linear in the emitter's angular size, so the only way to make the beam carry further was to
+     * make the emitter bigger, which is what `006512b` had to shrink to kill a hard-edged rectangle
+     * around the diver. Reach and appearance were the same dial and pulled in opposite directions.
+     * They are now two dials: [DIVER_LIGHT_SIZE_METRES] is what the source LOOKS like, and this is
+     * how far it carries, which is what its doc has always wanted to be about.
+     */
+    internal const val TORCH_REACH_METRES = MAX_REACH_METRES
+
+    /**
+     * How far a pearl is at full brightness, in metres — and it is deliberately SHORT.
+     *
+     * A pearl is a marker glow and not a light source ([PEARL_IRRADIANCE_AT_ONE_METRE]), and with no
+     * distance term it was lighting the whole frame it appeared in: the measured profile at
+     * `radius = 0` still put 8% of a pearl's 1 m value on the water 3.2 m away, times thirty pearls.
+     * 3 m is a bit over two drawn pearl diameters — enough that a pearl reads as sitting IN water
+     * rather than pasted onto it, and little enough that a pearl 20 m away contributes
+     * `(3/20)^2 = 2.3%` of what it used to.
+     *
+     * The lure shares it, necessarily: the disguise is that the two are the same light.
+     */
+    internal const val PEARL_REACH_METRES = 3f
+
+    /**
+     * How far a glowing mote is at full brightness, in metres. One metre — a mote lights ITSELF and
+     * the water immediately around it, which is what `Motes`' own doc argues suspended matter should
+     * do, and nothing further. There are 25-60 of them on screen and every one is also an occluder
+     * (see the deep-water plan's §0), so their aggregate reach is the quantity that matters and this
+     * is what bounds it.
+     */
+    internal const val MOTE_REACH_METRES = 1f
+
+    /**
+     * # THE ONE UNIT: irradiance delivered at ONE METRE, on axis
+     *
+     * `intensity` is what `drawLight` takes, and it is NOT comparable between two lights: a 50-degree
+     * cone throws away 90% of its nominal intensity even on its own axis ([coneMaskPeak]), and a
+     * light's cast is linear in its emitter's SIZE because irradiance is radiance times the fraction
+     * of a probe's rays that hit it — which is the light's angular size, `size / distance`. Two
+     * numbers with different cones and different quad sizes are two different quantities.
+     *
+     * So every light in this file states instead the quantity that is comparable, and the two
+     * functions here are the only conversion between it and `drawLight`:
+     *
+     * ```
+     * irradiance(1 m, on axis)  =  intensity x sizeMetres x coneMaskPeak(cone)
+     * ```
+     *
+     * The `1/d` and the `(R/d)^2` are both exactly 1 at d = 1 m (every reach above is >= 1 m), which
+     * is why one metre is the reference and not some other distance: it is the distance at which the
+     * geometry drops out and only the light's own strength is left.
+     *
+     * ## WHAT THIS SUBSUMES
+     *
+     * `TORCH_BALANCE_SIZE_METRES`, `torchIntensityFor`, `TORCH_SIZE_COMPENSATION` and
+     * `PEARL_SIZE_COMPENSATION` all existed to answer "what intensity keeps this light's cast the
+     * same after I resized its emitter", each with its own reference size. That question is now
+     * answered by construction: state the irradiance, and the intensity follows from whatever size
+     * and cone the light happens to have. There is nothing left to keep in step by hand, which is the
+     * failure mode `fd036f7` (emitter doubled, multiplier left behind) actually shipped.
+     *
+     * ## THE ONE CAVEAT, PRESERVED FROM THE MEASUREMENT THAT COST IT
+     *
+     * This identity is exact on the LIGHT MAP and only approximate on the FRAME. `setup` puts an ACES
+     * tone mapper and a bloom thresholded at 1.4 on `mainSurface`, and neither is linear in radiance
+     * near a light: shrinking an emitter while conserving its cast necessarily raises its peak
+     * radiance (the same flux leaves less area), and `PEARL_SIZE_COMPENSATION`'s sweep found the
+     * honest correction for a 3 m -> 1.2 m shrink to be 1.1x and not the analytic 2.5x, with a cliff
+     * between 1.10 and 1.25 in the Abyss where a whole population of pearls crossed the bloom
+     * threshold at once. **So: change a SIZE and re-measure at 12 m, 75 m and 140 m against a
+     * same-build control pair. The unit tells you what the light map does, not what the frame does.**
+     * `git show 5613e9f:src/main/kotlin/render/DiveLighting.kt` has that sweep in full.
+     */
+    internal fun intensityFor(irradianceAtOneMetre: Float, emitterSizeMetres: Float, coneAngleDegrees: Float): Float =
+        irradianceAtOneMetre / (emitterSizeMetres * coneMaskPeak(coneAngleDegrees).coerceAtLeast(MIN_CONE_MASK_PEAK))
+
+    /** The inverse of [intensityFor] — what a `drawLight` intensity works out at in the one unit. */
+    internal fun irradianceAtOneMetre(intensity: Float, emitterSizeMetres: Float, coneAngleDegrees: Float): Float =
+        intensity * emitterSizeMetres * coneMaskPeak(coneAngleDegrees)
 
     /**
      * How far ahead of the diver's CENTRE the torch is carried, as a fraction of
@@ -476,89 +607,133 @@ object DiveLighting
     private val shaftDaylightByZone = FloatArray(ambientGreen.size) { ambientGreen[it] / ambientGreen[0] }
 
     /**
-     * How hard a pearl shines. **ONE NUMBER, AT EVERY DEPTH — and it used to be a ramp.**
+     * # THE FOUR INTENSITIES, IN ONE UNIT — the torch is the anchor and the other three are FRACTIONS
      *
-     * It was `floatArrayOf(0.6f, 1.0f, 1.8f, 2.6f, 4.0f)`, blended continuously by [DepthBlend]:
-     * deeper zones are darker, so pearls shone up to 6.7x harder to stay legible against the
-     * fading ambient. That is the reading the design's zone table takes when it says of the Abyss
-     * *"pearls are the only light source"*.
+     * `docs/superpowers/plans/2026-08-13-one-world-model.md` §1.4: *"Pearls 0.12 (a marker glow);
+     * torch 2.0 to 6.0 (derived from `1 - daylight`); motes 0.05 x alpha (an ambient wash) [...] No
+     * two of these numbers are in the same unit, so no two can be reasoned about together — which is
+     * why each of the last four days' fixes moved one and broke the balance with another."*
      *
-     * The owner replaced it, in as many words: *"Remove the gradual increase of pearl brightness
-     * by depth. I'd rather like the diver to have to find them using their flashlight."* A pearl
-     * that brightens exactly as fast as the water darkens is a pearl you can always see, which
-     * makes the torch scenery; holding the emission flat is what turns the deep into somewhere
-     * you have to SEARCH. So this is a rule change and not a re-tune.
+     * That is fixed here, and it is fixed structurally rather than by re-typing four decimals in a
+     * comment that claims they are comparable. There is exactly ONE free number below — the torch at
+     * the surface — and the other three are written as ratios of it, in the unit
+     * [irradianceAtOneMetre] defines. So "a pearl is a hundredth of the torch" is a statement the
+     * source makes rather than one a reader has to reconstruct, and re-tuning the anchor moves the
+     * whole balance together instead of pulling it apart.
      *
-     * ## IT IS A MARKER GLOW AND NOT A LIGHT SOURCE, AND THAT TOOK TWO GOES
+     * ## WHY THE TORCH IS THE ANCHOR
      *
-     * The first attempt flattened the ramp to 0.6 — its own first anchor, so the Shallows would be
-     * untouched. That was not enough, and the reason is structural rather than a matter of degree.
-     * A pearl's emitter sits INSIDE its own drawn silhouette (see [PEARL_LIGHT_SIZE_METRES]) and
-     * `radius = 0` means there is no distance term, so a pearl's own body always receives a flat
-     * shelf of exactly this much irradiance — from itself. At 0.6 that shelf dominated anything the
-     * torch could add, so every pearl rendered at the same brightness whether the beam was on it or
-     * not. The owner, on a capture at 85 m: *"it seems the pearls aren't affected by the light at
-     * all. They should be."*
-     *
-     * 0.12 is a fifth of that: enough that a pearl is a discernible dot in a black frame, so the
-     * player knows where to point the torch, and low enough that actually pointing it there is a
-     * large visible change. The number to compare it against is the torch's, which is 6.0 in the
-     * Abyss ([diverIntensityByZone]) — a ratio of about 45x once the size compensations are in,
-     * against roughly 1x before. `DiveLightingTest` pins the RATIO rather than either value, which
-     * is what makes "the torch is what reveals a pearl" the thing under test.
-     *
-     * Note that this also un-breaks `DiveRenderer.pearlAlbedoExposure` by making it unnecessary
-     * rather than merely inert: that existed to stop a pearl's albedo down because its own emitter
-     * was blowing it out to white, and an emitter this size cannot.
-     *
-     * ## IT IS A DEPTH-INDEPENDENT CONSTANT BY CONSTRUCTION, NOT BY COINCIDENCE
-     *
-     * [pearlIntensity] takes no depth argument. That is deliberate: a flat five-element table
-     * would leave the ramp one edit away from returning, and the call sites would go on passing a
-     * depth that no longer means anything. With no parameter there is nothing to re-tune.
-     *
-     * The anglerfish's lure reads this too ([drawAnglerfishLight]), which it must — the design's
-     * whole tell is that the lure is indistinguishable from a pearl except by its drift.
+     * Because the design says so. Spec §17, 2026-08-12: the torch is the deep's PRIMARY light source,
+     * and the owner's instruction that produced it was *"I'd rather like the diver to have to find
+     * [pearls] using their flashlight."* Anchoring on the pearls would make the beam a fraction of
+     * the scenery, which is the arrangement that entry replaced.
      */
-    internal const val PEARL_INTENSITY = 0.12f
-
-    /**
-     * What the torch emits at the SURFACE, where daylight still does most of the work. Unchanged
-     * from the flat 2.0 the whole ramp used to sit at, so the Shallows look exactly as they did.
-     */
-    private const val TORCH_SURFACE_INTENSITY = 2.0f
+    private const val TORCH_SURFACE_IRRADIANCE = 6f
 
     /**
      * How much MORE the torch gives once the daylight is entirely gone, as a multiple of
-     * [TORCH_SURFACE_INTENSITY]. 2 means the Abyss's torch is three times the surface's.
+     * [TORCH_SURFACE_IRRADIANCE]. 2 means the Abyss's torch is three times the surface's.
      *
      * The owner, on a capture at 85 m in which the beam is barely visible against a black frame:
      * *"the flashlight is very dim at lower levels. It should be the primary source of light."*
      */
-    private const val TORCH_DARKNESS_GAIN = 2.0f
+    private const val TORCH_DARKNESS_GAIN = 2f
 
     /**
-     * The torch, per zone — **rising with depth, where it used to FALL.**
+     * The torch, per zone, in the one unit — **rising with depth, where it used to FALL.**
      *
      * It was `floatArrayOf(2.0f, 2.0f, 2.0f, 2.0f, 1.2f)`: flat, and then dimmed by 40% in the
      * Abyss specifically so that the pearls — which used to shine 6.7x harder down there — would
      * read as comparatively brighter. Both halves of that arrangement are now gone. The pearls no
-     * longer brighten with depth ([PEARL_INTENSITY]), and the torch is meant to be what finds
-     * them, so a torch that fades exactly where it becomes the only light was the wrong shape.
+     * longer brighten with depth, and the torch is meant to be what finds them, so a torch that
+     * fades exactly where it becomes the only light was the wrong shape.
      *
      * DERIVED FROM THE DAYLIGHT, NOT TYPED PER ZONE — the same treatment [shaftDaylightByZone]
      * gets, and for the same reason. A shaft is the daylight that is LEFT; the torch is what has
      * to stand in for the daylight that is GONE, so it scales on `1 - daylight(zone)`. Anchored per
-     * zone that is (2.0, 2.85, 3.92, 5.65, 6.0): identical at the surface, and five times the old
-     * Abyss value where the owner's capture was taken.
+     * zone that is (6.00, 11.08, 14.77, 16.96, 18.00) of irradiance at one metre — three times the
+     * surface's where the daylight has run out entirely.
      *
      * Because it is computed from [ambientGreen] rather than copied out of it, re-tuning the water
      * moves the torch with it and the Abyss's "no daylight at all" cannot drift apart from the
      * torch's maximum.
+     *
+     * THE SURFACE ANCHOR IS UNCHANGED BY THE MOVE TO THE NEW UNIT, AND THAT IS ARITHMETIC RATHER
+     * THAN A CHOICE. The old torch handed `drawLight` a nominal `2.0 x TORCH_SIZE_COMPENSATION`,
+     * i.e. `2.0 x 3 m / 1.2 m`, from a 1.2 m emitter — which is `2.0 x 3 m` of irradiance at one
+     * metre, so 6 reproduces it exactly. The Shallows were never the complaint and are not re-lit;
+     * what changed at every depth is that the beam now has a stated REACH ([TORCH_REACH_METRES])
+     * instead of an unbounded one.
      */
-    private val diverIntensityByZone = FloatArray(ambientGreen.size) {
-        TORCH_SURFACE_INTENSITY * (1f + TORCH_DARKNESS_GAIN * (1f - shaftDaylightByZone[it]))
+    private val torchIrradianceByZone = FloatArray(ambientGreen.size) {
+        TORCH_SURFACE_IRRADIANCE * (1f + TORCH_DARKNESS_GAIN * (1f - shaftDaylightByZone[it]))
     }
+
+    /** The torch where there is no daylight left at all — the value everything else is a fraction of. */
+    internal val TORCH_ABYSS_IRRADIANCE = torchIrradianceByZone.last()
+
+    /**
+     * A pearl, as a fraction of the Abyss torch. **A hundredth.**
+     *
+     * ## IT IS A MARKER GLOW AND NOT A LIGHT SOURCE, AND THAT TOOK THREE GOES
+     *
+     * The emission used to be a ramp — `floatArrayOf(0.6f, 1.0f, 1.8f, 2.6f, 4.0f)`, blended by
+     * [DepthBlend] so that a pearl brightened exactly as fast as the water darkened. The owner
+     * removed the rule in as many words: *"Remove the gradual increase of pearl brightness by depth.
+     * I'd rather like the diver to have to find them using their flashlight."*
+     *
+     * Flattening it to 0.6 was not enough, and the reason was structural. A pearl's emitter sits
+     * INSIDE its own drawn silhouette ([PEARL_LIGHT_SIZE_METRES]), and a probe inside an emitter
+     * samples the emitter at its own texel (`radiance_cascades.frag`'s signed SDF takes a zero first
+     * step), so a pearl's own body receives a flat shelf of exactly its own emission — at any radius,
+     * including this one. At 0.6 that shelf swamped anything the torch could add and every pearl
+     * rendered identically whether the beam was on it or not: *"it seems the pearls aren't affected
+     * by the light at all. They should be."*
+     *
+     * A hundredth of the torch is what makes the beam the thing that reveals a pearl. It is also,
+     * deliberately, close to where the previous hand-tuned value landed (0.12 x 1.1 nominal from a
+     * 1.2 m quad is 0.158 in this unit, against 0.18 here) — the RATIO was signed off in playtest and
+     * this step is about putting it in a unit, not about re-balancing it. `DiveLightingTest` pins the
+     * ratio rather than either value.
+     *
+     * ## THE REACH IS THE HALF THAT IS NEW
+     *
+     * What a radius changes for a pearl is not its own body — nothing can, see above — but the water
+     * AROUND it. See [PEARL_REACH_METRES]. That is the plan's *"pearls stop being exempt"*: a pearl
+     * still lights itself, but it now also lights its neighbourhood, falls off, and is comparable
+     * with the torch in the same unit.
+     *
+     * The anglerfish's lure reads this too ([drawAnglerfishLight]), which it must — the design's
+     * whole tell is that the lure is indistinguishable from a pearl except by its drift.
+     */
+    internal const val PEARL_FRACTION_OF_TORCH = 0.01f
+
+    /** @see PEARL_FRACTION_OF_TORCH */
+    internal val PEARL_IRRADIANCE_AT_ONE_METRE = TORCH_ABYSS_IRRADIANCE * PEARL_FRACTION_OF_TORCH
+
+    /**
+     * A glowing mote at FULL alpha, as a fraction of a pearl. **A twenty-fourth.**
+     *
+     * Stated at full alpha — i.e. at `Motes.MOTE_ALPHA`, the peak the depth ramp ever reaches — so
+     * that this number is directly comparable with a pearl's rather than being a per-mote quantity
+     * nobody can hold beside one. [moteIntensity] applies the mote's own alpha on top.
+     *
+     * WHY IT IS EXPRESSED PER MOTE AND NOT PER QUAD. Motes vary in size from 0.35 m to 0.85 m
+     * (`Motes.MIN_SIZE_METRES`/`MAX_SIZE_METRES`), and a light's cast is linear in its emitter's
+     * size — so the old flat `GLOW_INTENSITY` made a big mote cast two and a half times what a small
+     * one did, on top of the alpha spread that is supposed to be the only variation in the field.
+     * In this unit every mote delivers the same irradiance and only its alpha varies, which is what
+     * `Motes`' own doc means by *"one substance catching the light unevenly"*.
+     *
+     * The 2026-08-13 baseline at 140 m found the motes were the BRIGHTEST thing in the Abyss, out-
+     * shining the pearls they are camouflage for. A twenty-fourth of a pearl is the same order as
+     * where the field ended up after that was fixed (0.05 x 0.25 x ~0.6 m = 0.0075 in this unit,
+     * against 0.0075 here) — again, the balance was signed off and this is about the unit.
+     */
+    internal const val MOTE_FRACTION_OF_PEARL = 1f / 24f
+
+    /** @see MOTE_FRACTION_OF_PEARL */
+    internal val MOTE_IRRADIANCE_AT_ONE_METRE = PEARL_IRRADIANCE_AT_ONE_METRE * MOTE_FRACTION_OF_PEARL
 
     /**
      * Speed (m/s) at which the beam reaches full focus. Also the cutoff below which the
@@ -594,9 +769,15 @@ object DiveLighting
     // Guard so a degenerate cone width can never divide by zero in beamIntensity.
     private const val MIN_CONE_MASK_PEAK = 1e-4f
 
-    // Target PEAK ON-AXIS RADIANCE at each end of the ramp, in multiples of the diver's base
-    // intensity. This is the quantity that actually reaches the screen — see coneMaskPeak —
-    // and expressing the two ends in the same unit is what makes them comparable at all.
+    // FOCUS GAIN at each end of the ramp, as a multiple of the diver's base irradiance at one
+    // metre (torchIrradianceByZone). Focusing a beam concentrates it, so the two ends of the ramp
+    // differ in how much irradiance they deliver on axis, not merely in how wide they are.
+    //
+    // These used to be described as "peak on-axis radiance in multiples of the base INTENSITY",
+    // which was the same arithmetic under a name that was only comparable to itself: dividing by
+    // coneMaskPeak happens in intensityFor now, and the base is an irradiance, so the ramp is a
+    // pure ratio and survives the change to the unit untouched. beamIntensity is unchanged in
+    // value by construction — see its doc.
     //
     // The focused end is derived from the old constants rather than retyped, so the moving
     // beam is reproduced exactly (25 * 0.0937 = 2.342 x base) by construction rather than by
@@ -878,20 +1059,22 @@ object DiveLighting
         // is wrong and a pixel count will hide it rather than fix it.
         system.aoRadius = AO_RADIUS_METRES * system.localSceneTexScale
 
-        // THE THREE NEIGHBOURING KNOBS THAT LOOK LIKE THEY NEED THE SAME TREATMENT AND DO NOT.
+        // THE TWO NEIGHBOURING KNOBS THAT LOOK LIKE THEY NEED THE SAME TREATMENT AND DO NOT.
         //
-        // 1. A light's `radius` (radiance_cascades.frag:120-127, `radius * camScale / dist^2`)
-        //    genuinely is NOT scale-invariant — it has dimension 1/length — but we pass
-        //    `radius = 0f` on every drawLight in [render], which skips the falloff branch
-        //    entirely, so it does not reach us. Anyone who later sets a non-zero radius is
-        //    tuning a number whose meaning depends on the display's height, and will have to
-        //    derive it the way this one is derived.
-        // 2. The minimum light quad size (scene.vert:86-88,
+        // (A light's `radius` — radiance_cascades.frag:120-127 — is the one that DOES, and it is
+        // now handled: this comment used to say the falloff branch "does not reach us" because
+        // every drawLight passed 0. Every drawLight now passes a real reach, converted by
+        // [falloffRadius], which has the derivation of exactly the same kind as aoRadius's above
+        // and reaches the OPPOSITE conclusion: that one is already scale-invariant, this one is
+        // not and has to be multiplied by the camera scale. Two adjacent uniforms, two different
+        // answers, both read off the shader rather than guessed.)
+        //
+        // 1. The minimum light quad size (scene.vert:86-88,
         //    `max(size, pixelSizeInWorld * 1500 / camScale)`) IS scale-invariant already:
         //    screenSpacePos.w is exactly 1.0 for an affine orthographic camera, so the floor is
         //    1500/(resolution.y * camScale) world units, i.e. a constant number of screen
         //    pixels. Nothing to do.
-        // 3. `normalMapScale` (GlobalIlluminationSystem.kt:54, default 4f, uploaded as its
+        // 2. `normalMapScale` (GlobalIlluminationSystem.kt:54, default 4f, uploaded as its
         //    RECIPROCAL at GiRadianceCascades.kt:88 and GiInterior.kt:52) is the out-of-plane
         //    component of the ray direction — A UNITLESS RATIO, NOT A LENGTH. It does not
         //    change meaning when a world unit goes from a pixel to a metre and MUST NOT be
@@ -966,11 +1149,24 @@ object DiveLighting
      *    NAME `engine.gfx.mainCamera`, and this file is deliberately not on it. Reaching for the
      *    field here would have to widen that list, which is the guard against a second writer of
      *    the shared camera — the fault `6ea1f53` fixed — being loosened for a mere read.
+     *
+     * [cam] is now load-bearing for a THIRD reason, which is the one that would break silently:
+     * `cam.scale.x` is the camera scale every light's `radius` is derived from ([falloffRadius]),
+     * and it is the very same field `GiRadianceCascades` uploads as the `camScale` uniform —
+     * `setUniform("camScale", localSceneSurface.camera.scale.x)`, on the surface created with
+     * `camera = engine.gfx.mainCamera`. Reading it from anywhere else (the window, a surface
+     * config, a recomputed `CameraRig.pixelsPerMetre`) would be a second derivation of a number
+     * the shader has its own copy of, and the two would agree at every resolution but one.
      */
     fun render(engine: PulseEngine, sim: DiveSim, cam: Camera)
     {
         val surface = engine.gfx.getSurface(GlobalIlluminationSystem.GI_LOCAL_SCENE) ?: return
         val renderer = surface.getRenderer<GiSceneRenderer>() ?: return
+
+        // Read ONCE per frame and handed down, rather than fetched inside each draw: it is a
+        // per-frame constant, four of the five draws below need it, and the pearls' loop would
+        // otherwise re-read a shared engine object per pearl. No allocation either way.
+        val pixelsPerMetre = cam.scale.x
 
         // The god rays are NOT a drawLight and are not on this surface at all — they are albedo
         // strips on mainSurface (see [drawLightShafts] and `LightShafts`). They are issued from
@@ -978,10 +1174,10 @@ object DiveLighting
         // because DiveRenderer has finished with mainSurface by now, which is what puts them in
         // front of the world.
         drawLightShafts(engine, cam)
-        drawMoteLights(surface, renderer, cam)
-        drawPearlLights(surface, renderer, sim, cam)
-        drawAnglerfishLight(surface, renderer, sim, cam)
-        drawDiverBeam(surface, renderer, sim, cam)
+        drawMoteLights(surface, renderer, cam, pixelsPerMetre)
+        drawPearlLights(surface, renderer, sim, cam, pixelsPerMetre)
+        drawAnglerfishLight(surface, renderer, sim, cam, pixelsPerMetre)
+        drawDiverBeam(surface, renderer, sim, cam, pixelsPerMetre)
     }
 
     /**
@@ -1001,9 +1197,16 @@ object DiveLighting
      * rasterised is exactly the quad asked for.
      *
      * The margin stays for what it genuinely buys: a light just off the visible rect still
-     * contributes to on-screen probes, because `radius = 0` means there is no distance falloff to
-     * make its contribution negligible at the boundary. Three metres, in metres, at any
-     * resolution.
+     * contributes to on-screen probes. Three metres, in metres, at any resolution.
+     *
+     * IT IS NO LONGER THE ONLY THING BOUNDING A LIGHT'S REACH, and the reaches make it a BETTER
+     * number than it was rather than a stale one. A pearl's reach is [PEARL_REACH_METRES] = 3 m and
+     * a mote's is 1 m, so for the two lights this margin actually decides — there are thirty pearls
+     * and sixty motes and one torch — the margin is now exactly the distance beyond which the
+     * contribution has begun to fall off, instead of being a number with no relationship to
+     * anything. The torch's 24 m reach would want a wider one on paper; it never comes up, because
+     * `DiveCamera` follows the diver and a torch three metres outside the visible rect is a frame
+     * nobody will see. Left at 3 m deliberately, not by omission.
      *
      * IT USED TO READ `= PEARL_LIGHT_SIZE_METRES` AND MUST NOT AGAIN. That was written when the
      * pearl's emitter was 3 m, so the two happened to be the same number; shrinking the emitter to
@@ -1094,9 +1297,10 @@ object DiveLighting
      * that draws the dots — a light cannot be issued for a mote that was not drawn, nor land
      * anywhere but exactly on it.
      */
-    private fun drawMoteLights(surface: Surface, renderer: GiSceneRenderer, cam: Camera)
+    private fun drawMoteLights(surface: Surface, renderer: GiSceneRenderer, cam: Camera, pixelsPerMetre: Float)
     {
         val emitter = LightEmitter.emitter()
+        val radius = falloffRadius(MOTE_REACH_METRES, pixelsPerMetre)
         surface.setDrawColor(Motes.MOTE_RED, Motes.MOTE_GREEN, Motes.MOTE_BLUE)
         Motes.forEachVisible(cam) { x, depth, size, alpha, glows ->
             if (glows)
@@ -1105,15 +1309,15 @@ object DiveLighting
                     texture = emitter,
                     x = x, y = depth, w = size, h = size,
                     angle = 0f,
-                    intensity = Motes.GLOW_INTENSITY * alpha,
+                    intensity = moteIntensity(size, alpha),
                     coneAngle = WIDE_GLOW_CONE_ANGLE,
-                    radius = 0f
+                    radius = radius
                 )
             }
         }
     }
 
-    private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
+    private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera, pixelsPerMetre: Float)
     {
         val emitter = LightEmitter.emitter()
         surface.setDrawColor(pearlLight)
@@ -1133,7 +1337,7 @@ object DiveLighting
                 angle = 0f,
                 intensity = pearlIntensity(),
                 coneAngle = WIDE_GLOW_CONE_ANGLE,
-                radius = 0f
+                radius = falloffRadius(PEARL_REACH_METRES, pixelsPerMetre)
             )
         }
     }
@@ -1151,7 +1355,7 @@ object DiveLighting
      * the fish's drawn sprite, which is the shape of bug this file already carries two comments
      * about.
      */
-    private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
+    private fun drawAnglerfishLight(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera, pixelsPerMetre: Float)
     {
         val fish = sim.anglerfish ?: return
         if (!cam.showsSquare(fish.x, fish.depth, PEARL_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
@@ -1162,7 +1366,7 @@ object DiveLighting
             angle = 0f,
             intensity = pearlIntensity(),
             coneAngle = WIDE_GLOW_CONE_ANGLE,
-            radius = 0f
+            radius = falloffRadius(PEARL_REACH_METRES, pixelsPerMetre)
         )
     }
 
@@ -1178,8 +1382,8 @@ object DiveLighting
      *   - The beam must stay directional while the player holds still. It previously widened
      *     to coneAngle 360 when stopped, which does not mean "a very wide torch" — it trips
      *     the `coneAngle < PI` guard in GI's scene.frag and disables cone attenuation
-     *     outright, emitting full radiance in all 360 degrees. Combined with `radius = 0`
-     *     (no distance falloff at all, see below) that is a large, perfectly symmetric,
+     *     outright, emitting full radiance in all 360 degrees. Combined with the `radius = 0`
+     *     of the time (no distance falloff at all) that is a large, perfectly symmetric,
      *     over-bloom-threshold disc centred on the diver — the "intense bloom blob" report.
      *     A held torch still points where you last pointed it, so the heading [beamAngleDeg]
      *     was already being preserved for is now actually used.
@@ -1191,13 +1395,13 @@ object DiveLighting
      * is a continuous property of how hard you are swimming. At or above the threshold the
      * ramp is saturated, so everything a moving diver sees is bit-identical to before.
      *
-     * `radius` stays 0 throughout. In scene.frag that is not "unbounded radius" so much as
-     * "skip the falloff term": `radius > 0` enables an inverse-square `radius*camScale/d^2`
-     * attenuation, and 0 disables it. Bounding the glow that way is a real option for
-     * tightening this further, but it would change the focused beam too, and the focused
-     * beam is known-good.
+     * `radius` USED TO BE 0 THROUGHOUT, i.e. the falloff term was skipped entirely and the beam's
+     * reach was whatever its quad size happened to buy. It is now [TORCH_REACH_METRES], converted
+     * once by [falloffRadius]. The focused beam is unchanged INSIDE that reach — the attenuation
+     * clamps to 1 there — so the 50-degree, 25x beam that was signed off in playtest is still
+     * exactly itself for the first 24 m and only falls away beyond it.
      */
-    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera)
+    private fun drawDiverBeam(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera, pixelsPerMetre: Float)
     {
         val speed = hypot(sim.vx, sim.vy)
 
@@ -1219,24 +1423,23 @@ object DiveLighting
         //
         // Padded by LIGHT_CULL_MARGIN_METRES like the other two, not by this light's own size: the
         // torch quad is now 1.2 m, and a margin that small would cut the beam of a diver a metre
-        // outside the rect, whose light still reaches into it (radius = 0, so nothing attenuates
-        // with distance). The margin's own doc records why the `upscaleSmallSources` argument that
-        // used to justify a per-light margin does not apply to us at all.
+        // outside the rect, whose light still reaches into it. The margin's own doc records why the
+        // `upscaleSmallSources` argument that used to justify a per-light margin does not apply to
+        // us at all.
         if (!cam.showsSquare(torchX, torchDepth, DIVER_LIGHT_SIZE_METRES, LIGHT_CULL_MARGIN_METRES)) return
 
-        // Intensity still keys off the DIVER's depth, not the torch's. The offset moves where the
+        // Irradiance still keys off the DIVER's depth, not the torch's. The offset moves where the
         // light comes from; it must not also nudge the zone blend, or the beam would brighten
-        // slightly whenever he happened to point downward. Same reason the light budget is
-        // unchanged by this commit: `size x intensity` is untouched (`006512b`).
-        val baseIntensity = diverIntensityForDepth(sim.depth)
+        // slightly whenever he happened to point downward.
+        val baseIrradiance = torchIrradianceForDepth(sim.depth)
         surface.setDrawColor(diverLight)
         renderer.drawLight(
             texture = LightEmitter.emitter(),
             x = torchX, y = torchDepth, w = DIVER_LIGHT_SIZE_METRES, h = DIVER_LIGHT_SIZE_METRES,
             angle = beamAngleDeg,
-            intensity = beamIntensity(baseIntensity, speed),
+            intensity = beamIntensity(baseIrradiance, speed),
             coneAngle = beamConeAngle(speed),
-            radius = 0f
+            radius = falloffRadius(TORCH_REACH_METRES, pixelsPerMetre)
         )
     }
 
@@ -1290,44 +1493,26 @@ object DiveLighting
         STATIONARY_CONE_ANGLE + (BEAM_CONE_ANGLE - STATIONARY_CONE_ANGLE) * beamFocus(speed)
 
     /**
-     * Nominal intensity to hand `drawLight`, such that the light's PEAK ON-AXIS RADIANCE is
-     * the ramped target regardless of how wide the cone currently is. Dividing out
-     * [coneMaskPeak] is what makes "hovering" and "swimming" comparable: without it, widening
-     * the cone silently brightens the light by up to 10x and narrowing it silently dims it,
-     * which is exactly how the original 25x-versus-1x pairing came to be so far off.
+     * The `drawLight` intensity for a beam of [baseIrradiance] at one metre, focused by [speed].
+     *
+     * TWO CONVERSIONS, AND ONLY ONE OF THEM IS NEW. The focus gain is the beam's own ramp —
+     * concentrating a beam delivers more on axis — and dividing out [coneMaskPeak] is what makes
+     * "hovering" and "swimming" comparable at all: without it, widening the cone silently
+     * brightens the light by up to 10x and narrowing it silently dims it, which is how the
+     * original 25x-versus-1x pairing came to be roughly a factor of five out. Both now live inside
+     * [intensityFor], along with the emitter-size term the torch used to carry as a separate
+     * `TORCH_SIZE_COMPENSATION`.
+     *
+     * The value is UNCHANGED by that move, exactly: the old expression was
+     * `(base x 3 m / 1.2 m) x peak / coneMask` and the new one is
+     * `(base x 3 m) x peak / (1.2 m x coneMask)`.
      */
-    internal fun beamIntensity(baseIntensity: Float, speed: Float): Float
+    internal fun beamIntensity(baseIrradiance: Float, speed: Float): Float
     {
-        val peak = STATIONARY_PEAK_RADIANCE + (BEAM_PEAK_RADIANCE - STATIONARY_PEAK_RADIANCE) * beamFocus(speed)
-        return baseIntensity * peak / coneMaskPeak(beamConeAngle(speed)).coerceAtLeast(MIN_CONE_MASK_PEAK)
+        val focusGain = STATIONARY_PEAK_RADIANCE + (BEAM_PEAK_RADIANCE - STATIONARY_PEAK_RADIANCE) * beamFocus(speed)
+        return intensityFor(baseIrradiance * focusGain, DIVER_LIGHT_SIZE_METRES, beamConeAngle(speed))
     }
 
-    /**
-     * Deeper zones are darker, so pearls must shine harder to stay legible. Continuous in
-     * depth (see [DepthBlend]) rather than switching at a zone boundary. Pure and
-     * unit-tested — everything else here needs a live GL context to verify.
-     *
-     * NOT COMPENSATED FOR THE ROUND EMITTER, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION.
-     * A disc intercepts pi/4 as many of GI's rays as the square it is inscribed in (Cauchy: mean
-     * width is perimeter / pi), so the arithmetic says every light should be brightened by 4/pi
-     * to keep the change a change of shape only. Built that way and captured, it was wildly
-     * wrong: the 16:9 frame mean went 6.382 -> 11.632, i.e. +82% for a nominal +27%, because
-     * `setup` puts an ACES tone mapper and a THRESHOLDED bloom (`threshold = 1.4`) on
-     * mainSurface and neither is linear in radiance near a light. The same capture with the
-     * compensation removed reads 6.239 — 2.2% below the square-emitter baseline, against a
-     * same-build control pair that agreed to 0.0007/255. So the honest correction for the shape
-     * change is roughly a fiftieth of the analytic one, which is inside the noise of anything
-     * anyone could judge by eye, and applying nothing is closer to right than applying 4/pi.
-     * Do not re-derive this on paper; the post chain is what decides it.
-     *
-     * IT IS COMPENSATED FOR THE EMITTER'S SIZE, by [PEARL_SIZE_COMPENSATION] — also a
-     * measurement, and also much smaller than the arithmetic asks for, for the same reason. The
-     * factor is applied HERE rather than at the `drawLight` call sites so that the one number
-     * this function returns is the one the shader is given: `DiveRenderer.pearlAlbedoExposure`
-     * reads it as "how hard is this pearl shining on itself", and it takes its own reference from
-     * this same function, so a uniform factor cancels there by construction and the material's
-     * exposure is untouched by the shrink. The lure gets it too, necessarily — it calls this.
-     */
     /**
      * How much daylight is left at [depth], as a fraction of the surface's. See
      * [shaftDaylightByZone] for the derivation and for why it is not a table.
@@ -1349,21 +1534,55 @@ object DiveLighting
         shaftDaylightForDepth(depth) * LightShafts.tailFade(depth)
 
     /**
-     * What a pearl emits, at any depth. See [PEARL_INTENSITY] for why there is no depth argument.
+     * The `drawLight` intensity for a pearl, and for the lure. NO DEPTH ARGUMENT, deliberately:
+     * see [PEARL_FRACTION_OF_TORCH]: a flat five-element table would leave the ramp the owner
+     * removed one edit away from returning, and the call sites would go on passing a depth that no
+     * longer means anything. With no parameter there is nothing to re-tune.
      *
-     * Still multiplied by [PEARL_SIZE_COMPENSATION], which is a correction for the EMITTER'S QUAD
-     * being 1.2 m rather than the 3 m the numbers were tuned against — geometry, not depth — so it
-     * survives the ramp's removal untouched.
+     * The conversion lands HERE rather than at the two `drawLight` call sites so that the one
+     * number this function returns is the one the shader is given:
+     * `DiveRenderer.pearlAlbedoExposure` reads it as "how hard is this pearl shining on itself" and
+     * takes its own reference from this same function, so any uniform factor cancels there by
+     * construction and the material's exposure is untouched by a re-tune here.
+     *
+     * NOT COMPENSATED FOR THE ROUND EMITTER, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION.
+     * A disc intercepts pi/4 as many of GI's rays as the square it is inscribed in (Cauchy: mean
+     * width is perimeter / pi), so the arithmetic says every light should be brightened by 4/pi
+     * to keep [LightEmitter]'s round emitter a change of shape only. Built that way and captured,
+     * it was wildly wrong: the 16:9 frame mean went 6.382 -> 11.632, i.e. +82% for a nominal +27%,
+     * because `setup` puts an ACES tone mapper and a THRESHOLDED bloom (`threshold = 1.4`) on
+     * mainSurface and neither is linear in radiance near a light. The same capture with the
+     * compensation removed reads 6.239 — 2.2% below the square-emitter baseline, against a
+     * same-build control pair that agreed to 0.0007/255. So the honest correction for the shape
+     * change is roughly a fiftieth of the analytic one, and applying nothing is closer to right
+     * than applying 4/pi. Do not re-derive this on paper; the post chain is what decides it.
      */
-    internal fun pearlIntensity(): Float = PEARL_INTENSITY * PEARL_SIZE_COMPENSATION
+    internal fun pearlIntensity(): Float =
+        intensityFor(PEARL_IRRADIANCE_AT_ONE_METRE, PEARL_LIGHT_SIZE_METRES, WIDE_GLOW_CONE_ANGLE)
 
     /**
-     * Same continuity treatment as [pearlIntensityForDepth], for the diver's own light, times
-     * [TORCH_SIZE_COMPENSATION] — the torch emits from a quad a fifth of the pearls' area, and
-     * with `radius = 0` a light's reach is linear in its quad's size. See that constant.
+     * The `drawLight` intensity for a glowing mote of [sizeMetres] drawn at [alpha].
+     *
+     * THE ALPHA IS NORMALISED BY `Motes.MOTE_ALPHA` rather than used raw, which is what lets
+     * [MOTE_IRRADIANCE_AT_ONE_METRE] be stated as a fraction of a pearl's instead of as a number
+     * that only means anything once you have gone and looked up the mote field's depth ramp. A
+     * mote at the field's peak alpha delivers exactly [MOTE_IRRADIANCE_AT_ONE_METRE]; the ramp
+     * that fades the dots near the surface fades their light with them, so a mote cannot light the
+     * water from a depth at which the mote itself is invisible.
+     *
+     * THE SIZE DIVIDES OUT, which is the behaviour change: every mote now delivers the same
+     * irradiance whatever its quad happens to be, instead of a 0.85 m one casting 2.4x what a
+     * 0.35 m one does on top of the alpha spread that is meant to be the field's only variation.
      */
-    internal fun diverIntensityForDepth(depth: Float): Float =
-        DepthBlend.blend(depth, diverIntensityByZone) * TORCH_SIZE_COMPENSATION
+    internal fun moteIntensity(sizeMetres: Float, alpha: Float): Float =
+        intensityFor(MOTE_IRRADIANCE_AT_ONE_METRE * (alpha / Motes.MOTE_ALPHA), sizeMetres, WIDE_GLOW_CONE_ANGLE)
+
+    /**
+     * The torch's irradiance at one metre at [depth] — the base [beamIntensity] focuses. Continuous
+     * in depth (see [DepthBlend]) rather than switching at a zone boundary, over
+     * [torchIrradianceByZone].
+     */
+    internal fun torchIrradianceForDepth(depth: Float): Float = DepthBlend.blend(depth, torchIrradianceByZone)
 
     // `isOnScreen(screenY, screenHeight)` USED TO LIVE HERE and went with the coordinates it was
     // written in: it was a screen-row bounds check with a 50-PIXEL margin, and there are no
