@@ -171,12 +171,53 @@ object PearlNormalMap
      * and flattens to purely in-plane exactly at the rim. Outside the disc it degenerates, which
      * is why [buildPixels] fades the ALPHA out there and the shader discards it.
      */
+    /**
+     * ## THE GREEN CHANNEL IS NEGATED, AND THAT IS NOT A SIGN ERROR
+     *
+     * This map is the ONE normal map in the game that is generated rather than baked from art, so
+     * it is the one whose convention we chose — and we chose it wrong the first time. It shipped
+     * agreeing with `iridescence.frag`'s `n = vec3(p, z)`, which is the natural reading and is
+     * correct for THAT shader, whose consumer is its own interference maths in its own uv space.
+     *
+     * GI's consumer wants the opposite. Every normal map baked from the artist's Blender exports —
+     * the diver's sheet and the rock's three — carries the OpenGL convention, green HIGH where a
+     * surface faces up-screen: measured on the committed files, `rock-top-normal.png` reads 188 at
+     * the top against 98 at the bottom, and the diver's crown 159 against his feet 122. Nothing in
+     * the pipeline flips it (`tools/spritesheet/validate.py`'s `check_normal_encoding` asserts unit
+     * length and nothing about direction) and nothing in the engine flips it either
+     * (`normal_map.frag` decodes, rotates, normalises, re-encodes). So the art's convention IS the
+     * engine's, and this map was the odd one out.
+     *
+     * ## ESTABLISHED BY MEASUREMENT, AFTER THE READING SAID THE OPPOSITE
+     *
+     * Reading `radiance_cascades.frag:251`'s `rayDir = vec2(cos(a), -sin(a))` as "+y is down"
+     * predicts the reverse of all of the above, and that prediction was WRONG. The probe that
+     * settled it: capture the pinned attract frame at `EPT_DEPTH=140` twice, once with this
+     * negation and once without, and measure each pearl's top-half-minus-bottom-half luminance
+     * against whether it sits above or below the diver's torch. A correctly oriented hemisphere is
+     * lit from the side the light is on, so pearls BELOW the torch should be brighter on top and
+     * pearls ABOVE it brighter underneath. Measured over the same 15 discs in both builds, with the
+     * asymmetry normalised by each pearl's own brightness so an overall level change cannot fake it
+     * (the negated build is in fact 3.5% DIMMER overall):
+     *
+     *              above the torch   below the torch   correlation with height
+     *     as first shipped   -0.043        +0.033              +0.322
+     *     NEGATED (this)     -0.110        +0.083              +0.416
+     *
+     * Both signs are right; the negated one is **2.5x stronger**. The first version was being
+     * partially cancelled by the flat ambient and by its own emitter, which is exactly why a sign
+     * error here is invisible in a still frame and why it had to be measured rather than argued.
+     *
+     * `PearlNormalMapTest` therefore asserts agreement with the shader UP TO THIS NEGATION, and
+     * says why — the two normals serve different consumers with different conventions, so an
+     * assertion that they are identical was encoding an assumption rather than a requirement.
+     */
     fun normalAt(nx: Float, ny: Float, out: FloatArray)
     {
         val r = hypot(nx, ny)
         val z = sqrt((1f - r * r).coerceAtLeast(0f))
         out[0] = nx
-        out[1] = ny
+        out[1] = -ny
         out[2] = z
     }
 

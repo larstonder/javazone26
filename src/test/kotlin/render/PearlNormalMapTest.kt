@@ -67,7 +67,13 @@ class PearlNormalMapTest
                 val r = hypot(nx, ny)
                 val z = sqrt(maxOf(1f - r * r, 0f))
                 assertEquals(nx, out[0], 1e-6f, "x at ($nx, $ny)")
-                assertEquals(ny, out[1], 1e-6f, "y at ($nx, $ny)")
+                // UP TO A NEGATED Y, which is a requirement and not a discrepancy. The shader's
+                // normal feeds its own interference maths in its own uv space; this one feeds GI,
+                // whose consumer takes the OpenGL convention that every normal map baked from the
+                // artist's exports already uses. Measured, not argued — see PearlNormalMap.normalAt
+                // for the two-build probe (the negation makes a pearl's shading track the torch
+                // 2.5x more strongly). Asserting equality here encoded an assumption.
+                assertEquals(-ny, out[1], 1e-6f, "y at ($nx, $ny) is not the shader's y, negated")
                 assertEquals(z, out[2], 1e-6f, "z at ($nx, $ny) is not the shader's sqrt(1 - r^2)")
 
                 // And it is a UNIT vector wherever the disc is, because `normal_map.frag`
@@ -323,15 +329,21 @@ class PearlNormalMapTest
         fun greenAt(row: Int, column: Int): Int =
             pixels.get((row * PearlNormalMap.TEXELS + column) * 4 + 1).toInt() and 0xFF
 
+        // THE SIGNS HERE WERE THE OTHER WAY ROUND UNTIL THE CONVENTION WAS MEASURED. This test is
+        // the one that decides which way a pearl is lit vertically, so it is also the test that was
+        // confidently wrong: it asserted green LOW on the first row, matching `iridescence.frag`'s
+        // own normal, which is the wrong consumer's convention. GI takes the OpenGL one that every
+        // normal map baked from the artist's exports already uses — green HIGH where a surface
+        // faces up-screen. See `PearlNormalMap.normalAt` for the two-build probe that settled it.
         val middle = PearlNormalMap.TEXELS / 2
         assertTrue(
-            greenAt(0, middle) < 32,
-            "the first row of the buffer does not hold the most negative y normal — the hemisphere " +
-            "is upside down relative to the quad it is drawn on"
+            greenAt(0, middle) > 223,
+            "the first row of the buffer does not face UP-SCREEN (green high) — a pearl's top half " +
+            "will be lit when the light is below it, and the hemisphere reads as a hollow"
         )
         assertTrue(
-            greenAt(PearlNormalMap.TEXELS - 1, middle) > 223,
-            "the last row of the buffer does not hold the most positive y normal"
+            greenAt(PearlNormalMap.TEXELS - 1, middle) < 32,
+            "the last row of the buffer does not face DOWN-SCREEN (green low)"
         )
         assertTrue(
             abs(greenAt(middle, middle) - 128) <= 2,
