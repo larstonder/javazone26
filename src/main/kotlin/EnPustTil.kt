@@ -27,6 +27,7 @@ import render.Hud
 import render.IridescenceRenderer
 import render.LightEmitter
 import render.Motes
+import render.OpaqueWaterEffect
 import render.PearlNormalMap
 import render.RockFace
 import render.RunLifecycle
@@ -522,6 +523,13 @@ class EnPustTil : PulseEngineGame()
     // and deliberately not reset: the point is one log line per process, not one per frame.
     private var warnedAboutNormalMaps = false
 
+    // The post-processing pass that repairs `main`'s alpha below the waterline — see
+    // `render/OpaqueWater.kt` for the whole diagnosis. Held rather than re-fetched because its one
+    // uniform is written every frame from onRender, and `getPostProcessingEffect(name)` is a
+    // linear scan of the surface's effect list. Constructed in onCreate; null only in the window
+    // before that, which nothing renders in.
+    private var opaqueWater: OpaqueWaterEffect? = null
+
     override fun onCreate()
     {
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
@@ -800,6 +808,19 @@ class EnPustTil : PulseEngineGame()
             zOrder = engine.gfx.mainSurface.config.zOrder + Sky.Z_ORDER_OFFSET
         )
 
+        // ...AND THE PASS THAT STOPS THAT TRANSPARENCY LEAKING BELOW THE WATERLINE. Attached here,
+        // immediately after the surface whose blankness is what made the defect visible, because
+        // the two facts only make sense together: `main` is deliberately transparent above the
+        // waterline so the sunset behind shows through, and `"sky"` is deliberately BLANK below it
+        // so an opaque world has nothing wasted behind it. A translucent draw on `main` — a mote,
+        // a god ray — erodes `main`'s alpha, because `glBlendFunc(GL_SRC_ALPHA,
+        // GL_ONE_MINUS_SRC_ALPHA)` applies to the alpha channel too and the engine never calls
+        // `glBlendFuncSeparate`. Underwater that eroded alpha revealed the cleared backbuffer: a
+        // solid black disc wherever motes overlapped INSIDE A SHAFT, which is the only place the
+        // two erosions compound far enough to see. Not a mote bug and not a shaft bug — an engine
+        // one. `render/OpaqueWater.kt` has the full derivation, the measurement and what was
+        // rejected.
+        opaqueWater = OpaqueWaterEffect().also { engine.gfx.mainSurface.addPostProcessingEffect(it) }
 
         // THE WAVE'S PHASE, PINNED FOR REPRODUCIBLE CAPTURES. The sea animates on the RENDER
         // clock — see `WaterSurface`'s clock note for why that is the right call for something
@@ -1083,6 +1104,27 @@ class EnPustTil : PulseEngineGame()
         // rotated to the same number so the diver faces where his light points. Deriving it twice
         // from sim.vx/vy is the shape of the bug 6ea1f53 fixed — see DiveLighting.beamHeadingDegrees.
         val aimDegrees = DiveLighting.beamHeadingDegrees
+
+        // THE WATERLINE, HANDED TO THE POST PASS THAT REPAIRS `main`'s ALPHA BELOW IT.
+        //
+        // Taken from THIS frame's matrix, the same way and for the same reason the HUD's diver
+        // anchor is below: `worldPosToScreenPos` multiplies by `mainCamera`'s viewMatrix, built
+        // once in `gfx.initFrame` before any of our code ran, and the effect runs at the end of
+        // this same frame — so the gate cannot be a frame off from the water it is gating. Any
+        // other derivation (from `DiveCamera.depth`, say) reads camera state from a different
+        // point in the frame, which is the drift `CLAUDE.md` names as the remaining risk here.
+        //
+        // The x is 0 because the gate is a horizontal line: the camera has no roll, so every world
+        // x at `GATE_DEPTH` has the same screen y. The returned Vector2f is the camera's shared
+        // instance (Camera.kt:85), clobbered by the next call — `.y` is read out immediately.
+        //
+        // `mainSurface.config.height`, not `engine.window.height`: `config` is what this surface's
+        // own projection was built from, so it is the only value that cannot disagree with what is
+        // being rasterised. See `CLAUDE.md`'s platform constraints and `6ea1f53`.
+        opaqueWater?.let { effect ->
+            val gateScreenY = worldCamera.worldPosToScreenPos(0f, OpaqueWaterEffect.GATE_DEPTH).y
+            effect.gate = OpaqueWaterEffect.gateUv(gateScreenY, engine.gfx.mainSurface.config.height.toFloat())
+        }
 
         // THE SKY, FIRST AND ON ITS OWN SURFACE. Order within this method does not decide what
         // ends up in front of what — that is the surfaces' zOrder, and the sky's puts it behind
