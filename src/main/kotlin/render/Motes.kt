@@ -596,10 +596,44 @@ object Motes
      */
     const val SURFACE_FADE_METRES = 6f
 
-    /** `0` at and above the waterline, smoothly reaching `1` at [SURFACE_FADE_METRES] below it. */
+    /**
+     * The shallowest depth at which a mote may exist AT ALL — the bottom of the water-surface
+     * quad, plus half a mote so its own quad cannot reach up into that band either.
+     *
+     * ## THIS IS A DEPTH-BUFFER CONSTRAINT WEARING A LOOK DECISION'S CLOTHES
+     *
+     * The field used to start at the waterline and fade in over [SURFACE_FADE_METRES], which put
+     * motes right through the top `WaterSurface.QUAD_BOTTOM_DEPTH` (7.31 m) — exactly where the
+     * water-surface quad is drawn. That produced solid holes in the sea: the motes go through the
+     * engine's own `TextureRenderer`, which is attached at surface creation and therefore FLUSHES
+     * FIRST, and being drawn last in call order they take a greater depth than the water. Their
+     * quads wrote depth across the water quad's band before `WaterRenderer` ran, so every water
+     * fragment behind one failed `GL_LEQUAL` and was discarded. The holes measured `RGBA(0,1,2,0)`
+     * — the cleared background, never written — and stopped dead at 7.31 m, because below that the
+     * water is zone bands drawn through the SAME renderer, where call order applies and there is
+     * no conflict. This is the fault `SurfaceRendererOrderTest`'s doc records for the god rays
+     * versus the pearls, on a renderer whose add order we do not control.
+     *
+     * **A FADE COULD NOT HAVE FIXED IT, and that is the whole reason this is a hard floor rather
+     * than a gentler curve.** A batch renderer writes depth for every fragment it rasterises,
+     * including fully transparent ones, so a mote at alpha 0.001 punches the same hole as one at
+     * full strength. What removes the hole is removing the GEOMETRY: [surfaceFade] returns exactly
+     * `0` above this depth, [MIN_VISIBLE_ALPHA] then rejects the mote before any quad is submitted,
+     * and the cell walk in [forEachVisible] never even visits those rows.
+     *
+     * The half-mote term is not decoration: a mote's quad is centred on its position, so a mote
+     * exactly at `QUAD_BOTTOM_DEPTH` would still overlap the water quad by half its own height.
+     *
+     * The cost is that the top 7.7 m of water carries no marine snow. That is the least valuable
+     * water in the game for this effect — it is the brightest, where the composite washes the motes
+     * out anyway — and it is a far smaller price than holes in the sea.
+     */
+    internal val FIELD_TOP_DEPTH = WaterSurface.QUAD_BOTTOM_DEPTH + MAX_SIZE_METRES * 0.5f
+
+    /** `0` at and above [FIELD_TOP_DEPTH], smoothly reaching `1` [SURFACE_FADE_METRES] below it. */
     internal fun surfaceFade(depth: Float): Float
     {
-        val t = ((depth - Tuning.SURFACE_DEPTH) / SURFACE_FADE_METRES).coerceIn(0f, 1f)
+        val t = ((depth - FIELD_TOP_DEPTH) / SURFACE_FADE_METRES).coerceIn(0f, 1f)
         return t * t * (3f - 2f * t)
     }
 
@@ -679,7 +713,10 @@ object Motes
         val maxCellX = cellIndex(worldRight + CULL_MARGIN_METRES)
 
         // Nothing above the waterline, ever — see SURFACE_FADE_METRES.
-        val firstWaterCell = cellIndex(Tuning.SURFACE_DEPTH - CULL_MARGIN_METRES)
+        // FIELD_TOP_DEPTH, not the waterline: no mote may be submitted into the water-surface
+        // quad's band at all, because a quad there writes depth and punches a hole in the sea
+        // whatever its alpha. See FIELD_TOP_DEPTH.
+        val firstWaterCell = cellIndex(FIELD_TOP_DEPTH - CULL_MARGIN_METRES)
         val minCellY = maxOf(cellIndex(worldTop - CULL_MARGIN_METRES), firstWaterCell)
         val maxCellY = cellIndex(worldBottom + CULL_MARGIN_METRES)
 

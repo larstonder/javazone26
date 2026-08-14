@@ -317,7 +317,24 @@ class MotesTest
         assertEquals(0f, Motes.depthGain(Tuning.SURFACE_DEPTH))
         assertEquals(0f, Motes.depthGain(Tuning.SURFACE_DEPTH - 0.01f))
         assertEquals(0f, Motes.depthGain(-50f))
-        assertTrue(Motes.depthGain(Motes.SURFACE_FADE_METRES) > 0f, "the motes never fade in below the waterline")
+        assertTrue(
+            Motes.depthGain(Motes.FIELD_TOP_DEPTH + Motes.SURFACE_FADE_METRES) > 0f,
+            "the motes never fade in at all"
+        )
+
+        // AND NOTHING IS SUBMITTED INSIDE THE WATER-SURFACE QUAD'S BAND. This is the half that
+        // matters for the depth buffer rather than for the look: a mote quad anywhere above
+        // WaterSurface.QUAD_BOTTOM_DEPTH writes depth before WaterRenderer flushes and punches a
+        // hole in the sea, at ANY alpha. Exactly zero, not merely small — MIN_VISIBLE_ALPHA is
+        // what turns a zero gain into "no draw call", and a gain of 1e-9 would still cut a disc.
+        assertEquals(
+            0f, Motes.depthGain(WaterSurface.QUAD_BOTTOM_DEPTH),
+            "a mote is submitted at the bottom edge of the water-surface quad — it will punch a hole in the sea"
+        )
+        assertEquals(
+            0f, Motes.depthGain(WaterSurface.QUAD_BOTTOM_DEPTH + Motes.MAX_SIZE_METRES * 0.5f - 0.01f),
+            "a mote's own quad still reaches into the water-surface band; FIELD_TOP_DEPTH has lost its half-mote margin"
+        )
     }
 
 
