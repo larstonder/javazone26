@@ -141,8 +141,10 @@ class ScoreRepository(private val todaySeed: Long) : Service()
             // that logs and returns null on ANY Throwable, including malformed JSON from
             // a hard power-off mid-write), but this game must never depend on unverified
             // behaviour from a third-party jar for "does not crash on a corrupt save
-            // file" — hence this redundant catch, and see ScoreSanitizerTest / the
-            // sanitizeEntries doc for the second, unit-tested layer of defence.
+            // file" — hence this redundant catch, and see the three `sanitizeEntries` cases in
+            // InitialsEntryTest (they live there because sanitizeEntries sits alongside
+            // isValidInitials, not in a file of its own) for the second, unit-tested layer of
+            // defence. This used to cite a `ScoreSanitizerTest`, which has never existed.
             Logger.error(e) { "Failed to load $LIVE_FILE — starting a fresh leaderboard" }
             null
         }
@@ -152,8 +154,19 @@ class ScoreRepository(private val todaySeed: Long) : Service()
 
     private fun registerWinnerCommand(engine: PulseEngine)
     {
-        // Open console (F1) and type "winner" to draw the on-site raffle prize from
-        // today's board — run this at end of day. Weighted so a bigger score is more
+        // Draws the on-site raffle prize from today's board — run at end of day.
+        //
+        // WARNING: THERE IS CURRENTLY NO WAY TO INVOKE THIS. This comment used to read "open
+        // console (F1) and type winner", and F1 opens nothing. The command registers fine, but
+        // pulse-engine 0.13.0 never constructs the widget that would read it: `showConsole`
+        // appears only inside `no/njoh/pulseengine/modules/cli/CommandLine.class`, nothing in the
+        // jar or in this project references `cli/CommandLine`, and init.pes's own header records
+        // that the engine runs no .pes script, so its `bind F1 showConsole` is inert too.
+        // `CommandLine` extends `Service`, so `engine.service.add(CommandLine())` in
+        // EnPustTil.onCreate is the likely fix — untested. Verify before relying on it at the
+        // booth; the fallback is to read scoreboard.json and draw by hand.
+        //
+        // Registration is deliberately NOT gated on EPT_DEV. Weighted so a bigger score is more
         // likely to win, but every qualifying entry (score > 0) has a real chance: 10
         // base tickets plus up to 3 more scaled by how close the score is to the day's
         // best. No name or e-mail is ever involved — if a prize needs contact details,

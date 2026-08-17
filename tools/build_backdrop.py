@@ -3,6 +3,7 @@
 Bake the column's rock face and the parallax silhouettes into committed textures.
 
     tools/build_backdrop.py [--rock-height 2048] [--silhouette-max 1600] [--period N]
+                            [--luminance-factor 2.0]
 
 SOURCE ART PROVENANCE
     assets/rock/diffuse.png        300x1000 RGBA 8-bit, sRGB (gAMA 0.45455)
@@ -17,7 +18,7 @@ SOURCE ART PROVENANCE
     OUTPUT is committed, exactly as for the diver's sheets - see
     docs/superpowers/specs/2026-08-07-diver-spritesheet-bake-design.md S7.
 
-THE FIVE DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
+THE SEVEN DECISIONS THIS SCRIPT MAKES, EACH OF WHICH FAILS SILENTLY IF GOT WRONG
 
 1. WHETHER THE ROCK IS ALREADY A TILE IS MEASURED, NEVER ASSUMED. The art delivered on
    2026-08-12 wraps at its full 1000 rows and is used as-is. The art before it did not:
@@ -199,10 +200,13 @@ def clear_wrap_border(rgba: np.ndarray) -> np.ndarray:
     booth's resolution is not known. Making the wrapped-to column transparent fixes it for every
     resolution at once.
 
-    ONLY THE BASE TEXTURES NEED IT. Each mirror's u = 0 is the base's u = 690, which is already
-    inside the art's transparent margin - the wall's last 67 columns and the crest's last 177 hold
-    no alpha at all. The mirrors are produced from these outputs, so they inherit the border at
-    u = 690 where it costs nothing.
+    ONLY THE BASE TEXTURES NEED IT. Each mirror's u = 0 is the base's u = 613, which is already
+    inside the art's transparent margin - the wall's last 139 columns hold no alpha at all, and so
+    do the crest's, whose art ends at the same column 475. The mirrors are produced from these
+    outputs, so they inherit the border at u = 613 where it costs nothing.
+
+    (These were 690 / 67 / 177 against the 691-wide pre-2026-08-12 art. RockFace.kt's
+    BORDER_TEXEL_COLUMNS and ALPHA_TEXEL_COLUMNS are the authority; the tile is 614 wide now.)
 
     What it costs on the base: one texel column, 0.0195 m of world at TILE_WIDTH_METRES, i.e. about
     0.6 px on a 1080p panel. On the wall that lands on every horizontal tile join, where the flat
@@ -466,7 +470,9 @@ def first_not_solid_column(rgba: np.ndarray) -> int:
     """
     The lowest texel column at or past the wrap border that is NOT alpha 255 in every row.
 
-    Derived from the array rather than hard-coded (it is 396 on the art as delivered) because
+    Derived from the array rather than hard-coded (it is 264 on the art as delivered - it was 396
+    on the pre-2026-08-12 art, which is exactly the staleness this docstring is warning about)
+    because
     the whole point of `crop_body` is that its output is opaque at every texel; a number typed
     here would be a second copy of a property of the ART, and a redrawn cliff or a different
     `--rock-height` would leave it stale silently - the crop would simply start including the
@@ -493,12 +499,20 @@ def crop_body(diffuse_out: np.ndarray, normal_out: np.ndarray) -> dict:
     ## WHAT IT IS FOR
 
     The wall's own art is not uniform across a tile. Going outward from a tile's inner end it
-    is EMPTY for 67 texel columns, RAGGED for the next 228, and only then solid for the
-    remaining 396. Tiling that art outward from a fixed anchor therefore makes what lands at
-    the FRAME EDGE a function of `(visibleHalfWidth - anchor) mod TILE_WIDTH_METRES` - and
-    43% of that period is not solid. Measured on the code this replaces, at the frame edge:
+    is EMPTY for 139 texel columns, RAGGED for the next 211, and only then solid for the
+    remaining 264 - 614 in total. Tiling that art outward from a fixed anchor therefore makes
+    what lands at the FRAME EDGE a function of `(visibleHalfWidth - anchor) mod
+    TILE_WIDTH_METRES` - and 6.836 of those 11.992 m, 57% of the period, is not solid.
+    RockFace.kt's class doc carries the same three numbers; it is the authority.
+
+    Measured on the code this replaces, at the frame edge:
 
         4:3  no rock at all | 16:10 solid | 16:9 EMPTY | 21:9 RAGGED | 32:9 EMPTY
+
+    (Those five samples were taken on the OLD art - a 13.496 m tile, 691 columns split
+    67/228/396, where 43% of the period was not solid. The 2026-08-12 re-bake moved every one
+    of those numbers and would move which five samples that row reports. It cannot move the
+    mechanism, which is the modulus, and that is the only reason the row is still here.)
 
     16:9 is the likeliest booth panel. Five successive commits moved the anchor or swapped
     the mirror; each of them relocated the hole rather than closing it, because a modulus
@@ -622,11 +636,13 @@ def bake_rock_top(width: int, height: int, gain: float, ambient: np.ndarray) -> 
        the difference is measured rather than assumed away.
 
     3. IT IS BAKED TWICE, THE SECOND TIME MIRRORED. See `backdrop/mirror.py`: the wall
-       gets its right-hand copy from a 180-degree rotation at the draw site, which is a
-       horizontal mirror AND a vertical flip. A summit cannot be flipped vertically, and
-       there is no horizontal-only mirror available at the draw site that also
-       transforms the normals - so it is done here, where the negation of the normal's
-       x component is exact and testable.
+       USED TO get its right-hand copy from a 180-degree rotation at the draw site,
+       which is a horizontal mirror AND a vertical flip. A summit cannot be flipped
+       vertically, and there is no horizontal-only mirror available at the draw site
+       that also transforms the normals - so it is done here, where the negation of the
+       normal's x component is exact and testable. The wall is baked mirrored too now
+       (decision 6 above), precisely because having the two sides transformed
+       differently is what misaligned the seams; both sides draw at angle 0.
 
     NOT baked as a tile and NOT wrap-blended: it is drawn once, at the top of the wall,
     and has no seam to itself. That also means its height need not equal the array size
@@ -803,8 +819,11 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     for key, name in ROCK_TOP_OUT.items():
         write_png(OUT_DIR / name, top[key], meta)
     # The SAME meta as everything else, deliberately: the body is a crop of the wall, so it
-    # carries the wall's provenance, and adding a key of its own here would rewrite the
-    # metadata of all eight existing PNGs and lose the "a re-bake is a no-op" property.
+    # carries the wall's provenance. One dict is shared by ALL THIRTEEN outputs this script
+    # writes (4 wall + 4 crest + 2 body + 3 silhouette), so giving the body a key of its own
+    # means either diverging from the other twelve or touching the shared dict and rewriting
+    # every one of them - and a metadata-only rewrite still loses the "a re-bake is a no-op"
+    # property that makes an unchanged bake produce no git diff.
     for key, name in ROCK_BODY_OUT.items():
         write_png(OUT_DIR / name, body[key], meta)
     for index, rgba in layers:

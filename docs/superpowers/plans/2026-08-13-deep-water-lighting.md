@@ -1,6 +1,8 @@
 # Fixing the deep: it is too dark, and the lights fight each other
 
-**Status:** plan only. Nothing here has been implemented.
+**Status:** PARTLY EXECUTED — this header said "plan only, nothing here has been implemented" long
+after that stopped being true. The body itself records the landed changes and one reverted
+experiment; read it for which is which, and treat the code as the authority, not this document.
 **Reported by the owner, 2026-08-13:** *"It's currently WAY too dark at the darkest levels, and it seems the lights are fighting each other."*
 
 Both halves of that are real and they have DIFFERENT causes, which is why this is a plan

@@ -57,7 +57,10 @@ class DiveRendererTest
         // is now pinned at roughly 0.18 whatever the zone table says and a sum-based ratio can
         // no longer express "reads far darker" at all. Luminance can, and is what "reads
         // darker" means anyway: the floor is deliberately paid for in blue, which the eye
-        // weights at 0.0722 against green's 0.7152, so the abyss still measures 30x darker.
+        // weights at 0.0722 against green's 0.7152, so the abyss still measures far darker —
+        // 11.98x on the current table, against the 10x this test demands. (It said 30x for a
+        // while; that was never measured against the floored values. Look.kt's water-table
+        // comment carries the same figure, and it is the one to keep in step with this test.)
         val shallowsMid = DepthBlend.zoneMidpoint(Zone.SHALLOWS)
         val abyssMid = DepthBlend.zoneMidpoint(Zone.ABYSS)
 
@@ -558,6 +561,40 @@ class DiveRendererTest
     // there — so extending the sweep past 200 m proves nothing new about the curve. It is
     // derived anyway so that raising MAX_DEPTH or widening the camera's lag bounds moves the
     // sweep with them instead of silently leaving painted depths unchecked.
+
+    @Test
+    fun `every per-zone colour table in Look has exactly one entry per Zone`()
+    {
+        // THIS IS THE ONLY THING STANDING BETWEEN A SIXTH ZONE AND A CRASH IN A DRAW CALL.
+        //
+        // DepthBlend.blend takes "one entry per Zone, indexed by Zone.ordinal" and does exactly
+        // that — no bounds check, no default. Six tables in Look.kt are keyed that way, and every
+        // one of them is a hand-written floatArrayOf whose length is a fact about the source and
+        // not about Zone. Add a zone to dive/Zone.kt without extending all six and the failure is
+        // an ArrayIndexOutOfBoundsException from inside DiveRenderer.drawZoneBands, on the first
+        // frame that paints the new band — with the whole rest of the suite green, because
+        // nothing else in the project reads these arrays' length at all.
+        //
+        // Look.kt's own header calls itself "values only, tweak to taste". For these six that is
+        // true of the NUMBERS and false of the COUNT, which is why the guard lives here rather
+        // than being left to the reader to notice.
+        val expected = Zone.entries.size
+        mapOf(
+            "ZONE_RED" to Look.ZONE_RED,
+            "ZONE_GREEN" to Look.ZONE_GREEN,
+            "ZONE_BLUE" to Look.ZONE_BLUE,
+            "AMBIENT_RED" to Look.AMBIENT_RED,
+            "AMBIENT_GREEN" to Look.AMBIENT_GREEN,
+            "AMBIENT_BLUE" to Look.AMBIENT_BLUE
+        ).forEach { (name, table) ->
+            assertEquals(
+                expected,
+                table.size,
+                "Look.$name has ${table.size} entries for $expected zones — DepthBlend.blend " +
+                    "indexes it by Zone.ordinal and will throw inside a draw call"
+            )
+        }
+    }
 
     private val shallowestCameraDepth = 0f - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MAX_FRACTION
 

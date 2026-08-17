@@ -128,8 +128,9 @@ def test_crop_body_rejects_texels_under_the_reflectance_floor():
 
 def test_the_body_output_names_are_hyphenated():
     # `_normal` with an UNDERSCORE trips the engine's loadAll auto-loader into RGBA8 with ten
-    # mip levels regardless of the declaration - and mip generation across a 790-wide corner
-    # of a 2048 layer averages in texels nothing ever wrote.
+    # mip levels regardless of the declaration - and mip generation across a 526-wide corner
+    # of a 2048 layer averages in texels nothing ever wrote. (526 = 2 * (264 - 1); it was 790
+    # on the pre-2026-08-12 art, when first_not_solid_column came back 396.)
     for name in build_backdrop.ROCK_BODY_OUT.values():
         assert "_normal" not in name
         assert name.startswith("rock-body-")

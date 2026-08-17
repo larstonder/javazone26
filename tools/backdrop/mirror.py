@@ -2,12 +2,15 @@
 Mirroring a baked texture horizontally, albedo and normals together.
 
 WHY THIS EXISTS AT ALL. The cliff art is a LEFT-hand cliff: solid stone on its u = 0
-side, ragged alpha edge on its u = 1 side. `DiveRenderer` gets the right-hand WALL out
-of the same file by drawing it rotated 180 degrees, which is the one transform the
-engine applies to the geometry and to the normal vectors together
-(`normal_map.vert` builds `normalRotation = rotMatrix(rotation + cameraAngle)`).
+side, ragged alpha edge on its u = 1 side. The right-hand side of the column needs that
+edge on its own inner side, i.e. mirrored.
 
-That works for the wall and CANNOT work for the cliff top, because 180 degrees is a
+`DiveRenderer` USED TO get the right-hand WALL out of the same file by drawing it
+rotated 180 degrees, which is the one transform the engine applies to the geometry and
+to the normal vectors together (`normal_map.vert` builds
+`normalRotation = rotMatrix(rotation + cameraAngle)`).
+
+That worked for the wall and CANNOT work for the cliff top, because 180 degrees is a
 horizontal mirror AND a vertical flip, and a summit pointing downwards is not a summit.
 There is no horizontal-only mirror available at the draw site: `drawNormalMap` takes no
 uv arguments, so swapping uMin/uMax would mirror the albedo and leave the normals lit
@@ -16,6 +19,12 @@ while leaving `normalRotation` alone with the same result (plus reversed winding
 
 So the mirror happens HERE, in the bake, where both maps can be transformed correctly
 and the result is checked before it ships.
+
+AND IT IS NOW THE WALL'S ROUTE TOO, not just the summit's. The half turn also flipped v,
+so the two sides ran their tiles in opposite directions and the seams did not line up.
+Both walls and both crests are baked mirrors today and `DiveRenderer` draws all four at
+ANGLE 0 - see `DiveRenderer.drawColumnWalls`, whose doc says so in as many words. Do not
+reintroduce a rotated draw on the strength of the paragraph above; it is history.
 
 THE NORMAL MAP IS NOT JUST FLIPPED. A tangent-space normal is stored as `(v + 1) / 2`,
 so mirroring the image about x has to negate the vector's x component as well as move

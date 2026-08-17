@@ -34,7 +34,7 @@ so the floor applies to **c0 = `mainSurface`'s albedo**, which is what we draw.
 - **`e45fdbe`** (stopping a pearl's albedo down by its own emission) is the right shape of fix, and generalises: anything that emits and is also drawn must have its albedo paid for.
 - **§3.2's reflectance floor** is a floor on *what we draw*, not a curiosity — measure new art against it.
 - **Task 2.1's dependency on this section is resolved in favour of the multiplicative diagnosis.** Take that branch: masking the flashlight off the diver is the same problem `e45fdbe` solved for pearls, and the same fix may apply.
-- **`LightShafts.kt` and `shaders/godrays.frag`** were built on the additive reading and still argue it in their comments; they are being corrected separately as part of a behaviour fix. `render/LightEmitter.kt`'s HISTORY heading has already been corrected, and its two recorded findings — RGB-vs-alpha for an emitter seen from inside, and the `SHAFT_ALPHA_CEILING` window — are unaffected either way, being about a `drawLight` emitter upstream of any composite.
+- ~~**`LightShafts.kt` and `shaders/godrays.frag`** were built on the additive reading and still argue it in their comments; they are being corrected separately as part of a behaviour fix.~~ **They were DELETED on 2026-08-17, not corrected** — the owner asked for the god rays to be removed (design spec §17). `render/LightEmitter.kt`'s HISTORY heading has already been corrected, and its two recorded findings — RGB-vs-alpha for an emitter seen from inside, and the `SHAFT_ALPHA_CEILING` window — are unaffected either way, being about a `drawLight` emitter upstream of any composite.
 
 ---
 
@@ -82,9 +82,17 @@ Files: `render/DiveLighting.kt`, `render/DiveRenderer.kt`. Needs the display.
 
 The owner raised it with the right instinct: *"really expensive unless we do some kind of texture mapping trick."* True caustics are expensive; the trick is not.
 
-**The elegant route: reuse the shaft field.** `LightShafts.bandSum(x, depth, seconds)` and `bandMask(...)` are pure engine-free functions of (horizontal position, depth, time), and `ShaftRenderer` uploads `bandFrequency`/`bandAmplitude`/`bandPhase` straight out of the object. A caustics shader can upload the same three uniforms and evaluate the same five lines — so a bright shaft and a bright caustic always land together, which is the real physical relationship obtained for free. This was deliberately left as *available*, not abstracted: no interface, no registry.
+> ⚠ **THIS ITEM NEEDS RE-PLANNING, NOT RE-SCHEDULING (noted 2026-08-17).** The route below is the
+> whole of this section's proposal and it rests on code that no longer exists: `LightShafts.kt` and
+> `ShaftRenderer.kt` were deleted with the god rays. There is no shaft field to reuse and no
+> `bandSum` to call. The *constraints* at the foot of this section still hold and are still the
+> useful part; the mechanism has to be designed again from scratch. A caustic pattern would now have
+> to carry its own band function — which is a fair amount of what `LightShafts` was, so budget for
+> it rather than assuming this is a shader-only change.
 
-The depth ramp is deliberately **not** shared — a caustic on rock is dim for a different reason than a shaft in water.
+~~**The elegant route: reuse the shaft field.** `LightShafts.bandSum(x, depth, seconds)` and `bandMask(...)` are pure engine-free functions of (horizontal position, depth, time), and `ShaftRenderer` uploads `bandFrequency`/`bandAmplitude`/`bandPhase` straight out of the object. A caustics shader can upload the same three uniforms and evaluate the same five lines — so a bright shaft and a bright caustic always land together, which is the real physical relationship obtained for free. This was deliberately left as *available*, not abstracted: no interface, no registry.~~
+
+~~The depth ramp is deliberately **not** shared — a caustic on rock is dim for a different reason than a shaft in water.~~
 
 Constraints: fade out with depth (`ambientGreen(d)/ambientGreen(0)` is the derivation used elsewhere); the Abyss must stay at **+0.00%** against a same-build control pair; and check the rock is actually lit where you are putting them (see §3.4).
 
@@ -184,7 +192,9 @@ Established path: a `BatchRenderer` via `Surface.addRenderer`, with shaders unde
 
 Target `#version 330 core` — macOS caps OpenGL at 4.1 with no compute shaders. Verify packaging with a **classloader probe**, not `unzip`: the two disagree about duplicates.
 
-Worked examples: `render/IridescenceRenderer.kt`, `render/ShaftRenderer.kt`.
+Worked example: `render/IridescenceRenderer.kt`. (`render/ShaftRenderer.kt` was the second one cited
+here and was deleted with the god rays on 2026-08-17; `render/WaterRenderer.kt` and
+`render/OpaqueWater.kt` are the closest surviving substitutes.)
 
 ---
 

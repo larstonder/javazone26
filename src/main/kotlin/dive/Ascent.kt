@@ -9,8 +9,13 @@ package dive
  * systematically, and it is wrong about the one number the game uses to teach its economy.
  *
  * A climb does not happen at the depth it starts from. It crosses into progressively cheaper
- * water: 2.5 in the Abyss, then 2.0, 1.6, 1.2, and 1.0 at the surface. Pricing all 120 m at
- * 2.5 overstates the cost of a climb from the Abyss by about 70%.
+ * water: [Zone.ABYSS]'s burn, then 2.0, 1.6, 1.2, and 1.0 at the surface. Pricing the whole
+ * climb at the starting zone's rate overstated the cost from the Abyss by about 70% — at the
+ * 2.5 the Abyss burned at the time, all 120 m came to 27.3 s against the true 15.82 s.
+ *
+ * The rates are named here rather than listed because they move: the Abyss went 2.5 -> 2.2 in
+ * a later amendment (spec §17), and this doc said 2.5 for a while after it. [Zone] is the
+ * authority; every figure below that depends on the Abyss is marked.
  *
  * MEASURED CONSEQUENCE (see the autopilot probe that motivated this): of 27 sampled
  * combinations of depth, air and carried mass, the point-of-no-return marker said "you cannot
@@ -25,9 +30,17 @@ package dive
  * is a closed-form sum, not an estimate.
  *
  * Verified against the autopilot rather than derived and trusted: an empty diver at 120 m
- * needs 15.82 s by this model, survives a flown ascent on 20 s, and dies on 15 s. At 140 m it
- * needs 20.37 s, dies on 20 s and survives on 25 s. Both boundaries land where the flown dives
- * put them.
+ * needs 15.82 s by this model, survives a flown ascent on 20 s, and dies on 15 s. That climb
+ * never enters the Abyss, so it is unaffected by the burn-rate amendment and still holds.
+ *
+ * THE 140 m BOUNDARY HAS NOT BEEN RE-FLOWN SINCE THE ABYSS WENT 2.5 -> 2.2. The model figure
+ * is now **19.82 s** (`15.82 + 20/11 * 2.2`); it was 20.37 s at 2.5, and this doc carried that
+ * stale number for a while. The flown pair recorded against it — "dies on 20 s, survives on
+ * 25 s" — was measured at 2.5, and 20 s now sits just ABOVE the model's requirement rather
+ * than just below it, so that boundary is expected to have flipped and is deliberately not
+ * restated here as fact. `AscentTest` derives the 140 m case from [Zone.ABYSS] rather than
+ * from a literal, so it followed the amendment on its own; if you need the flown boundary,
+ * re-fly it with `Autopilot` rather than trusting a number in a comment.
  */
 object Ascent
 {
