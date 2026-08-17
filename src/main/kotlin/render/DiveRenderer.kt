@@ -130,9 +130,9 @@ object DiveRenderer
      * it was written to be, and `the reflectance floor leaves colours that already clear it
      * untouched` still exercises its comparison branch at 90 m.
      */
-    private val zoneRed   = floatArrayOf(0.10f, 0.06f, 0.0409f, 0.030f, 0.0206f)
-    private val zoneGreen = floatArrayOf(0.34f, 0.22f, 0.1636f, 0.120f, 0.0771f)
-    private val zoneBlue  = floatArrayOf(0.52f, 0.36f, 0.30f,   0.24f,  0.18f)
+    private val zoneRed   = Look.ZONE_RED
+    private val zoneGreen = Look.ZONE_GREEN
+    private val zoneBlue  = Look.ZONE_BLUE
 
     /** Strip height for the zone-band gradient, in metres (resolution-independent). Small
      *  enough that DepthBlend's smoothstep easing reads as continuous rather than banded.
@@ -225,7 +225,7 @@ object DiveRenderer
      * must not be mistakable for one. A test that compares against a TRANSCRIPTION of this number
      * would pass forever after somebody changed this line, which is the failure it exists to catch.
      */
-    internal val pearlColor = Color(1f, 0.78f, 0.35f)
+    internal val pearlColor = Color(Look.PEARL_RED, Look.PEARL_GREEN, Look.PEARL_BLUE)
     private val airPocketColor = Color(0.65f, 0.95f, 1f)
     private val airPocketSpentColor = Color(0.22f, 0.34f, 0.42f)
     private val diverColor = Color(1f, 1f, 1f)

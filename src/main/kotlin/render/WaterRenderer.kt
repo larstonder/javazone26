@@ -200,17 +200,18 @@ class WaterRenderer(private val config: SurfaceConfigInternal) : BatchRenderer()
         const val FLOATS_PER_INSTANCE = 5
 
         /**
-         * The low sun's colour, LINEAR — a warm sodium orange, deliberately warmer and far less
-         * blue than `DiveLighting`'s `shaftLight` (0.66, 0.86, 1.0).
+         * The low sun's colour, LINEAR — a warm sodium orange.
          *
-         * The god rays are the surface light AFTER it has been through several metres of water,
-         * which is why they are cold; this is the light before that has happened. Two lights that
-         * are the same colour are one light with a gap in it, and the sea's surface has to read as
-         * belonging to the sunset above it rather than to the water below.
+         * It was chosen against the god rays' tint, which it had to differ from: two lights the
+         * same colour are one light with a gap in it. The rays were removed on 2026-08-17 and that
+         * particular constraint went with them, but the number is unchanged and the REASON it is
+         * this warm is unchanged too — this is the sunlight BEFORE any water has taken the red out
+         * of it, and the sea's surface has to read as belonging to the sunset above it rather than
+         * to the water below.
          */
-        const val SUN_COLOUR_R = 1.00f
-        const val SUN_COLOUR_G = 0.44f
-        const val SUN_COLOUR_B = 0.16f
+        const val SUN_COLOUR_R = Look.SUN_COLOUR_R
+        const val SUN_COLOUR_G = Look.SUN_COLOUR_G
+        const val SUN_COLOUR_B = Look.SUN_COLOUR_B
 
         /**
          * How bright the meniscus is along the whole waterline, how much MORE it is where a facet
@@ -253,7 +254,7 @@ class WaterRenderer(private val config: SurfaceConfigInternal) : BatchRenderer()
          * the water is effectively at infinity from it — a position would introduce a
          * false perspective that an orthographic camera cannot support anyway.
          */
-        const val SUN_BEARING = -1f
+        const val SUN_BEARING = Look.SUN_BEARING
 
         /**
          * The per-instance layout, as a function so `WaterShaderTest` can build it without a GL

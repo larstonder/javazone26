@@ -81,49 +81,10 @@ import kotlin.math.sin
  */
 object DiveLighting
 {
-    private val pearlLight = Color(1f, 0.82f, 0.45f)
+    private val pearlLight = Color(Look.PEARL_LIGHT_RED, Look.PEARL_LIGHT_GREEN, Look.PEARL_LIGHT_BLUE)
 
-    /** Internal only so [shaftLight] can be asserted against it — see there. */
-    internal val diverLight = Color(0.6f, 0.85f, 1f)
-
-    /**
-     * The god rays. WARM, and it used to be cold — `f2f2eaa` shipped `(0.66, 0.86, 1)` on the
-     * reasoning that daylight seen from below is blue and that the shafts had to differ from the
-     * torch. Half of that survives and half does not.
-     *
-     * What does not: the sky above this water is becoming a SUNSET. Light entering from a low sun
-     * is warm before the water has had any depth in which to take the red out of it, and a shaft
-     * is by definition the part of it that has travelled least — so cold shafts under a warm sky
-     * were the one combination that reads as two unrelated pictures.
-     *
-     * What does: it must not be the torch's [diverLight], which is a lamp-blue. Two lights the
-     * same colour are one light with a gap in it, and the shafts have to read as coming from
-     * somewhere the diver is not. With the torch cold and the shafts warm the two are now further
-     * apart than they were, not closer, so the original constraint is better served by inverting
-     * it than it was by obeying it.
-     *
-     * The red is at 1 and the blue is pulled well down, rather than red being lifted: GI is a
-     * MULTIPLY against water albedo that is itself blue in the shallows (see [ambientRed] and
-     * friends), so a warm light on blue water comes back toward neutral. The colour has to be
-     * warmer than the intended result by roughly that much, and `LightShaftsTest` pins only the
-     * ordering — that the shafts are warm and the torch is cold — because that is the requirement
-     * and these three numbers are taste.
-     */
-    internal val shaftLight = Color(1f, 0.74f, 0.45f, SHAFT_PEAK_OPACITY)
-
-    /**
-     * The alpha a band reaches where it is at full crest, at the surface, before the depth ramp.
-     * It rides in [shaftLight]'s alpha channel because that is how a draw colour reaches
-     * `godrays.frag` — the packed `config.currentDrawColor` — and having it anywhere else would
-     * be a second place to set the same thing.
-     *
-     * THIS IS THE LEVEL, and it is the number measured against the deep. `mainSurface` composites
-     * with NORMAL alpha blending, so a band is `dst + a * (tint - dst)`: bounded above by the
-     * tint, which is what stops a stack of overlapping crests blowing out, and very close to a
-     * plain add while the water under it is much darker than the tint (which it is everywhere
-     * these are drawn). See this task's report for the sweep against a same-build control pair.
-     */
-    private const val SHAFT_PEAK_OPACITY = 0.7f
+    /** Internal so `DiveLightingTest` can assert the torch stays a cold lamp-blue. */
+    internal val diverLight = Color(Look.TORCH_RED, Look.TORCH_GREEN, Look.TORCH_BLUE)
 
     /**
      * A pearl's emitter: the size of the QUAD it emits from, in metres.
@@ -200,7 +161,7 @@ object DiveLighting
      * `DiveLightingTest` pins the relationship rather than the value — the emitter must be a CORE,
      * at most half the drawn silhouette, so restoring the 1.2 m that caused this fails the build.
      */
-    internal const val PEARL_LIGHT_SIZE_METRES = 0.5f
+    internal const val PEARL_LIGHT_SIZE_METRES = Look.PEARL_LIGHT_SIZE_METRES
 
     /**
      * The diver's torch: the size of the QUAD that emits it, in metres.
@@ -244,7 +205,7 @@ object DiveLighting
      * SDF the near-field cascades march against, is left at the field default of `false`. Nothing
      * enlarges a small light for us, and nothing divides its intensity either.
      */
-    internal const val DIVER_LIGHT_SIZE_METRES = 1.2f
+    internal const val DIVER_LIGHT_SIZE_METRES = Look.TORCH_SIZE_METRES
 
     // ================================================================================================
     // ONE WORLD MODEL: every light states its REACH in metres and its BRIGHTNESS in one unit
@@ -389,7 +350,7 @@ object DiveLighting
      * roughly 2.7 diver-heights and a bit over a third of the visible depth at 16:9, which is as far
      * ahead as a torch has any business reaching in a game about not being able to see.
      */
-    internal const val MAX_REACH_METRES = 24f
+    internal const val MAX_REACH_METRES = Look.TORCH_REACH_METRES
 
     /**
      * How far the torch is at full brightness, in metres. See [MAX_REACH_METRES], which this is.
@@ -463,7 +424,7 @@ object DiveLighting
      *
      * The lure shares it, necessarily: the disguise is that the two are the same light.
      */
-    internal const val PEARL_REACH_METRES = 0.25f
+    internal const val PEARL_REACH_METRES = Look.PEARL_REACH_METRES
 
     /**
      * How far a glowing mote is at full brightness, in metres. One metre — a mote lights ITSELF and
@@ -472,7 +433,7 @@ object DiveLighting
      * (see the deep-water plan's §0), so their aggregate reach is the quantity that matters and this
      * is what bounds it.
      */
-    internal const val MOTE_REACH_METRES = 1f
+    internal const val MOTE_REACH_METRES = Look.MOTE_REACH_METRES
 
     /**
      * # THE ONE UNIT: irradiance delivered at ONE METRE, on axis
@@ -608,7 +569,7 @@ object DiveLighting
      * `coneAngle = 360` and `angle = 0` — so there is no "in front" for them to be offset along.
      * They stay on their own centres.
      */
-    internal const val TORCH_FORWARD_FRACTION = 0.40f
+    internal const val TORCH_FORWARD_FRACTION = Look.TORCH_FORWARD_FRACTION
 
     /** The torch's forward offset from the diver's centre, in metres. */
     internal fun torchOffsetMetres(): Float = Framing.DIVER_HEIGHT_METRES * TORCH_FORWARD_FRACTION
@@ -705,12 +666,12 @@ object DiveLighting
     // THESE THREE TABLES MEAN EXACTLY ONE THING: HOW MUCH DAYLIGHT REACHES THIS DEPTH. They are
     // not "the ambient light", and the difference is what [AMBIENT_FLOOR_GREEN] exists to keep.
     // Two other quantities are DERIVED from them and would move if a value here were re-typed to
-    // make the deep brighter — [shaftDaylightByZone] (god rays in the Abyss, a design guard rail)
-    // and [torchIrradianceByZone] (the torch would DIM exactly where it must be strongest). See
-    // the floor's own doc for why it is applied afterwards instead.
-    private val ambientRed   = floatArrayOf(0.34f, 0.16f, 0.06f, 0.015f, 0.0f)
-    private val ambientGreen = floatArrayOf(0.52f, 0.30f, 0.14f, 0.045f, 0.0f)
-    private val ambientBlue  = floatArrayOf(0.68f, 0.44f, 0.24f, 0.09f,  0.003f)
+    // make the deep brighter — [daylightByZone] and [torchIrradianceByZone], which between them
+    // decide that the torch is the deep's primary light source and would DIM it exactly where it
+    // must be strongest. See the floor's own doc for why it is applied afterwards instead.
+    private val ambientRed   = Look.AMBIENT_RED
+    private val ambientGreen = Look.AMBIENT_GREEN
+    private val ambientBlue  = Look.AMBIENT_BLUE
 
     /**
      * # THE WATER'S OWN FAINT GLOW — a floor under the ambient, and it is NOT daylight
@@ -741,10 +702,12 @@ object DiveLighting
      *
      * Because the tables are consumed by two things that must NOT move, and both read them raw:
      *
-     *  - [shaftDaylightByZone] is `ambientGreen[i] / ambientGreen[0]`. Raising `ambientGreen`'s
-     *    Abyss entry would put GOD RAYS IN THE ABYSS — a design guard rail (spec §11/§6b) that
-     *    `LightShaftsTest` asserts as an arithmetic identity rather than as a remembered cutoff.
-     *  - [torchIrradianceByZone] is `1 - shaftDaylightByZone`, so the same edit would DIM THE
+     *  - [daylightByZone] is `ambientGreen[i] / ambientGreen[0]`, and its Abyss zero says there
+     *    is NO daylight down there — a design guard rail (spec §11/§6b) that `DiveLightingTest`
+     *    asserts as an arithmetic identity rather than as a remembered cutoff. (It used to be the
+     *    god rays' ramp as well, and "no shafts in the Abyss" was the loudest symptom of breaking
+     *    it; the rays were removed on 2026-08-17 and the guard rail is unchanged without them.)
+     *  - [torchIrradianceByZone] is `1 - daylightByZone`, so the same edit would DIM THE
      *    TORCH exactly where the design (spec §17, 2026-08-12) makes it the primary light source.
      *
      * Applying the floor after the blend leaves both of those reading the same numbers they read
@@ -813,13 +776,13 @@ object DiveLighting
      * is that this floor is five times that one and reaches the value the constraint allows rather
      * than the next value down the daylight table.
      */
-    private const val AMBIENT_FLOOR_RED = 0.16f
+    private const val AMBIENT_FLOOR_RED = Look.AMBIENT_FLOOR_RED
 
     /** @see AMBIENT_FLOOR_RED — green, the channel Rec.709 weights at 0.7152 and therefore the one that decides whether the deep reads as lit. */
-    private const val AMBIENT_FLOOR_GREEN = 0.30f
+    private const val AMBIENT_FLOOR_GREEN = Look.AMBIENT_FLOOR_GREEN
 
     /** @see AMBIENT_FLOOR_RED — blue, the highest of the three because deep water absorbs red first. */
-    private const val AMBIENT_FLOOR_BLUE = 0.44f
+    private const val AMBIENT_FLOOR_BLUE = Look.AMBIENT_FLOOR_BLUE
 
     /**
      * The ambient the GI is actually handed at [depth]: the daylight that reaches it, or the
@@ -842,7 +805,7 @@ object DiveLighting
      * The raw daylight at [depth], with NO floor — what the tables mean on their own. Exposed so
      * `DiveLightingTest` can assert that the floor is the only difference between these and
      * [ambientRedAt] and friends, i.e. that the tables were not quietly re-typed to brighten the
-     * deep (which would move the god rays and the torch with them).
+     * deep (which would move the torch's ramp with them — see [daylightByZone]).
      */
     internal fun daylightRedAt(depth: Float): Float = DepthBlend.blend(depth, ambientRed)
 
@@ -856,30 +819,35 @@ object DiveLighting
     internal val ambientFloor = floatArrayOf(AMBIENT_FLOOR_RED, AMBIENT_FLOOR_GREEN, AMBIENT_FLOOR_BLUE)
 
     /**
-     * How much of the god rays a depth gets: **exactly the fraction of the surface's daylight
-     * that is still there**, which is the inverse of what the reverted rim light asked for.
+     * How much daylight is left at [depth], as a fraction of the surface's — and it is what makes
+     * the TORCH the deep's primary light source.
      *
      * DERIVED FROM [ambientGreen], NOT A TABLE OF ITS OWN. `d6faaa5` gave the diver's rim
-     * `1 - ambient(d)/ambient(0)` — the fraction of daylight the water has TAKEN — because the
-     * rim stands in for light that is missing. A shaft is the light itself, so it wants the
-     * fraction that is left: `ambient(d)/ambient(0)`. Anchored per zone that is
-     * (1, 0.577, 0.269, 0.087, 0) — full strength in the Shallows, 9% by the Trench, exactly
-     * nothing in the Abyss.
+     * `1 - ambient(d)/ambient(0)` — the fraction of daylight the water has TAKEN — because the rim
+     * stands in for light that is missing. This is the complement, the fraction that is LEFT:
+     * `ambient(d)/ambient(0)`. Anchored per zone that is (1, 0.577, 0.269, 0.087, 0) — full
+     * strength in the Shallows, 9% by the Trench, exactly nothing in the Abyss.
      *
      * GREEN carries it for the reason the rim's did: it is 0.7152 of Rec.709 luminance, so it is
-     * the channel whose loss the eye is actually measuring when it calls the deep dark. Because
-     * it is COMPUTED from the ambient table rather than copied out of it, re-tuning the ambient
-     * moves the shafts with it, and the Abyss's zero cannot drift apart from the shafts' zero —
-     * which is the guard rail (spec 11, 6b) expressed as an arithmetic identity rather than as a
-     * cutoff someone has to remember. `LightShaftsTest` fails if the Abyss ever stops being zero.
+     * the channel whose loss the eye is actually measuring when it calls the deep dark.
      *
-     * IT IS EVALUATED AT EACH SHAFT'S OWN CENTRE DEPTH, not at the diver's. A shaft is a fixed
-     * feature of the water and does not know or care where the player is; making it respond to
-     * the diver would be a light that follows you, which is the torch's job. What the ramp buys
-     * instead is that a LONGER shaft is automatically dimmer, so the table in `LightShafts` can
-     * be extended without anyone having to re-check the deep by hand.
+     * ## WHAT DEPENDS ON IT, AND WHY THE ABYSS'S ZERO IS A GUARD RAIL
+     *
+     * [diverIntensityByZone] is `TORCH_SURFACE_IRRADIANCE * (1 + TORCH_DARKNESS_GAIN * (1 - this))`
+     * — the torch is at its faintest where the daylight is full and at its strongest where there
+     * is none. Because this is COMPUTED from the ambient table rather than copied out of it,
+     * re-tuning the ambient moves the torch's ramp with it and the two cannot drift apart. That is
+     * spec 11 / 6b's guard rail expressed as an arithmetic identity rather than as a cutoff
+     * someone has to remember, and `DiveLightingTest` fails if the Abyss ever stops being zero.
+     *
+     * THE GOD RAYS WERE THE OTHER CONSUMER, and this is the shape they left behind. Their strength
+     * was this same fraction, evaluated at each shaft's own centre depth rather than at the
+     * diver's — so the identity also guaranteed no shafts in the Abyss, and a longer shaft was
+     * automatically a dimmer one. They were removed on 2026-08-17 at the owner's request; the
+     * derivation is unchanged because it was never about them, and the surviving consumer needs
+     * exactly the same number.
      */
-    private val shaftDaylightByZone = FloatArray(ambientGreen.size) { ambientGreen[it] / ambientGreen[0] }
+    private val daylightByZone = FloatArray(ambientGreen.size) { ambientGreen[it] / ambientGreen[0] }
 
     /**
      * # THE FOUR INTENSITIES, IN ONE UNIT — the torch is the anchor and the other three are FRACTIONS
@@ -903,7 +871,7 @@ object DiveLighting
      * [pearls] using their flashlight."* Anchoring on the pearls would make the beam a fraction of
      * the scenery, which is the arrangement that entry replaced.
      */
-    private const val TORCH_SURFACE_IRRADIANCE = 6f
+    private const val TORCH_SURFACE_IRRADIANCE = Look.TORCH_SURFACE_IRRADIANCE
 
     /**
      * How much MORE the torch gives once the daylight is entirely gone, as a multiple of
@@ -912,7 +880,7 @@ object DiveLighting
      * The owner, on a capture at 85 m in which the beam is barely visible against a black frame:
      * *"the flashlight is very dim at lower levels. It should be the primary source of light."*
      */
-    private const val TORCH_DARKNESS_GAIN = 2f
+    private const val TORCH_DARKNESS_GAIN = Look.TORCH_DARKNESS_GAIN
 
     /**
      * The torch, per zone, in the one unit — **rising with depth, where it used to FALL.**
@@ -923,9 +891,10 @@ object DiveLighting
      * longer brighten with depth, and the torch is meant to be what finds them, so a torch that
      * fades exactly where it becomes the only light was the wrong shape.
      *
-     * DERIVED FROM THE DAYLIGHT, NOT TYPED PER ZONE — the same treatment [shaftDaylightByZone]
-     * gets, and for the same reason. A shaft is the daylight that is LEFT; the torch is what has
-     * to stand in for the daylight that is GONE, so it scales on `1 - daylight(zone)`. Anchored per
+     * DERIVED FROM THE DAYLIGHT, NOT TYPED PER ZONE — the same treatment [daylightByZone]
+     * gets, and the exact complement of it. That one is the daylight that is LEFT; the torch is
+     * what has to stand in for the daylight that is GONE, so it scales on `1 - daylight(zone)`
+     * (which is why the two must come from one table and not two). Anchored per
      * zone that is (6.00, 11.08, 14.77, 16.96, 18.00) of irradiance at one metre — three times the
      * surface's where the daylight has run out entirely.
      *
@@ -941,7 +910,7 @@ object DiveLighting
      * instead of an unbounded one.
      */
     private val torchIrradianceByZone = FloatArray(ambientGreen.size) {
-        TORCH_SURFACE_IRRADIANCE * (1f + TORCH_DARKNESS_GAIN * (1f - shaftDaylightByZone[it]))
+        TORCH_SURFACE_IRRADIANCE * (1f + TORCH_DARKNESS_GAIN * (1f - daylightByZone[it]))
     }
 
     /** The torch where there is no daylight left at all — the value everything else is a fraction of. */
@@ -981,7 +950,7 @@ object DiveLighting
      * The anglerfish's lure reads this too ([drawAnglerfishLight]), which it must — the design's
      * whole tell is that the lure is indistinguishable from a pearl except by its drift.
      */
-    internal const val PEARL_FRACTION_OF_TORCH = 0.01f
+    internal const val PEARL_FRACTION_OF_TORCH = Look.PEARL_FRACTION_OF_TORCH
 
     /** @see PEARL_FRACTION_OF_TORCH */
     internal val PEARL_IRRADIANCE_AT_ONE_METRE = TORCH_ABYSS_IRRADIANCE * PEARL_FRACTION_OF_TORCH
@@ -1005,7 +974,7 @@ object DiveLighting
      * where the field ended up after that was fixed (0.05 x 0.25 x ~0.6 m = 0.0075 in this unit,
      * against 0.0075 here) — again, the balance was signed off and this is about the unit.
      */
-    internal const val MOTE_FRACTION_OF_PEARL = 1f / 24f
+    internal const val MOTE_FRACTION_OF_PEARL = Look.MOTE_FRACTION_OF_PEARL
 
     /** @see MOTE_FRACTION_OF_PEARL */
     internal val MOTE_IRRADIANCE_AT_ONE_METRE = PEARL_IRRADIANCE_AT_ONE_METRE * MOTE_FRACTION_OF_PEARL
@@ -1079,7 +1048,51 @@ object DiveLighting
      * constant near black, and it happens BEFORE the tone mapper, so it clamps the deep to true
      * black whichever curve follows it.
      */
-    internal const val GRADE_CONTRAST = 1.0f
+    internal const val GRADE_CONTRAST = Look.GRADE_CONTRAST
+
+    /**
+     * The colour grade's `exposure` — a linear gain on `mainSurface` applied BEFORE the tone
+     * mapper, and therefore the one dial that lightens the underwater world without changing any
+     * relationship inside it.
+     *
+     * ## Why the world needed lifting at all, measured
+     *
+     * The owner, on a build: *"The game is generally too dark underwater. Let's lighten it up."*
+     * At the old 1.1, on window grabs pinned with `EPT_DEPTH` (median luminance of open water,
+     * mean of the rock wall, out of 255):
+     *
+     * | | water | rock | frame | share of frame at or under 2/255 |
+     * |---|---|---|---|---|
+     * | 20 m | 26.8 | 17.0 | 32.7 | 0.3% |
+     * | 75 m | 4.5 | 6.0 | 6.9 | 2.7% |
+     * | 140 m | 2.2 | 6.8 | 4.7 | **16.7%** |
+     *
+     * A sixth of the Abyss frame was at or below 2/255 — under a booth panel's black point in a
+     * lit hall, i.e. not merely dark but *absent*. At 2.6 the same frames read 58.9 / 8.2 water
+     * and 43.0 / 22.4 rock at 20 m and 140 m, with the near-black share down to **0.3%**.
+     *
+     * ## WHY EXPOSURE AND NOT THE OTHER TWO CANDIDATES
+     *
+     * - **Not the zone albedo ramp** (`DiveRenderer.zoneRed` and friends). Lifting its deep end is
+     *   what "the deep water is too dark" literally asks for, and it is BLOCKED BY DESIGN:
+     *   `DiveRendererTest` pins the Shallows at more than 10x the Abyss and the ratio is 11.8x
+     *   today, so any useful lift fails it — and that test is §11's "deep blue falling to
+     *   near-black" written down. Changing it is a design amendment, not a tuning change.
+     * - **Not [ambientFloor]**. It multiplies only the AMBIENT term, so raising it lifts the
+     *   unlit water more than the torch-lit water and flattens the beam's contrast — against the
+     *   owner's own instruction (spec §17, 2026-08-12) that the torch is the deep's primary light
+     *   source. Exposure scales the composite, so every ratio in the frame survives it.
+     *
+     * ## WHY 2.6 AND NOT MORE
+     *
+     * It costs nothing at the top: the share of the frame at or above 250/255 is **0.40% at 1.1,
+     * at 2.0 and at 2.6** — identical, because UNCHARTED2's shoulder absorbs the gain and the only
+     * clipped pixels are the HUD's text, which is on its own ungraded surface anyway. The limit is
+     * the shallows going milky rather than any highlight blowing out. 2.6 leaves 20 m water at 58.9
+     * against a sunset that this grade does NOT touch (the sky is a separate surface), which is the
+     * pairing to re-check first if this is pushed further.
+     */
+    internal const val GRADE_EXPOSURE = Look.GRADE_EXPOSURE
 
     private var gi: GlobalIlluminationSystem? = null
     private val ambientColor = Color(0f, 0f, 0f, 1f)
@@ -1413,25 +1426,17 @@ object DiveLighting
         // rock p99 5.88 and an open-water median of exactly 0.000 at 140 m, i.e. worse than the ACES
         // control it replaced. One correction, in the right place.
         engine.gfx.mainSurface.addPostProcessingEffect(
-            ColorGradingEffect(toneMapper = UNCHARTED2, vignette = 0.25f, exposure = 1.1f, contrast = GRADE_CONTRAST)
+            ColorGradingEffect(toneMapper = UNCHARTED2, vignette = Look.GRADE_VIGNETTE, exposure = GRADE_EXPOSURE, contrast = GRADE_CONTRAST)
         )
         engine.gfx.mainSurface.addPostProcessingEffect(
             BloomEffect().apply { intensity = 1.2f; radius = 0f; threshold = 1.4f }
         )
 
-        // The god rays. A custom BatchRenderer on the WORLD surface — not a light, and not a
-        // surface of its own: GI's composite is `base + light` (final.frag:57), so albedo here
-        // survives into the deep and there is nothing to escape from. See `ShaftRenderer` and
-        // `LightShafts` for the correction to CLAUDE.md's "GI multiplies mainSurface" and for
-        // what these give up by no longer being lights.
-        //
-        // Added AFTER both effects above only for readability — a batch renderer and a
-        // post-processing effect are different lists and cannot interleave. It is added after
-        // whatever DiveRenderer has already attached, though, and batch renderers run in the
-        // order they were ADDED: that is why ShaftRenderer.draw participates in the shared depth
-        // cursor rather than relying on call order.
-        ShaftRenderer.addTo(engine.gfx.mainSurface)
-
+        // NOTHING ELSE IS ATTACHED TO `mainSurface` HERE ANY MORE. This used to add
+        // `ShaftRenderer` — the god rays, a custom BatchRenderer on the WORLD surface rather than
+        // a light or a surface of its own — and they were removed on 2026-08-17 at the owner's
+        // request. `EnPustTil.onCreate`'s attachment comment and `SurfaceRendererOrderTest` carry
+        // what that arrangement cost and why the ordering rule it taught is still enforced.
         engine.scene.start()
     }
 
@@ -1499,12 +1504,6 @@ object DiveLighting
         // otherwise re-read a shared engine object per pearl. No allocation either way.
         val pixelsPerMetre = cam.scale.x
 
-        // The god rays are NOT a drawLight and are not on this surface at all — they are albedo
-        // strips on mainSurface (see [drawLightShafts] and `LightShafts`). They are issued from
-        // here because this is the render-clock call that already has the camera in hand, and
-        // because DiveRenderer has finished with mainSurface by now, which is what puts them in
-        // front of the world.
-        drawLightShafts(engine, cam)
         drawMoteLights(surface, renderer, cam, pixelsPerMetre)
         drawPearlLights(surface, renderer, sim, cam, pixelsPerMetre)
         drawAnglerfishLight(surface, renderer, sim, cam, pixelsPerMetre)
@@ -1545,74 +1544,17 @@ object DiveLighting
      * tightest of the three. Re-examined for the reach change and kept, not kept by omission.
      *
      * IT USED TO READ `= PEARL_LIGHT_SIZE_METRES` AND MUST NOT AGAIN. That was written when the
-     * pearl's emitter was 3 m, so the two happened to be the same number; shrinking the emitter to
-     * 1.2 m ([PEARL_LIGHT_SIZE_METRES]) would have dragged the margin down with it and started
-     * culling lights that are still doing visible work off-screen. HOW FAR a light reaches and HOW
+     * pearl's emitter was 3 m, so the two happened to be the same number; shrinking the emitter —
+     * to 1.2 m when this paragraph was written, and to 0.5 m today ([PEARL_LIGHT_SIZE_METRES]) —
+     * would have dragged the margin down with it and started culling lights that are still doing
+     * visible work off-screen. The gap has widened since, so the argument only got stronger: the
+     * margin is 6x the pearl emitter now, not 2.5x. HOW FAR a light reaches and HOW
      * BIG its emitter is are independent — the intensity compensates for the size — and the
      * measured profile says so: a pearl's isolated contribution at 3.2 m from its centre is still
      * 8% of its value at 1 m. So this is its own number now, and `DiveLightingTest` fails the
      * build if it is ever re-tied to an emitter.
      */
     internal const val LIGHT_CULL_MARGIN_METRES = 3f
-
-    /**
-     * The god rays. `LightShafts` owns the band stack and the history — including why these are
-     * albedo on `mainSurface` rather than `drawLight` calls, which is the one decision on this
-     * feature that has changed twice.
-     *
-     * NO `sim` PARAMETER, and that is the design rather than an omission: the shafts are a fixed
-     * feature of the water column. They do not track the diver, they do not know the run state,
-     * and they look the same in attract mode as they do mid-dive, which is exactly what the owner
-     * is looking at when he sees the mockup.
-     *
-     * ## A STRIP THAT IS OFF SCREEN IS NOT SUBMITTED, AND THAT IS THE ABYSS GUARD RAIL
-     *
-     * The depth ramp reaches exactly zero only at the Abyss's own midpoint, 135 m, and "nearly
-     * zero times a warm colour" is still a lift a frame mean can measure. `f2f2eaa` got its
-     * +0.00% in the Abyss because its five shafts were simply not on screen at 140 m, not because
-     * of its ramp. That has to be reproduced deliberately now the overlay is a band of geometry:
-     * the strips stop at `LightShafts.END_DEPTH_METRES`, so at 140 m — where the top of the frame
-     * is 116 m — this loop submits nothing at all and the Abyss is untouched by construction.
-     * `LightShafts.tailFade` is what stops that cut ever being visible as a horizontal line.
-     *
-     * ## THE ANIMATION CLOCK IS ADVANCED HERE, ONCE
-     *
-     * This is the only place in the game holding a render clock, and `LightShafts.advance` is the
-     * only consumer of it. See `LightShafts.PIN_ENV` for why a render clock is right for this and
-     * how a capture is pinned — the short version is that the owner asked for an animation, a
-     * render clock is the only one that runs on the attract screen, and a frozen phase is one
-     * environment variable away.
-     */
-    private fun drawLightShafts(engine: PulseEngine, cam: Camera)
-    {
-        LightShafts.advance(engine.data.deltaTime)
-
-        val surface = engine.gfx.mainSurface
-        val renderer = ShaftRenderer.of(surface) ?: return
-
-        // setTint, NOT surface.setDrawColor: the draw colour is shared state on the surface and
-        // these strips are the last thing drawn to it, so anything it was left at was still there
-        // when DiveRenderer drew the next frame. See ShaftRenderer.setTint — it cost a measurement
-        // to find and it had made a control build lose most of its pearls.
-        renderer.setTint(shaftLight)
-
-        val width = LightShafts.halfWidth() * 2f
-        val height = LightShafts.stripHeight()
-        for (i in 0 until LightShafts.STRIP_COUNT)
-        {
-            val top = LightShafts.stripTopDepth(i)
-            if (!cam.isInView(-LightShafts.halfWidth(), top, width, height)) continue
-
-            renderer.draw(
-                centreX = 0f,
-                centreDepth = top + height * 0.5f,
-                width = width,
-                height = height,
-                rampTop = shaftRampForDepth(top),
-                rampBottom = shaftRampForDepth(top + height)
-            )
-        }
-    }
 
     /**
      * The glowing marine snow — an ambient blue wash through the water.
@@ -1851,23 +1793,9 @@ object DiveLighting
 
     /**
      * How much daylight is left at [depth], as a fraction of the surface's. See
-     * [shaftDaylightByZone] for the derivation and for why it is not a table.
+     * [daylightByZone] for the derivation and for why it is not a table.
      */
-    internal fun shaftDaylightForDepth(depth: Float): Float = DepthBlend.blend(depth, shaftDaylightByZone)
-
-    /**
-     * How much of the god rays survives at [depth]: the daylight that is left, times the
-     * geometric tail that takes the overlay to nothing before its strips run out.
-     *
-     * The two factors are separate because they say different things and fail differently. The
-     * first ([shaftDaylightForDepth]) is the guard rail — an arithmetic identity with the ambient
-     * table, so the shafts cannot outlive the daylight. The second (`LightShafts.tailFade`) is
-     * about where we stop DRAWING, and exists only so the bottom edge of the last strip is never
-     * a visible horizontal line. Folding them into one ramp would let a look tweak to the second
-     * silently move the first.
-     */
-    internal fun shaftRampForDepth(depth: Float): Float =
-        shaftDaylightForDepth(depth) * LightShafts.tailFade(depth)
+    internal fun daylightForDepth(depth: Float): Float = DepthBlend.blend(depth, daylightByZone)
 
     /**
      * The `drawLight` intensity for a pearl, and for the lure. NO DEPTH ARGUMENT, deliberately:

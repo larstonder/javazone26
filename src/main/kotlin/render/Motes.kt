@@ -37,8 +37,8 @@ import kotlin.math.sin
  * ## THE SURFACE: THEY ARE ON `main`, AND THAT WAS RESOLVED THE HARD WAY
  *
  * `GlobalIlluminationSystem` MULTIPLIES `mainSurface` by the computed light map (`targetSurface`
- * is the literal string `"main"` — the citation is in `CLAUDE.md`'s platform constraints and in
- * [LightShafts]'s class doc). The motes are drawn there, by [DiveRenderer], so the multiply
+ * is the literal string `"main"` — the citation is in `CLAUDE.md`'s platform constraints). The
+ * motes are drawn there, by [DiveRenderer], so the multiply
  * applies to them exactly as it does to the water, the rock and the pearls.
  *
  * **They started on a surface of their own, and it was a mistake worth recording**, because the
@@ -91,9 +91,10 @@ import kotlin.math.sin
  * of the diver's torch. The motes are a foreground overlay that the water is seen through, which
  * is what marine snow in front of a camera actually is.
  *
- * They are also NOT restricted to the play column, unlike the god rays ([LightShafts.halfWidth]).
- * The shafts stop at `Tuning.COLUMN_HALF_WIDTH` because they are light entering water and the rock
- * is not water, and their continuous band left a measured seam there that had to be faded out.
+ * They are also NOT restricted to the play column, unlike the god rays were. The shafts stopped
+ * at `Tuning.COLUMN_HALF_WIDTH` because they were light entering water and the rock is not water,
+ * and their continuous band left a measured seam there that had to be faded out. (They were
+ * removed on 2026-08-17; the contrast is kept because it is the argument for this field's width.)
  * Neither half of that applies to a sparse field of dots: what a lateral cut-off would produce is
  * not a seam but a DENSITY step — a vertical strip of frame with no motes in it, 9 m inside each
  * edge at 16:9 — which is a stronger cue than the edge it would be avoiding. And a mote in front
@@ -126,7 +127,7 @@ object Motes
      * DEPTH — see `CLAUDE.md`'s two-regime note.) Sparse enough that the field reads as suspended
      * matter rather than as fog or as snowfall, dense enough that there are always some in frame.
      */
-    const val CELL_METRES = 6f
+    const val CELL_METRES = Look.MOTE_CELL_METRES
 
     /**
      * A hard ceiling on cells visited in one frame, and it is a GUARD rather than a budget.
@@ -215,7 +216,7 @@ object Motes
     // ---- The animation clock -------------------------------------------------------------------
 
     /**
-     * # THE RENDER CLOCK, UNCONDITIONALLY, EXACTLY AS THE SEA AND THE GOD RAYS DO IT
+     * # THE RENDER CLOCK, UNCONDITIONALLY, EXACTLY AS THE SEA DOES IT
      *
      * `WaterSurface`'s clock note is the precedent and it argues the whole case; this is the third
      * consumer of it and adds nothing new. In short: the only gated clock in this codebase is the
@@ -295,8 +296,8 @@ object Motes
      * ## Why three options per axis and not one rate
      *
      * One shared rate makes the whole field move as a single body, which reads as the CAMERA
-     * panning rather than as water moving — the same failure `LightShafts.cyclesPerWrap` records
-     * for the god rays. Each mote picks its own rate from these, and its own phase, so no two
+     * panning rather than as water moving — the same failure the god rays' own wrap constant
+     * recorded before they were removed. Each mote picks its own rate from these, and its own phase, so no two
      * neighbours are in step and there is no shared beat.
      *
      * The two axes draw from DISJOINT sets, which is what makes a mote's path a Lissajous figure
@@ -331,8 +332,8 @@ object Motes
      * raising these past what the culling can carry fails the build rather than popping motes in at
      * the frame edge.
      */
-    const val DRIFT_X_METRES = 2.2f
-    const val DRIFT_Y_METRES = 1.4f
+    const val DRIFT_X_METRES = Look.MOTE_DRIFT_X_METRES
+    const val DRIFT_Y_METRES = Look.MOTE_DRIFT_Y_METRES
     internal val DRIFT_X_CYCLES = intArrayOf(1, 2, 3)
     internal val DRIFT_Y_CYCLES = intArrayOf(4, 5, 7)
 
@@ -415,8 +416,8 @@ object Motes
      * panel 0.35 m is a 7-pixel quad, and below about that the emitter's ramp has too few texels
      * left to read as round and the mote starts to look like a lone bright pixel.
      */
-    const val MIN_SIZE_METRES = 0.35f
-    const val MAX_SIZE_METRES = 0.85f
+    const val MIN_SIZE_METRES = Look.MOTE_MIN_SIZE_METRES
+    const val MAX_SIZE_METRES = Look.MOTE_MAX_SIZE_METRES
 
     /**
      * The spread of base brightness, as a multiplier on [MOTE_ALPHA].
@@ -474,9 +475,9 @@ object Motes
      * overwhelmingly blue-green — 470 to 490 nm — because that is the window seawater absorbs
      * least.
      */
-    const val MOTE_RED = 0.25f
-    const val MOTE_GREEN = 0.62f
-    const val MOTE_BLUE = 1f
+    const val MOTE_RED = Look.MOTE_RED
+    const val MOTE_GREEN = Look.MOTE_GREEN
+    const val MOTE_BLUE = Look.MOTE_BLUE
 
     /**
      * How opaque a mote is drawn, before its own brightness and pulse. **ONE NUMBER — the depth
@@ -512,7 +513,7 @@ object Motes
      * the field reads as texture rather than as objects on lit water. The deep needs no value
      * chosen for it at all.
      */
-    internal const val MOTE_ALPHA = 0.25f
+    internal const val MOTE_ALPHA = Look.MOTE_ALPHA
 
     /** What the brightest possible mote is scaled by. Kept as a name so the bound tests read. */
     internal val PEAK_ALPHA = MOTE_ALPHA
@@ -552,7 +553,7 @@ object Motes
      * decorrelated from how big they look — a field where every large mote also glows reads as two
      * classes of object rather than as one substance catching the light unevenly.
      */
-    internal const val GLOW_IN = 4
+    internal const val GLOW_IN = Look.MOTE_GLOW_IN
 
     /** Whether this cell's mote is one of the glowing ones. @see GLOW_IN */
     internal fun glows(cellX: Int, cellY: Int) = pick(cellX, cellY, STREAM_GLOW, GLOW_IN) == 0
@@ -594,7 +595,7 @@ object Motes
      * shader's underside haze has finished handing over to the zone bands — so the motes reach
      * full strength in open water rather than inside the surface quad's own gradient.
      */
-    const val SURFACE_FADE_METRES = 6f
+    const val SURFACE_FADE_METRES = Look.MOTE_SURFACE_FADE_METRES
 
     /**
      * The shallowest depth at which a mote may exist AT ALL — the bottom of the water-surface
@@ -611,8 +612,8 @@ object Motes
      * fragment behind one failed `GL_LEQUAL` and was discarded. The holes measured `RGBA(0,1,2,0)`
      * — the cleared background, never written — and stopped dead at 7.31 m, because below that the
      * water is zone bands drawn through the SAME renderer, where call order applies and there is
-     * no conflict. This is the fault `SurfaceRendererOrderTest`'s doc records for the god rays
-     * versus the pearls, on a renderer whose add order we do not control.
+     * no conflict. This is the same fault `SurfaceRendererOrderTest`'s doc records, here on a
+     * renderer whose add order we do not control.
      *
      * **A FADE COULD NOT HAVE FIXED IT, and that is the whole reason this is a hard floor rather
      * than a gentler curve.** A batch renderer writes depth for every fragment it rasterises,
@@ -668,20 +669,24 @@ object Motes
      * the camera hands back are its own reused instances (read out into locals immediately, as
      * every other consumer of them in this codebase does).
      *
-     * ## THE EMITTER IS SHARED WITH EVERY LIGHT IN THE GAME
+     * ## THE DAB IS [MoteSprite], AND IT USED TO BE THE LIGHTS' EMITTER
      *
-     * [LightEmitter.emitter] is the round soft-edged disc `DiveLighting` shapes the diver's torch,
-     * the pearls and the lure from. It is reused here rather than a second texture being generated,
-     * because it is exactly what a mote needs — a radial alpha ramp with flat white RGB, so
-     * `drawTexture` modulates it by the draw colour — and one 128px texture is cheaper than two.
-     * **A change to [LightEmitter.alphaAt] or [LightEmitter.ALPHA_RAMP_INNER] moves the motes as
-     * well as the lights.** That is a real coupling and it is accepted knowingly; if the two ever
-     * need to differ, add a second texture there rather than reshaping this one's draw.
+     * This drew [LightEmitter.emitter] until 2026-08-17 — the same round disc `DiveLighting`
+     * shapes the torch, the pearls and the lure from — on the reasoning that it is "exactly what a
+     * mote needs" and one 128px texture is cheaper than two. The first half was wrong, and the
+     * owner found it by swimming into one: *"the black circle overlapping the diver"*.
      *
-     * It is fetched ONCE per frame and held in a local, deliberately. [LightEmitter.emitter] is a
+     * That texture's ramp starts at r = 0.6, because its job is to put the alpha = 0.5 contour on
+     * the inscribed circle for GI's discard and seed to agree on. Emitting, the flat 1.0 core that
+     * leaves is correct — it is all emitting geometry. DRAWN, it is a disc whose inner 32% is a
+     * flat maximum, which reads as a plate rather than a glow, and lands as a foreign object the
+     * moment one crosses the lit diver. [MoteSprite] is the same construction with the ramp
+     * starting at 0 instead, so a mote is on a slope everywhere; its class doc carries the
+     * measurements, including why the engine's 0.4 alpha discard must be left alone.
+     *
+     * It is fetched ONCE per frame and held in a local, deliberately. [MoteSprite.sprite] is a
      * function rather than a property because it has a side effect — it counts consecutive misses
-     * and logs one WARN after 600 of them — and calling it per mote would burn that budget in
-     * three frames and blame the lights for it.
+     * and logs one WARN — and calling it per mote would burn that budget in three frames.
      *
      * The row range is clamped at the waterline so that a camera looking at the sky iterates no
      * cells at all up there. That is an optimisation with a correctness edge to it: without it, a
@@ -743,7 +748,7 @@ object Motes
 
     fun render(surface: Surface, cam: Camera)
     {
-        val texture = LightEmitter.emitter()
+        val texture = MoteSprite.sprite()
         forEachVisible(cam) { x, depth, size, alpha, _ ->
             surface.setDrawColor(MOTE_RED, MOTE_GREEN, MOTE_BLUE, alpha)
             surface.drawTexture(texture, x, depth, size, size, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN)

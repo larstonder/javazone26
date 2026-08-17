@@ -130,44 +130,34 @@ class SkyTest
     }
 
     /**
-     * THE SKY REACHES THE ALPHA RAMP AND STOPS, AND BOTH HALVES ARE DEFECTS IF BROKEN.
+     * THE SKY REACHES THE ALPHA RAMP AND STOPS.
      *
      * Too shallow and the sea's alpha ramp blends against nothing — the waterline gets a hard
      * edge where the boundary's anti-aliased pixels find no sunset behind them.
      *
      * Too deep is the one that actually shipped. [Sky.render] used to stop at
      * [WaterSurface.QUAD_BOTTOM_DEPTH] (7.31 m), taking the whole water quad as needing a
-     * backdrop when only its alpha ramp does. Those extra 7 m of opaque underwater sunset were
-     * invisible only while `main` was opaque down there — and `8fcaa98`'s god rays punch its
-     * alpha to 191/255 inside every band, because the surface blends STRAIGHT alpha and so a
-     * strip drawn at src alpha `a` leaves `a^2 + dst*(1 - a)`. The sunset then showed through
-     * each shaft and stopped dead at 7.31 m: a 91/255 horizontal line across the frame at a
-     * fixed world depth, measured on a pinned 20 m capture.
+     * backdrop when only its alpha ramp does.
      *
-     * So this asserts the RELATIONSHIP rather than the number: the sky must cover every pixel the
-     * wavy boundary can cross, and must stop well above where the shafts have come up to
-     * strength. The second bound is what keeps those two windows from overlapping again.
+     * THIS USED TO CARRY A SECOND BOUND, and it is worth recording why it went rather than
+     * leaving the reader to wonder. Those extra 7 m of opaque underwater sunset were invisible
+     * only while `main` was opaque down there, and the god rays punched its alpha to 191/255
+     * inside every band — the surface blends STRAIGHT alpha, so a strip drawn at src alpha `a`
+     * leaves `a^2 + dst*(1 - a)`. The sunset showed through each shaft and stopped dead at
+     * 7.31 m: a 91/255 horizontal line across the frame at a fixed world depth, measured on a
+     * pinned 20 m capture. So this also asserted that the sky stopped well above where the shafts
+     * came up to strength. **The god rays were removed on 2026-08-17 at the owner's request**, and
+     * with no alpha being punched there is no second window to keep clear of. The bound below is
+     * the one that was always about the sky itself.
      */
     @Test
-    fun `the sky covers the alpha ramp and stops well above where the god rays begin`()
+    fun `the sky covers the alpha ramp`()
     {
         val lowestTrough = Tuning.SURFACE_DEPTH + WaterSurface.AMPLITUDE_METRES
         assertTrue(
             Sky.BOTTOM_DEPTH >= lowestTrough,
             "the sky stops at ${Sky.BOTTOM_DEPTH} m, above the lowest trough the wave table can " +
             "reach ($lowestTrough m) — the sea's alpha ramp has nothing to blend against there"
-        )
-
-        // `entry` in godrays.frag: smoothstep(0, SURFACE_FADE_METRES, depth). Reproduced rather
-        // than shared because this is the only caller that needs the shader's own curve, and what
-        // is being asserted is that the two effects do not overlap — a property of both.
-        val t = (Sky.BOTTOM_DEPTH / LightShafts.SURFACE_FADE_METRES).coerceIn(0f, 1f)
-        val shaftStrengthAtSkyBottom = t * t * (3f - 2f * t)
-        assertTrue(
-            shaftStrengthAtSkyBottom < 0.05f,
-            "the god rays are already at $shaftStrengthAtSkyBottom of full strength where the " +
-            "sky stops (${Sky.BOTTOM_DEPTH} m), so the alpha they punch into `main` has an opaque " +
-            "sunset behind it and the frame gets a horizontal line at that depth"
         )
     }
 

@@ -224,9 +224,9 @@ object LightEmitter
     /**
      * Fills the texture and queues it for upload. Called once, from `EnPustTil.onCreate`.
      *
-     * ONE texture again. `f2f2eaa` added a second one here for the god rays; they are no longer
-     * lights and no longer have an emitter — see the history section below, which `EnPustTil`'s
-     * own comment at that call site has not been updated for (it is not this task's file).
+     * ONE texture again. `f2f2eaa` added a second one here for the god rays; they stopped being
+     * lights, and then on 2026-08-17 they were removed altogether at the owner's request. The
+     * history section below is kept because its two findings are about GI, not about shafts.
      */
     fun load(engine: PulseEngine)
     {
@@ -234,14 +234,17 @@ object LightEmitter
         engine.asset.load(texture)
     }
 
-    // --- HISTORY: the god rays used to emit from a second texture here --------------------------
+    // --- HISTORY: a second texture used to live here ---------------------------------------------
 
     /**
-     * # THE SHAFT EMITTER IS GONE, AND THESE TWO FINDINGS ARE WHY IT MUST NOT BE REBUILT BLIND
+     * # THE SHAFT EMITTER IS GONE, AND THESE TWO FINDINGS OUTLIVE IT
      *
      * `f2f2eaa` drew the god rays as real GI lights emitting from a second generated texture that
-     * lived here. They are now albedo strips on `mainSurface` through `shaders/godrays.frag`;
-     * `LightShafts` has the owner's brief for that move.
+     * lived here. They became albedo strips on `mainSurface` instead, and then were removed
+     * entirely on 2026-08-17 at the owner's request — so there is no shaft to rebuild.
+     *
+     * THIS SECTION IS NOT ABOUT SHAFTS. Both findings below are about what a GI light IS, and the
+     * next wide or soft light anyone adds will meet them again.
      *
      * THE JUSTIFICATION THIS COMMENT USED TO CARRY FOR THAT MOVE WAS WRONG, and is corrected here
      * rather than deleted because it is exactly the sort of thing that gets re-derived. It claimed

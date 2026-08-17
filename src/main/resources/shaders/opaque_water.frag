@@ -8,9 +8,9 @@
 //   nowhere in the engine jar, so it cannot be expressed. `main` then composites over a BLANK sky
 //   surface, so an eroded pixel reveals the cleared backbuffer: a black hole in the water.
 //
-// IT IS NOT MOTE-SPECIFIC. The god rays pre-erode `main`'s alpha to a measured 191/255 inside a
-// shaft, and the marine snow on top of that is what pushes it into visibility — which is why every
-// disc sits inside a shaft column, and why both disabling the mote draw and halving the mote
+// IT IS NOT MOTE-SPECIFIC. The god rays pre-eroded `main`'s alpha to a measured 191/255 inside a
+// shaft, and the marine snow on top of that was what pushed it into visibility — which is why every
+// disc sat inside a shaft column, and why both disabling the mote draw and halving the mote
 // density made them go away without touching the cause. Every translucent draw on `main`
 // contributes; this restores all of them at once.
 //

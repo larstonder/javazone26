@@ -26,9 +26,10 @@
 // =============================================================================================
 //
 // This shader is on `main`, so everything it draws IS multiplied by GI's light map. That is
-// correct and deliberate: the water is part of the lit world, the god rays come through this
-// surface from above, and a sea that ignored the light map would sit in front of the scene
-// rather than in it. The SKY is the thing that must escape the multiply, and it does, by being
+// correct and deliberate: the water is part of the lit world, and a sea that ignored the light
+// map would sit in front of the scene rather than in it. (This used to name the god rays as the
+// other thing coming through this surface from above; they were removed on 2026-08-17 and the
+// reasoning never depended on them.) The SKY is the thing that must escape the multiply, and it does, by being
 // on another surface entirely.
 //
 // The one thing that follows from it: every colour this shader can produce must clear

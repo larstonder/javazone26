@@ -26,6 +26,7 @@ import render.DiverSprite
 import render.Hud
 import render.IridescenceRenderer
 import render.LightEmitter
+import render.MoteSprite
 import render.Motes
 import render.OpaqueWaterEffect
 import render.PearlNormalMap
@@ -67,8 +68,9 @@ fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: 
  * planned in `docs/superpowers/plans/2026-08-13-deep-water-lighting.md` is a sequence of
  * one-dial changes each decided by a capture, and it is unrunnable without this.
  *
- * `EPT_WAVE_PHASE`, `EPT_SHAFT_PHASE` and `EPT_MOTE_PHASE` are the precedent — one `getenv`
- * at startup, unset and therefore inert at the booth.
+ * `EPT_WAVE_PHASE` and `EPT_MOTE_PHASE` are the precedent — one `getenv` at startup, unset and
+ * therefore inert at the booth. (There was a third, `EPT_SHAFT_PHASE`, pinning the god rays; it
+ * went with them on 2026-08-17.)
  *
  * ## IT MOVES THE DIVER, IT DOES NOT CHANGE THE RULES
  *
@@ -616,52 +618,50 @@ class EnPustTil : PulseEngineGame()
         // ...and the thing that fills the gap that leaves: the sea's surface, on `main` because it
         // is part of the LIT world and must be multiplied by the light map, unlike the sky.
         //
-        // ATTACHED HERE, BEFORE `DiveLighting.setup`, AND THE ORDER IS LOAD-BEARING. Batch
-        // renderers are flushed in the order they were ADDED to the surface, not in the order they
-        // were called — and every one of them writes depth, including for fragments it draws at
-        // alpha 0. `DiveLighting.setup` attaches `ShaftRenderer`, whose quads deliberately take a
-        // greater `currentDepth` than the world so the god rays land in front of it; attached
-        // AFTER it, this renderer is flushed after those quads have already written their depth,
-        // and every water fragment underneath a shaft fails `GL_LEQUAL`.
+        // ATTACHED BEFORE THE PEARLS, AND THE ORDER IS LOAD-BEARING. Batch renderers are flushed
+        // in the order they were ADDED to the surface, not in the order they were called — and
+        // every one of them writes depth, including for fragments it draws at alpha 0. So between
+        // any two renderers on one surface, whichever was ADDED first rasterises first and wins
+        // the depth test wherever they overlap, whatever `currentDepth` either was given.
         //
-        // That is not a hypothesis. Captured at 6 m with the fragment shader forced to a flat
-        // opaque magenta: the quad rasterised for depth -1.5 to 0.0 and vanished completely from
-        // 0.0 to 8.2 — a cut at exactly the depth the shafts start from, and nowhere else. It
-        // costs no error, no warning and no log line, and it looks like a shader bug.
+        // Reverse these two and the pearls rasterise first, write depth across their own quads,
+        // and every water fragment behind one fails `GL_LEQUAL` — each pearl punches a hole
+        // through the sea at full alpha, with no error and no log line.
         //
-        // So the rule, stated once: THE SEA IS PART OF THE WORLD AND MUST BE FLUSHED WITH THE
-        // WORLD. Anything that draws in FRONT of the world belongs after it here.
-        // `SurfaceRendererOrderTest` fails the build if this call moves below `DiveLighting.setup`.
+        // THE RULE, STATED ONCE: THE SEA AND THE PEARLS ARE PART OF THE WORLD AND MUST BE FLUSHED
+        // WITH THE WORLD. Anything that draws in FRONT of the world belongs after them.
+        // `SurfaceRendererOrderTest` fails the build on both halves of that.
+        //
+        // ## THE GOD RAYS ARE WHERE THIS WAS LEARNED, TWICE, AND THEY ARE GONE
+        //
+        // `DiveLighting.setup` used to attach `ShaftRenderer`, whose quads deliberately took a
+        // greater `currentDepth` than the world so the rays landed in front of it. Both of these
+        // renderers were once attached BELOW that call, and both were silently destroyed by it:
+        //
+        //   - the sea, captured at 6 m with the fragment shader forced to a flat opaque magenta:
+        //     the quad rasterised for depth -1.5 to 0.0 and vanished completely from 0.0 to 8.2 —
+        //     a cut at exactly the depth the shafts started from, and nowhere else;
+        //   - the pearls, on a pinned 30 m frame at four pearls' own centre pixels, against the
+        //     same build with the shafts skipped:
+        //
+        //         depth    with god rays        without
+        //         15.8 m   RGBA(0, 8, 21, 255)  RGBA(137, 109, 18, 255)
+        //         16.3 m   RGBA(1, 11, 24, 251) RGBA(155, 119, 15, 255)
+        //         19.8 m   RGBA(0, 9, 23, 255)  RGBA(160, 122, 14, 255)
+        //         27.8 m   RGBA(0, 9, 20, 255)  RGBA(196, 160, 28, 255)
+        //
+        //     Not dimmed — GONE, replaced by plain water at full alpha. What survived is the
+        //     pearl's GI LIGHT, on a different surface with a different depth buffer, so a shallow
+        //     pearl read as a soft blurry glow with no body. That looks like art, and is how it
+        //     shipped; an earlier version of `SurfaceRendererOrderTest`'s doc even rationalised it
+        //     as "the shafts agent's design" and declined to assert it. It was not design.
+        //
+        // The god rays were REMOVED on 2026-08-17 at the owner's request, so nothing attached in
+        // `DiveLighting.setup` draws in front of the world any more and neither failure can recur
+        // as such. The ordering above is kept and still asserted because the MECHANISM is
+        // unchanged: it is what will bite the next renderer added to this surface.
         WaterRenderer.addTo(engine.gfx.mainSurface)
 
-        // AND SO ARE THE PEARLS, for exactly the same reason and at exactly the same cost.
-        //
-        // This used to be attached below, after `DiveLighting.setup`, which put it after
-        // `ShaftRenderer` in the flush order — the identical mistake the sea's comment above
-        // describes, on the objects the whole game is about. `SurfaceRendererOrderTest`'s class
-        // doc even recorded that the pearls were in that position and reasoned it was "the shafts
-        // agent's design", so it deliberately did not assert it. It was not design.
-        //
-        // MEASURED, on a pinned 30 m frame, at four pearls' own centre pixels, against the same
-        // build with the shafts skipped:
-        //
-        //     depth    with god rays        without
-        //     15.8 m   RGBA(0, 8, 21, 255)  RGBA(137, 109, 18, 255)
-        //     16.3 m   RGBA(1, 11, 24, 251) RGBA(155, 119, 15, 255)
-        //     19.8 m   RGBA(0, 9, 23, 255)  RGBA(160, 122, 14, 255)
-        //     27.8 m   RGBA(0, 9, 20, 255)  RGBA(196, 160, 28, 255)
-        //
-        // Not dimmed — GONE, replaced by plain water, with full alpha. Every pearl above
-        // `LightShafts.END_DEPTH_METRES` was being depth-rejected by the shaft quads, which write
-        // depth for every fragment including the transparent ones. What survived is the pearl's
-        // GI LIGHT, which is on a different surface with a different depth buffer, so a shallow
-        // pearl read as a soft blurry glow with no body — which looks like art, and is how this
-        // shipped. Pearls below 50 m were untouched (no strip is submitted there), so the frame
-        // showed crisp pearls deep and vague blobs shallow.
-        //
-        // `ShaftRenderer`'s own doc says the strips should be "hazing them very slightly rather
-        // than being occluded by them". That is what this ordering buys; the depth cursor already
-        // puts the strips in front, so they now blend over the pearls instead of erasing them.
         IridescenceRenderer.addTo(engine.gfx.mainSurface)
         engine.config.fixedTickRate = 60f
         camera.snapTo(sim.depth)
@@ -701,15 +701,23 @@ class EnPustTil : PulseEngineGame()
         Backdrop.load(engine)
 
         // The GENERATED assets: the round emitter every point light in DiveLighting shapes its
-        // light from, and the hemisphere normal that tells GI a pearl is a bead and not a flat
-        // quad. Same queue and the same asynchronous upload as every file-backed asset above, and
-        // the same gate-and-warn arrangement — though the two gates differ on purpose
-        // (LightEmitter.emitter falls back to Texture.BLANK, i.e. to the old square emitter, while
-        // PearlNormalMap.normals returns null, which normal_map.frag reads as the flat normal the
-        // pearls had before it existed; see them for why a fallback is right for one and not the
-        // other). Neither has a file behind it, so both must be FILLED before they are queued —
-        // which is what their `load` does and is the whole reason they are not in loadAll above.
+        // light from, the dab a mote is DRAWN with, and the hemisphere normal that tells GI a
+        // pearl is a bead and not a flat quad. Same queue and the same asynchronous upload as
+        // every file-backed asset above, and the same gate-and-warn arrangement — though the
+        // gates differ on purpose (LightEmitter.emitter and MoteSprite.sprite fall back to
+        // Texture.BLANK, i.e. to a square, while PearlNormalMap.normals returns null, which
+        // normal_map.frag reads as the flat normal the pearls had before it existed; see them for
+        // why a fallback is right for two and not the third). None has a file behind it, so all
+        // three must be FILLED before they are queued — which is what their `load` does and is the
+        // whole reason they are not in loadAll above.
+        //
+        // MoteSprite is separate from LightEmitter although the two textures look alike, and the
+        // difference is which SIDE of the pipeline each is for: LightEmitter's ramp is shaped so
+        // the alpha = 0.5 contour is the inscribed circle, because that is the only contour GI
+        // reads, which forces a flat 1.0 core that reads as a plate when it is DRAWN. See
+        // MoteSprite's class doc for the measurements.
         LightEmitter.load(engine)
+        MoteSprite.load(engine)
         PearlNormalMap.load(engine)
 
         DiveLighting.setup(engine)
@@ -812,14 +820,16 @@ class EnPustTil : PulseEngineGame()
         // immediately after the surface whose blankness is what made the defect visible, because
         // the two facts only make sense together: `main` is deliberately transparent above the
         // waterline so the sunset behind shows through, and `"sky"` is deliberately BLANK below it
-        // so an opaque world has nothing wasted behind it. A translucent draw on `main` — a mote,
-        // a god ray — erodes `main`'s alpha, because `glBlendFunc(GL_SRC_ALPHA,
+        // so an opaque world has nothing wasted behind it. ANY translucent draw on `main` — a
+        // mote, and formerly a god ray — erodes `main`'s alpha, because `glBlendFunc(GL_SRC_ALPHA,
         // GL_ONE_MINUS_SRC_ALPHA)` applies to the alpha channel too and the engine never calls
         // `glBlendFuncSeparate`. Underwater that eroded alpha revealed the cleared backbuffer: a
-        // solid black disc wherever motes overlapped INSIDE A SHAFT, which is the only place the
-        // two erosions compound far enough to see. Not a mote bug and not a shaft bug — an engine
-        // one. `render/OpaqueWater.kt` has the full derivation, the measurement and what was
-        // rejected.
+        // solid black disc wherever motes overlapped INSIDE A SHAFT, which was the only place the
+        // two erosions compounded far enough to see. Not a mote bug and not a shaft bug — an
+        // engine one, so REMOVING THE GOD RAYS (2026-08-17) DID NOT REMOVE THE NEED FOR THIS PASS:
+        // it only removed the one place the erosion happened to be visible, which is the worst
+        // reason to delete a guard. `render/OpaqueWater.kt` has the full derivation, the
+        // measurement and what was rejected.
         opaqueWater = OpaqueWaterEffect().also { engine.gfx.mainSurface.addPostProcessingEffect(it) }
 
         // THE WAVE'S PHASE, PINNED FOR REPRODUCIBLE CAPTURES. The sea animates on the RENDER
@@ -831,9 +841,9 @@ class EnPustTil : PulseEngineGame()
         // getenv at startup.
         System.getenv("EPT_WAVE_PHASE")?.toFloatOrNull()?.let { WaterSurface.pin(it) }
 
-        // The marine snow's phase, for the same reason and read in the same place. The god rays'
-        // EPT_SHAFT_PHASE is deliberately NOT here — `LightShafts` reads it itself and says why —
-        // but a third ambient clock read in a third file would be worse, so this one joins the sea.
+        // The marine snow's phase, for the same reason and read in the same place. These are the
+        // two ambient clocks left: the god rays had a third, `EPT_SHAFT_PHASE`, which `LightShafts`
+        // read itself, and both went when the rays were removed on 2026-08-17.
         System.getenv(Motes.PIN_ENV)?.toFloatOrNull()?.let { Motes.pin(it) }
 
         System.getenv("EPT_SCREENSHOT")?.let {
@@ -1148,11 +1158,15 @@ class EnPustTil : PulseEngineGame()
         // (see MainCameraOwnershipTest, whose allow-list is exact set equality).
         DiveLighting.render(engine, sim, worldCamera)
 
-        // THE MARINE SNOW, LAST OF THE WORLD-SPACE DRAWS AND ON ITS OWN SURFACE. Like the sky,
-        // order within this method decides nothing — the surfaces' zOrder does, and the motes' puts
-        // them in front of the world and behind the HUD — but it is drawn here so the file reads
-        // back to front like the frame does. Same camera reference as everything else above, so
-        // the cells it walks are culled against the rect the frame is actually being drawn with.
+        // THE MARINE SNOW IS NOT DRAWN HERE. It is on `main`, issued last inside
+        // DiveRenderer.render (see the Motes.render call there), so GI's multiply darkens a mote
+        // with the water, the rock and the pearls rather than leaving it glowing in the Abyss.
+        //
+        // It DID have a surface of its own, and this comment used to describe that draw. Both the
+        // call and the surface are gone; the comment outlived them, which is exactly the failure
+        // mode Motes' own class doc ("THE SURFACE: THEY ARE ON `main`, AND THAT WAS RESOLVED THE
+        // HARD WAY") was written to prevent. MotesTest pins it: `the motes are drawn onto the
+        // world surface, so GI darkens them with everything else`. Do not re-add a draw here.
 
         // HUD: its own surface, its own screen-pixel camera, composited on top unaffected by
         // GI — see the comment in onCreate for why it cannot share mainSurface. What it shows

@@ -128,10 +128,10 @@ object Sky
      * same reason [DiveRenderer]'s zone tables are: this is called a few hundred times a frame and
      * the render path allocates nothing.
      */
-    private val stopHeights = floatArrayOf(0f, 2.5f, 7f, 15f, 26f)
-    private val stopRed = floatArrayOf(1.00f, 0.98f, 0.78f, 0.34f, 0.13f)
-    private val stopGreen = floatArrayOf(0.62f, 0.44f, 0.28f, 0.19f, 0.12f)
-    private val stopBlue = floatArrayOf(0.36f, 0.30f, 0.38f, 0.44f, 0.34f)
+    private val stopHeights = Look.SKY_STOP_HEIGHTS
+    private val stopRed = Look.SKY_STOP_RED
+    private val stopGreen = Look.SKY_STOP_GREEN
+    private val stopBlue = Look.SKY_STOP_BLUE
 
     /**
      * The sky's colour at [heightMetres] above [Tuning.SURFACE_DEPTH], as an sRGB draw colour.
@@ -210,14 +210,19 @@ object Sky
      * measured at **91/255** at x = -6.25 m. It reads as the shafts being warm near the surface,
      * which is why it survived review: it looks like art.
      *
-     * Two defects meet here and this fixes the one that can be fixed safely. The other — that a
-     * batch renderer on `main` can silently punch holes in the world's alpha — is a shared-state
-     * hazard of the same family as `ShaftRenderer.setTint`'s, and it is NOT fixed: `BlendFunction`
-     * is per-surface and batch renderers flush at frame end in add order, so a shaft-only
-     * `ADDITIVE` (which would preserve destination alpha) cannot currently be scoped to them.
-     * What this change removes is anything for those holes to reveal: below [BOTTOM_DEPTH] there
-     * is no sky, and the shafts' own `surfaceFade` holds their alpha near zero above it
-     * (`smoothstep(0, 10, 0.61)` = 0.01), so the two windows do not overlap.
+     * Two defects met here and this fixes the one that can be fixed safely. The other — that a
+     * batch renderer on `main` can silently punch holes in the world's alpha — is an ENGINE
+     * hazard, not a shaft one: `BlendFunction` is per-surface and batch renderers flush at frame
+     * end in add order, so a per-renderer `ADDITIVE` (which would preserve destination alpha)
+     * cannot be scoped to one of them. What this change removes is anything for those holes to
+     * reveal: below [BOTTOM_DEPTH] there is no sky at all.
+     *
+     * **The god rays were removed on 2026-08-17 at the owner's request**, so the specific
+     * measurements above can no longer be reproduced — but [BOTTOM_DEPTH] STAYS WHERE IT IS. The
+     * alpha erosion is the engine's blend function and the motes still do it (see
+     * `render/OpaqueWater.kt`, which was written for exactly that and is still needed); the rays
+     * were only the place it first became visible. Deepening this again would put opaque sunset
+     * back behind eroded alpha and is the same defect waiting for its next trigger.
      *
      * Costs nothing once the diver is deeper than that: the whole band is above the visible rect,
      * [stripCount] returns 0 and this method issues no draws at all. That is the common case — the

@@ -1077,11 +1077,13 @@ class DiveLightingTest
     // --- The ambient floor: the water's own glow (DiveLighting.AMBIENT_FLOOR_RED) --------------
     //
     // The whole point of the floor is that it is applied AFTER the daylight blend rather than
-    // typed into the tables, so that the two things derived from those tables — the god rays'
-    // depth ramp and the torch's — keep reading raw daylight and do not move. Three of the four
-    // tests below exist to make that separation break loudly if somebody ever "simplifies" it
-    // into the tables, because the symptoms of doing so (god rays in the Abyss; a torch that
-    // dims where it is the only light) are both a long way from the line that caused them.
+    // typed into the tables, so that what is derived from those tables — DiveLighting.daylightByZone
+    // and the torch ramp built on it — keeps reading raw daylight and does not move. Three of the
+    // four tests below exist to make that separation break loudly if somebody ever "simplifies" it
+    // into the tables, because the symptom of doing so (a torch that dims exactly where it is the
+    // only light) is a long way from the line that caused it. The god rays' own depth ramp was the
+    // second consumer and the loud one; they were removed on 2026-08-17, which leaves these tests
+    // as the ONLY thing standing between that edit and a silently dim beam at 140 m.
 
     @Test
     fun `the ambient never falls below the water's own glow, at any depth`()
@@ -1107,13 +1109,14 @@ class DiveLightingTest
 
     /**
      * THE SEPARATION, ASSERTED DIRECTLY. The floor lights objects in the deep; the daylight tables
-     * must still say there is NO daylight down there, because `shaftDaylightByZone` and
+     * must still say there is NO daylight down there, because `DiveLighting.daylightByZone` and
      * `torchIrradianceByZone` are both computed from them.
      *
      * A floor typed into `ambientGreen`'s Abyss entry instead would satisfy the previous test and
-     * fail this one, which is exactly the mistake it is here to catch — `LightShaftsTest` would
-     * catch the god-ray half of the consequence, and nothing at all would catch the torch half
-     * except a player noticing the beam had gone dim at 140 m.
+     * fail this one, which is exactly the mistake it is here to catch. It used to have a second
+     * catcher: `LightShaftsTest` would have failed on god rays reaching the Abyss, a symptom
+     * anyone would see. The rays were removed on 2026-08-17 and this assertion is now the only
+     * one — the torch half is invisible until a player notices the beam has gone dim at 140 m.
      */
     @Test
     fun `the floor lights the abyss without giving it any daylight`()
@@ -1121,8 +1124,8 @@ class DiveLightingTest
         val abyss = DepthBlend.zoneMidpoint(Zone.ABYSS)
         assertEquals(
             0f, DiveLighting.daylightGreenAt(abyss), 0f,
-            "the Abyss has daylight — the god rays' ramp and the torch's are both derived from " +
-                "this number, so the shafts would reach the Abyss and the torch would dim there"
+            "the Abyss has daylight — the torch's ramp is derived from this number, so the beam " +
+                "would DIM at 140 m, exactly where the design makes it the only light source"
         )
         assertTrue(
             DiveLighting.ambientGreenAt(abyss) > DiveLighting.daylightGreenAt(abyss),
@@ -1205,6 +1208,47 @@ class DiveLightingTest
      * Probed rather than reasoned about: UNCHARTED2 with contrast 1.3 measures a rock p99 of 5.88
      * and an open-water median of exactly 0.000 at 140 m, worse than the ACES control it replaced.
      */
+    /**
+     * THE EXPOSURE IS A LIFT, NOT A DEFAULT. The owner's *"generally too dark underwater"* was
+     * measured before it was fixed: at the engine-ish 1.1 the 140 m frame had **16.7% of its
+     * pixels at or under 2/255** — below a booth panel's black point in a lit hall — against 0.3%
+     * at the 2.6 shipped now. See `DiveLighting.GRADE_EXPOSURE` for the full table.
+     *
+     * Asserted as a floor rather than as a number, because the number is taste and the floor is
+     * not: anything back near 1 puts the Abyss under the panel again. The ceiling is a separate
+     * matter and deliberately not pinned here — it is the shallows going milky, which is a look
+     * call no unit test can make.
+     */
+    @Test
+    fun `the colour grade's exposure stays well above the engine default, or the deep goes under the panel`()
+    {
+        assertTrue(
+            DiveLighting.GRADE_EXPOSURE >= 2f,
+            "the grade's exposure is ${DiveLighting.GRADE_EXPOSURE}. Below about 2 the Abyss falls " +
+            "back under a booth panel's black point: at 1.1 a pinned 140 m frame measured open " +
+            "water at 2.2/255 and 16.7% of the whole frame at or under 2/255"
+        )
+    }
+
+    /**
+     * AND IT COSTS NOTHING AT THE TOP, which is the fact that makes the lift safe rather than a
+     * trade. Measured on the same pinned frames, the share of the frame at or above 250/255 is
+     * 0.40% at exposure 1.1, at 2.0 and at 2.6 — identical, because UNCHARTED2's shoulder absorbs
+     * the gain. That only holds while the mapper HAS a shoulder, which the case above pins, so the
+     * two belong together: a mapper swap would silently turn this lift into clipping.
+     */
+    @Test
+    fun `the exposure lift depends on the tone mapper having a shoulder`()
+    {
+        val source = File("src/main/kotlin/render/DiveLighting.kt").readText()
+        assertTrue(
+            source.contains("toneMapper = UNCHARTED2"),
+            "the exposure is ${DiveLighting.GRADE_EXPOSURE}, which was measured to cost no extra " +
+            "clipping ONLY under UNCHARTED2's shoulder. A different mapper needs the highlight " +
+            "share re-measured before this value can stand"
+        )
+    }
+
     @Test
     fun `the colour grade's contrast stays at the engine default, which is the only safe value`()
     {

@@ -33,6 +33,25 @@ import no.njoh.pulseengine.core.graphics.postprocessing.effects.BaseEffect
  * ONE_MINUS_SRC_ALPHA)`. **`glBlendFuncSeparate` appears nowhere in the engine jar** (grepped), so
  * it cannot be expressed at all: not per surface, and certainly not per batch renderer.
  *
+ * ## THE GOD RAYS HAVE BEEN REMOVED, AND THIS PASS STAYS. READ THIS BEFORE DELETING IT.
+ *
+ * They were removed on 2026-08-17 at the owner's request. They were the ENABLER below, not the
+ * cause, and losing them removes the one arrangement in which the erosion was measured to become
+ * visible — so the black discs are very likely unreachable today. That is an argument for leaving
+ * this in place, not for taking it out:
+ *
+ *  - the mechanism is the ENGINE's blend function, unchanged and unfixable from here
+ *    (`glBlendFuncSeparate` appears nowhere in the jar), and every translucent draw on `main`
+ *    still erodes its alpha — the motes still do it, and so will the next translucent thing added;
+ *  - what this pass does is restore `main`'s alpha to 1 below the waterline, which is
+ *    unconditionally what we want underwater. It is a post-process with no dependence on shafts
+ *    existing, and its cost does not scale with anything;
+ *  - deleting a guard because its most recent trigger was removed is how the same defect returns
+ *    wearing different clothes. `Sky.BOTTOM_DEPTH` carries the same note for the same reason.
+ *
+ * Everything below is the original diagnosis, kept intact because it is the only measurement of
+ * this mechanism we have.
+ *
  * ## IT IS NOT A MOTE BUG. THE GOD RAYS ARE THE ENABLER AND NEITHER CAUSE IS SUFFICIENT ALONE
  *
  * This matters because the obvious reading — "the marine snow punches holes" — sends the next
@@ -135,8 +154,8 @@ import no.njoh.pulseengine.core.graphics.postprocessing.effects.BaseEffect
  * which is attached to every surface at creation and therefore flushes FIRST; they take a greater
  * `currentDepth` than the water; so their quads write depth across the water quad's band before
  * `WaterRenderer` ever runs, and every water fragment underneath one then fails `GL_LEQUAL`. That
- * is character for character the shafts-versus-water bug in that test's doc, arriving on a
- * renderer whose add order we do not control.
+ * is character for character the same bug that test's doc records, arriving on a renderer whose
+ * add order we do not control.
  *
  * It only shows in the top [WaterSurface.QUAD_BOTTOM_DEPTH] metres because that is the only place
  * a water QUAD exists to be cut — below it the water is zone bands, drawn through the same
@@ -212,7 +231,7 @@ class OpaqueWaterEffect : BaseEffect()
 
         /**
          * Shader paths, under `/shaders/` and NOT under `/pulseengine/` — the same rule
-         * `ShaftRenderer` and `IridescenceRenderer` follow, for the same two reasons: a file
+         * `IridescenceRenderer` and `WaterRenderer` follow, for the same two reasons: a file
          * there can neither shadow an engine shader on the classpath nor be caught by
          * `build.gradle.kts`'s `devOnlyShaderOverrides` exclusion, which drops our copies of two
          * engine shaders from the release jar. These must ship, and `OpaqueWaterShaderTest`
@@ -238,8 +257,9 @@ class OpaqueWaterEffect : BaseEffect()
          *
          * It is not larger because everything between the waterline and the gate keeps the defect,
          * and 1 m is already past the depths where anything erodes alpha: [Motes.surfaceFade] is
-         * exactly 0 at the waterline and only 0.11 of full at 1.31 m, and `LightShafts`' own
-         * surface fade holds the god rays near zero over the same band.
+         * exactly 0 at the waterline and only 0.11 of full at 1.31 m. (The god rays' own surface
+         * fade held them near zero over the same band, which was the second half of this argument
+         * until they were removed on 2026-08-17; the mote half carries it on its own.)
          */
         const val GATE_MARGIN_METRES = 1f
 

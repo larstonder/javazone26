@@ -74,10 +74,22 @@ You have to do both things. That is the game.
 | Kelp | 30–60 m | 25 | 2 | ×1.2 | Fronds slow you. Cheap to enter, expensive to leave. |
 | Twilight | 60–90 m | 60 | 4 | ×1.6 | Pearls on ledges and outcrops. Precision over speed. |
 | Trench | 90–120 m | 150 | 8 | ×2.0 | Lateral currents. You drift to pearls rather than swim to them. |
-| Abyss | 120 m+ | 400 | 16 | ×2.5 | Near-total dark. Pearls are the only light source. One of them is hunting you. |
+| Abyss | 120 m+ | 400 | 16 | ×2.5 ⚠ | Near-total dark. ~~Pearls are the only light source.~~ ⚠ One of them is hunting you. |
+
+> ⚠ **Two cells in the Abyss row are superseded by §17 and this table was not annotated for a
+> while.** The air burn is **×2.2**, not ×2.5 (amendment *"Abyss `airBurn` 2.5 → 2.2"*), and pearls
+> are **not** the deep's light source — the torch is (amendment *"Pearls no longer brighten with
+> depth"*). `dive/Zone.kt` is the authority for the numbers in this table.
 
 Zones must differ in **how you move**, not only in value and colour. A zone that changes
 only a number is a reskin.
+
+> **UNBUILT, as of 2026-08-17.** The paragraph above is locked design that was never implemented:
+> the Kelp's "fronds slow you" and the Trench's "lateral currents" do not exist in `dive/`, and the
+> five zones currently differ only in pearl value, pearl mass and air burn — which is precisely the
+> "reskin" this paragraph forbids. There is no §17 row deferring or cutting it, and it is not in
+> §15's cut list either. Flagged here rather than silently left, because a reader of §3 has no
+> other way to find out. The decision is the owner's.
 
 ---
 
@@ -106,6 +118,25 @@ less easily.
 | `K_DESCENT` | 120 | descent gain is deliberately weaker than ascent loss |
 | kick multiplier | 3× speed, 3× air burn | both, always |
 | ballast bleed | 8 mass units/sec | while B held |
+
+> ⚠ **THIS WHOLE SECTION DESCRIBES A MODEL THE CODE NO LONGER USES, and §17 has no amendment row
+> for it.** §17 logs *"Momentum and drag (§4)"*, but the change that actually invalidated the
+> formulae above — **the diver became neutrally buoyant** — is unlogged, and it is the single
+> biggest change to the movement model. Recorded here on 2026-08-17 by someone who did not witness
+> the decision, so this note states *what* diverged and deliberately does **not** invent *why*.
+>
+> - **"baseDescent 6 m/s, empty, passive sink" is now false.** An empty diver **hovers**. Carried
+>   mass is the only thing that makes you sink. Pinned by `BuoyancyTest.empty diver hovers` and
+>   `DiveSimTest.an empty diver does not sink passively - it hovers`.
+> - **None of `baseAscent`, `baseDescent`, `K_ASCENT` or `K_DESCENT` exist.** The model is
+>   `SWIM_THRUST` (11), `SINK_FORCE_PER_MASS` (0.06), `K_DRAG` (200), plus `RESPONSE_RATE` (3.5)
+>   and `K_RESPONSE_MASS` (60) for the momentum amendment. See `dive/Buoyancy.kt` and
+>   `dive/Tuning.kt`; `NoReturnTest` still refers to the "old (now-deleted) `Buoyancy.ascentSpeed`".
+> - **`baseAir` is 30 s, not 20** — that one §17 does log.
+>
+> What survives unchanged is the *design intent* the section opens with, and it is the part that
+> matters: load makes you sink faster and rise slower, so greed is a risk amplifier. The
+> arithmetic below it is superseded; `dive/Tuning.kt` is the authority.
 
 ---
 
@@ -234,8 +265,9 @@ Authoring uses the Pulse Engine scene editor (F2), already in this repo.
 
 ## 11. Art direction
 
-Free-diver in silhouette. Serious and beautiful rather than comic: shafts of light near
-the surface, deep blue falling to near-black, bioluminescence in the dark.
+Free-diver in silhouette. Serious and beautiful rather than comic: deep blue falling to
+near-black, bioluminescence in the dark. *(This read "shafts of light near the surface,
+deep blue falling to near-black, bioluminescence in the dark" until 2026-08-17 — see §17.)*
 
 This is also the most *readable* option for a booth screen — bright points of light on
 near-black, high-contrast silhouettes, a glittering bleed trail against dark water. It
@@ -290,6 +322,15 @@ Three-letter arcade initials. **Never a form field** — a name form kills queue
   ZGC is configured in `build.gradle.kts` but should not be leaned on.
 - **Leaderboard** as a small local service the game POSTs to, with a QR on the booth wall
   so attendees can check standings from inside a talk.
+
+> ⚠ **The leaderboard service was never built, and this is not recorded anywhere else.** There is no
+> network code in the project at all: `score/ScoreRepository` writes a local `scoreboard.json` next
+> to the game and the attract screen reads it back. No service, no POST, no QR. It is absent from
+> §15's cut list and has no §17 amendment row, so — unlike the god rays or the pearl emission — it
+> was never explicitly cut; it simply did not happen. Flagged 2026-08-17. Whether it still matters
+> is the owner's call, and with the conference 17 days out it is worth deciding deliberately rather
+> than by default. §12's **dive-profile** leaderboard is likewise unbuilt (the board draws plain
+> rank / initials / score rows), but that one *is* covered by cut list item 4.
 
 ---
 
@@ -360,6 +401,7 @@ the reason each was needed:
 | **Abyss `airBurn` 2.5 → 2.2** | The other half of the same fix. Together with the vent it takes the max survivable load at 135 m from 14 to 18, past one pearl. Across seven seeds the abyss now yields 2–7 reachable pearls (was 1–5), with the deepest reachable rising from 121 m to 134 m on the worst seed. The Abyss remains the fastest-burning zone by a wide margin, and its deepest water is still a trap by design. Verified byte-identical Shallows and Kelp sweeps, so the early game is untouched. |
 | **Visible depth is capped by the cliff art on wide panels** *(2026-08-12; presentation, but it changes a gameplay constant)* | **This supersedes the "exactly 60 m of water is visible vertically on every display" sentence in the metres-through-the-engine-camera row above, which is no longer true.** The surplus width outside `Tuning.COLUMN_HALF_WIDTH` is *rock*, and the cliff is a single tile, so an uncapped wide panel showed it repeating — four reflections a side at 2.389. The owner, after five failed attempts at the symptom: *"for each aspect ratio we should only ever see exactly one rock cliff on each end of the screen"*, and then, on the first capped build, *"still seems like we use at least two sprites for width at each side"*. `CameraRig.pixelsPerMetre` is now the LARGER of a height fit and a width fit, capped at `Framing.VISIBLE_WIDTH_METRES` = `2 × RockFace.BODY_INNER_HALF_WIDTH`, so exactly one cliff sprite reaches each frame edge and **no body quad is submitted at all**. The cost is paid in DEPTH above the design aspect, which is now **1.6419** — below 16:9. Measured on real framebuffers: 4:3 and 16:10 keep the full 60 m; **16:9 shows 55.42 m**, 2.389 shows 41.24 m, 32:9 shows 27.71 m. How far ahead you can see is still how far ahead you can plan, so this is a real change to the game on a wide panel and the owner took it twice — once when the cliff art made it cost 1.3 m, and again when the art was redrawn on 2026-08-12 and the same rule cost 4.6 m. The alternative offered and declined was drawing the rock 44% larger (`TILE_HEIGHT_METRES` 40 → 57.6 m) to hold 60 m. `FramingTest` pins the cost at under 10%, so a re-bake that halved the cliff's reach reddens rather than quietly taking another 12 m of sight-line. |
 | **Pearls no longer brighten with depth; the torch is the deep's light source** *(2026-08-12)* | **This supersedes §7's "in the darkest zone, where pearls are the only light" and the §11 zone table's "Pearls are the only light source" for the Abyss.** Pearl emission ran a five-anchor ramp, 0.6 in the Shallows to 4.0 in the Abyss, so a pearl brightened at exactly the rate the water darkened and was therefore *always* equally visible — which made the torch scenery. The owner: *"remove the gradual increase of pearl brightness by depth. I'd rather like the diver to have to find them using their flashlight."* Flattening it to the Shallows' own 0.6 was **not enough, for a structural reason worth recording**: a pearl's emitter sits inside its own drawn disc and `radius = 0` removes the distance term, so a pearl's body always receives a flat shelf of its own emission — at 0.6 that shelf swamped anything the beam added, and on a capture at 85 m *"the pearls aren't affected by the light at all. They should be."* Emission is now a flat **0.12**, a marker glow rather than a light source. The torch moved the other way: it used to *dim* 40% in the Abyss (2.0 → 1.2) specifically so pearls would read as comparatively brighter, and it now RISES with depth, derived from `1 − ambientGreen(d)/ambientGreen(0)` so that it replaces exactly the daylight that is gone (2.0 at the surface, unchanged, to 6.0 in the Abyss). **Abyss torch-to-pearl ratio: 0.3× before, 50× after.** The anglerfish is unaffected — the lure reads the same `pearlIntensity()` a pearl does, so it is still indistinguishable by light and the tell is still motion — but this makes §1.1 of the outstanding-work spec live: with the deep now genuinely dark, any glowing decorative scenery must be a visibly different colour from the pearls or the trap stops working. |
+| **The god rays are removed** *(2026-08-17; presentation only, no rule changes)* | **This supersedes §11's "shafts of light near the surface".** The owner, looking at a build: *"Please remove the god rays."* No rule, economy or control changes — the shafts were albedo strips on `mainSurface`, never lights and never occluders, and nothing in `dive/` ever knew about them. Deleted: `render/LightShafts.kt`, `render/ShaftRenderer.kt`, `shaders/godrays.frag`, `shaders/godrays.vert`, their two test classes, and the `EPT_SHAFT_PHASE` capture pin. **What deliberately did NOT go with them, because each was attributed to the shafts and is not theirs:** (a) `DiveLighting.daylightByZone`, the `ambientGreen(d)/ambientGreen(0)` identity — it was the shafts' depth ramp *and* is the torch's, so the "no daylight in the Abyss" guard rail is unchanged and `DiveLightingTest` is now its only enforcement rather than its second; (b) `render/OpaqueWater.kt` — the alpha erosion it repairs is the ENGINE's blend function (`glBlendFuncSeparate` appears nowhere in the jar), and the rays were only the arrangement in which it became *visible*; (c) `Sky.BOTTOM_DEPTH` — deepening it again would put opaque sunset back behind eroded alpha; (d) the renderer add-order rule the shafts taught twice, at the cost of the sea vanishing from 0–8.2 m and every pearl above 50 m being erased — `SurfaceRendererOrderTest` now asserts it between the sea and the pearls, which is the pair that remains. The general form stands: **anything that is part of the world is attached before anything that draws in front of it.** |
 
 ### Platform findings that constrain implementation
 
