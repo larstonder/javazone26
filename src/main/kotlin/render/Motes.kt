@@ -60,12 +60,11 @@ import kotlin.math.sin
  * `glBlendFuncSeparate` appears nowhere in the jar. So the separate surface cost two composites
  * and bought only intra-field additivity.
  *
- * **What replaces the exemption is better than it was.** In the Abyss an ordinary mote is now
- * black, and the GLOWING quarter ([GLOW_IN]) still reads because each one lights its own body
- * through GI. That is bioluminescence meaning bioluminescence — the specks that make their own
- * light — rather than every speck being turned up by a table. And it gives the torch something to
- * do: a beam sweeping the dark now reveals the unlit motes as dust, which a surface exempt from
- * the light map could never have shown.
+ * **What replaces the exemption is the torch.** In the Abyss a mote is black until something lights
+ * it, so a beam sweeping the dark reveals the field as dust — which a surface exempt from the light
+ * map could never have shown. A quarter of the motes were briefly GI emitters as well, so that they
+ * read in the deep with no beam on them; that was removed on 2026-08-17 and the section headed
+ * "THE GLOWING SUBSET" below is the whole argument.
  *
  * Being on `main` means sharing its camera by construction, so a mote at world `(x, depth)` goes
  * through the identical matrix as the water it is suspended in — built once per frame in
@@ -180,7 +179,6 @@ object Motes
     internal const val STREAM_DRIFT_Y = 5
     internal const val STREAM_PULSE = 6
     internal const val STREAM_RATES = 7
-    internal const val STREAM_GLOW = 8
 
     /** The full 32-bit hash of a cell and a stream. Pure, and the only source of randomness here. */
     internal fun hash(cellX: Int, cellY: Int, stream: Int): Int
@@ -501,13 +499,11 @@ object Motes
      *
      * ## WHAT THE DEPTH RESPONSE IS INSTEAD
      *
-     * The light map. Near the surface it is bright, so a mote reads; in the Abyss it is
-     * effectively zero, so an ordinary mote is black — and the GLOWING quarter
-     * ([GLOW_IN]) still shows, because each one lights its own body. That is a better version of
-     * the same art direction than the table was: bioluminescence in the dark is now literally
-     * bioluminescence, the specks that make their own light, rather than every speck being turned
-     * up. It also gives the torch something to find — a beam sweeping the dark reveals the dark
-     * motes as dust, which the exempt surface could never have done.
+     * The light map. Near the surface it is bright, so a mote reads; in the Abyss it is effectively
+     * zero, so a mote is black until the torch finds it — a beam sweeping the dark reveals the field
+     * as dust, which the exempt surface could never have done. (Between 2026-08-13 and 2026-08-17 a
+     * quarter of the motes also lit their own bodies; see "THE GLOWING SUBSET" below for why that
+     * is gone.)
      *
      * 0.25 is chosen against the SHALLOWS, which is now the bright end: it is the value at which
      * the field reads as texture rather than as objects on lit water. The deep needs no value
@@ -518,66 +514,40 @@ object Motes
     /** What the brightest possible mote is scaled by. Kept as a name so the bound tests read. */
     internal val PEAK_ALPHA = MOTE_ALPHA
 
-    // --- THE GLOWING SUBSET: motes that are actually light sources ----------------------------
+    // --- THE GLOWING SUBSET: REMOVED on 2026-08-17 --------------------------------------------
     //
-    // ## THIS REVERSES THIS FILE'S OWN "WHAT IT DELIBERATELY IS NOT"
+    // A quarter of the motes were GI emitters between 2026-08-13 and 2026-08-17. `GLOW_IN`,
+    // `STREAM_GLOW`, `glows()`, `DiveLighting.drawMoteLights`, `moteIntensity`, `MOTE_REACH_METRES`
+    // and `MOTE_FRACTION_OF_PEARL` all went with them, and this note is what is left — because the
+    // reasoning is a loop that has now closed, and anyone re-opening it should start from the end
+    // rather than from the middle.
     //
-    // The class doc argued that a mote is not a `drawLight` and casts nothing, on two grounds. The
-    // owner overruled the conclusion — *"and also be more of a light source"* — so the grounds are
-    // worth restating, because ONE OF THEM IS STILL TRUE and is what bounds [GLOW_IN] below.
+    // The class doc's "WHAT IT DELIBERATELY IS NOT" argued that a mote must not be a `drawLight`,
+    // on two grounds. The owner overruled the conclusion — *"and also be more of a light source"* —
+    // and a quarter of the field was made to emit. What that put on screen was two visibly
+    // different KINDS of speck: a glowing one carries its own halo in the light map and, because a
+    // GI emitter is a region rays TERMINATE on, a dark surround where it occludes whatever was
+    // lighting the water behind it. Beside a plain mote — a flat blue dab, uniform across the
+    // field — the pair does not read as one substance. The owner, on a capture of exactly that:
+    // *"I only want those not affected by GI."*
     //
-    // 1. "Two hundred GI emitters would be two hundred light sources in a radiance-cascade solve."
-    //    Half right. The cascade march is per-TEXEL and does not care how many lights there are;
-    //    what scales with the count is rasterising each emitter quad into `gi_local_scene`, which
-    //    for a sub-metre quad is cheap. But it is not free, and it now sits on top of the GI
-    //    resolution going from quarter to half res on 2026-08-12 — 4x the texels — so the count
-    //    still wants a bound rather than "all of them".
+    // SO THE SECOND OF THE TWO ORIGINAL GROUNDS IS WHAT DECIDED IT, and it was never speculative.
+    // `CLAUDE.md` records that GI samples a light's colour where a ray HITS it, i.e. on its rim.
+    // Every glowing mote was therefore a tiny occluder between the torch and whatever was behind
+    // it, and the torch is the deep's primary light by the same owner's instruction (spec §17).
+    // `docs/superpowers/plans/2026-08-13-deep-water-lighting.md` §3.1 had already named "stop the
+    // motes emitting" as the first intervention to try against the deep looking fought-over, and
+    // said plainly that the cost — the motes stop being a light source, which the owner had asked
+    // for — was his trade to make rather than an engineering decision. He has made it.
     //
-    // 2. "An emitter is a REGION that rasterises into the scene, so each one would also be an
-    //    OCCLUDER of the diver's torch." THIS IS THE REAL CONSTRAINT AND IT IS NOT SPECULATIVE.
-    //    `CLAUDE.md` records that GI samples a light's colour where a ray HITS it, i.e. on its
-    //    rim — rays terminate on light quads. Every glowing mote is therefore a tiny occluder
-    //    between the torch and whatever is behind it, and the torch was just made the primary
-    //    light source in the deep at the owner's request. A dense field of emitters would chop
-    //    that beam into speckle.
+    // The FIRST ground was half right, and is kept because it is the one that sounds decisive and
+    // is not: the cascade march is per-TEXEL and does not care how many lights there are, so 25-60
+    // extra sub-metre emitters were cheap even at the half-res GI of 2026-08-12. Cost was never the
+    // problem. Appearance was.
     //
-    // Which is why only a fraction glow. At 1 in 4 the field carries roughly 25-60 emitters, the
-    // same order as the pearls plus vents already on screen rather than ten times them; and the
-    // occlusion reads as motes CATCHING the beam — dust in a torchlight, which is the look this
-    // whole feature is after — instead of as a screen door in front of it.
-
-    /**
-     * One mote in [GLOW_IN] is a light source. 4.
-     *
-     * Chosen from its own hash stream rather than from size or brightness, so which motes glow is
-     * decorrelated from how big they look — a field where every large mote also glows reads as two
-     * classes of object rather than as one substance catching the light unevenly.
-     */
-    internal const val GLOW_IN = Look.MOTE_GLOW_IN
-
-    /** Whether this cell's mote is one of the glowing ones. @see GLOW_IN */
-    internal fun glows(cellX: Int, cellY: Int) = pick(cellX, cellY, STREAM_GLOW, GLOW_IN) == 0
-
-    /**
-     * # `GLOW_INTENSITY` LIVED HERE AND HAS MOVED TO `DiveLighting`, on purpose.
-     *
-     * It was a flat `0.05f`, handed to `drawLight` as `GLOW_INTENSITY * alpha`, and it is now
-     * `DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE` — stated as a twenty-fourth of a pearl's, in the
-     * one unit all four of the game's lights are now expressed in. The whole diagnosis is in
-     * `docs/superpowers/plans/2026-08-13-one-world-model.md` §1.4; the short version is that this
-     * file's own doc used to have to explain, in prose, how 0.05 compared with a pearl's 0.12 and a
-     * torch's 2.0-to-6.0, and it could not — the three numbers had different cone widths and
-     * different emitter sizes behind them and were not the same quantity.
-     *
-     * WHAT THE MOTES KEEP is everything about the FIELD: how many there are ([GLOW_IN]), how big
-     * they are ([sizeMetres]), how bright they are drawn ([MOTE_ALPHA] and the ramps around it),
-     * and where they go. What they give up is an opinion about how much light one of them casts,
-     * which was never a property of the mote field so much as of its place in the lighting.
-     *
-     * `DiveLighting.moteIntensity` reads [MOTE_ALPHA] back out of here to normalise a mote's own
-     * alpha, so the depth ramp that fades the dots near the surface still fades their light with
-     * them: a mote cannot glow where it cannot be seen.
-     */
+    // WHAT THE FIELD IS NOW is exactly what this file always described before the detour: a
+    // foreground overlay that the water is seen through, on `main`, darkened by the GI multiply
+    // like everything else, and legible in the deep only where the torch finds it.
 
     /**
      * How many metres below `Tuning.SURFACE_DEPTH` the motes take to fade in, and why there is a
@@ -694,18 +664,20 @@ object Motes
      */
     /**
      * Visit every mote the camera can see, once, handing each to [visit] as
-     * `(x, depth, size, alpha, glows)`.
+     * `(x, depth, size, alpha)`.
      *
-     * ONE TRAVERSAL, TWO CONSUMERS. [render] draws the dots onto the motes surface and
-     * [DiveLighting.drawMoteLights] issues emitters for the glowing subset, and those two must
-     * agree about where every mote is to the metre — a light offset from the dot it belongs to is
-     * exactly the class of drift `CLAUDE.md` spends a section on. Writing the cell walk twice is
-     * how they would drift, so it is written once.
+     * ONE TRAVERSAL, AND IT HAD TWO CONSUMERS UNTIL 2026-08-17 — [render] drew the dots and
+     * `DiveLighting.drawMoteLights` issued emitters for the glowing subset, and the two had to
+     * agree about where every mote was to the metre. The glowing subset is gone (see its section
+     * above), so there is one consumer again, and the walk stays factored out of [render] on its
+     * own merits: it is the part carrying [CULL_MARGIN_METRES], the [FIELD_TOP_DEPTH] floor and the
+     * [MAX_CELLS] guard, and `MotesTest` counts and places motes through it rather than through a
+     * draw call it cannot make without a GL context.
      *
      * `inline` with no captured state, so the lambda is compiled away and this allocates nothing —
      * the render path's standing rule.
      */
-    internal inline fun forEachVisible(cam: Camera, visit: (Float, Float, Float, Float, Boolean) -> Unit)
+    internal inline fun forEachVisible(cam: Camera, visit: (Float, Float, Float, Float) -> Unit)
     {
         val topLeft = cam.topLeftWorldPosition
         val worldLeft = topLeft.x
@@ -741,7 +713,7 @@ object Motes
                 val alpha = depthGain(depth) * brightness(cellX, cellY) * pulse(cellX, cellY, atSeconds)
                 if (alpha < MIN_VISIBLE_ALPHA) continue
 
-                visit(moteX(cellX, cellY, atSeconds), depth, sizeMetres(cellX, cellY), alpha, glows(cellX, cellY))
+                visit(moteX(cellX, cellY, atSeconds), depth, sizeMetres(cellX, cellY), alpha)
             }
         }
     }
@@ -749,7 +721,7 @@ object Motes
     fun render(surface: Surface, cam: Camera)
     {
         val texture = MoteSprite.sprite()
-        forEachVisible(cam) { x, depth, size, alpha, _ ->
+        forEachVisible(cam) { x, depth, size, alpha ->
             surface.setDrawColor(MOTE_RED, MOTE_GREEN, MOTE_BLUE, alpha)
             surface.drawTexture(texture, x, depth, size, size, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN)
         }

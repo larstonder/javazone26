@@ -265,14 +265,10 @@ object Look
     /** Largest mote diameter, metres. Kept under a pearl's so the two never confuse. */
     const val MOTE_MAX_SIZE_METRES = 0.85f
 
-    /** One mote in this many is a light source. Lower means more emitters — and more tiny occluders in the beam. @see Motes.GLOW_IN */
-    const val MOTE_GLOW_IN = 4
-
-    /** How hard a glowing mote shines, as a fraction of a pearl. @see DiveLighting.MOTE_FRACTION_OF_PEARL */
-    const val MOTE_FRACTION_OF_PEARL = 1f / 24f
-
-    /** A glowing mote's full-brightness radius, metres. @see DiveLighting.MOTE_REACH_METRES */
-    const val MOTE_REACH_METRES = 1f
+    // A mote is not a light. `MOTE_GLOW_IN`, `MOTE_FRACTION_OF_PEARL` and `MOTE_REACH_METRES` were
+    // here between 2026-08-13 and 2026-08-17, while a quarter of the field were GI emitters; the
+    // owner removed them on sight of what an emitting mote looks like beside a plain one. There is
+    // no dial to bring them back with — see `Motes`' "THE GLOWING SUBSET".
 
     /** How far a mote drifts sideways from its cell anchor, metres. @see Motes.DRIFT_X_METRES */
     const val MOTE_DRIFT_X_METRES = 2.2f

@@ -163,15 +163,21 @@ class DiveLightingTest
     }
 
     /**
-     * THE FOUR LIGHTS ARE ONE ANCHOR AND THREE RATIOS, and that is asserted as an identity rather
-     * than as four decimals, because four decimals is exactly the arrangement this replaced.
+     * THE LIGHTS ARE ONE ANCHOR AND ITS RATIOS, and that is asserted as an identity rather than as
+     * a set of decimals, because a set of decimals is exactly the arrangement this replaced.
      *
      * `docs/superpowers/plans/2026-08-13-one-world-model.md` §1.4: *"EVERY INTENSITY WAS TUNED
      * AGAINST A DIFFERENT REFERENCE [...] No two of these numbers are in the same unit, so no two
      * can be reasoned about together — which is why each of the last four days' fixes moved one and
      * broke the balance with another."* The defence against that returning is that only the torch
-     * is a free number: re-tune it and the other three follow, and adding a fifth light means
-     * choosing its fraction rather than choosing its brightness.
+     * is a free number: re-tune it and the rest follow, and adding a light means choosing its
+     * fraction rather than choosing its brightness.
+     *
+     * THERE WERE FOUR LIGHTS AND THERE ARE NOW THREE. The glowing motes were the fourth, and their
+     * clause here — `PEARL x MOTE_FRACTION_OF_PEARL == MOTE_IRRADIANCE_AT_ONE_METRE`, plus the
+     * mote-below-pearl ordering — went with them on 2026-08-17. The lure is not a fourth: it is
+     * drawn as a pearl on purpose and `the anglerfish lure emits exactly what a pearl does` is
+     * where that is asserted.
      */
     @Test
     fun `every light's brightness is a stated fraction of the torch's`()
@@ -182,64 +188,11 @@ class DiveLightingTest
             "a pearl's brightness has stopped being a fraction of the torch's and become a number " +
             "of its own — which is how the pearls and the beam came to be untunable together"
         )
-        assertEquals(
-            DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE * DiveLighting.MOTE_FRACTION_OF_PEARL,
-            DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE, 1e-9f,
-            "a mote's brightness has stopped being a fraction of a pearl's"
-        )
         // And the ORDER, which is the design requirement the ratios exist to express: the torch is
-        // the deep's primary light (spec §17), a pearl is a marker glow, a mote is suspended matter.
-        assertTrue(
-            DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE < DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE,
-            "a mote is no longer dimmer than a pearl"
-        )
+        // the deep's primary light (spec §17) and a pearl is a marker glow it finds.
         assertTrue(
             DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE < DiveLighting.TORCH_ABYSS_IRRADIANCE,
             "a pearl is no longer dimmer than the torch it is meant to be found with"
-        )
-    }
-
-    /**
-     * A MOTE'S CAST NO LONGER DEPENDS ON HOW BIG IT HAPPENS TO BE.
-     *
-     * Motes run 0.35 m to 0.85 m, and a light's cast is linear in its emitter's size — so the old
-     * flat `Motes.GLOW_INTENSITY` made the largest mote cast 2.4x what the smallest did, on top of
-     * the alpha spread that is supposed to be the field's only variation. `MotesTest.the glowing
-     * subset is decorrelated from how big a mote looks` guards the same intent one level up (glow
-     * must not track size); this is the half of it the lighting owns.
-     */
-    @Test
-    fun `every mote delivers the same light whatever size it happens to be`()
-    {
-        val alpha = Motes.MOTE_ALPHA
-        val reference = DiveLighting.irradianceAtOneMetre(
-            DiveLighting.moteIntensity(Motes.MIN_SIZE_METRES, alpha), Motes.MIN_SIZE_METRES, 360f
-        )
-        for (size in listOf(Motes.MIN_SIZE_METRES, 0.5f, 0.7f, Motes.MAX_SIZE_METRES))
-        {
-            assertEquals(
-                reference,
-                DiveLighting.irradianceAtOneMetre(DiveLighting.moteIntensity(size, alpha), size, 360f),
-                reference * 1e-4f,
-                "a ${size}m mote casts a different amount of light than a ${Motes.MIN_SIZE_METRES}m one"
-            )
-        }
-        // And a mote at the field's peak alpha is exactly the stated fraction of a pearl — the
-        // normalisation by MOTE_ALPHA is what makes that comparison mean anything.
-        assertEquals(
-            DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE, reference, 1e-9f,
-            "a mote at full alpha no longer delivers MOTE_IRRADIANCE_AT_ONE_METRE"
-        )
-        // And it is PROPORTIONAL to the alpha, not merely "less than". A strict inequality here
-        // passed against a moteIntensity that ignored alpha altogether, on float rounding alone:
-        // `(E/0.35)*0.35` and `(E/0.5)*0.5` are not the same Float, and one of them happened to be
-        // the smaller. The relationship is what has to be asserted.
-        assertEquals(
-            reference * 0.5f,
-            DiveLighting.irradianceAtOneMetre(DiveLighting.moteIntensity(0.5f, alpha * 0.5f), 0.5f, 360f),
-            reference * 1e-4f,
-            "a mote drawn at half alpha no longer emits half as much. The alpha is what stops a " +
-            "mote lighting the water from a depth at which the mote itself is invisible"
         )
     }
 
@@ -564,9 +517,10 @@ class DiveLightingTest
     @Test
     fun `the one-metre unit is exact for every light except the pearl, whose factor is stated`()
     {
+        // A one-element list since the glowing motes were removed on 2026-08-17. Kept as a list
+        // because the next light added is the thing this is guarding, not the torch.
         listOf(
-            "torch" to DiveLighting.TORCH_REACH_METRES,
-            "mote" to DiveLighting.MOTE_REACH_METRES
+            "torch" to DiveLighting.TORCH_REACH_METRES
         ).forEach { (name, reach) ->
             assertEquals(
                 1f, DiveLighting.attenuationAt(1f, reach), 1e-6f,
@@ -723,8 +677,7 @@ class DiveLightingTest
         val hugestPlausiblePanel = CameraRig.pixelsPerMetre(7680f, 4320f)
         val reaches = listOf(
             "torch" to DiveLighting.TORCH_REACH_METRES,
-            "pearl" to DiveLighting.PEARL_REACH_METRES,
-            "mote" to DiveLighting.MOTE_REACH_METRES
+            "pearl" to DiveLighting.PEARL_REACH_METRES
         )
         reaches.forEach { (name, reach) ->
             assertTrue(
@@ -766,14 +719,14 @@ class DiveLightingTest
 
         // Anchored at the start of a line, which is what makes it a named ARGUMENT rather than any
         // assignment: `BloomEffect().apply { ...; radius = 0f; ... }` in `setup` is a different
-        // `radius` entirely and an unanchored scan reports it, and the mote loop's hoisted
-        // `val radius = ...` is a definition rather than a call site.
+        // `radius` entirely and an unanchored scan reports it.
         val radiusArguments = Regex("^\\s*radius = (.+)$", RegexOption.MULTILINE)
             .findAll(source).map { it.groupValues[1].trim() }.toList()
         assertEquals(
-            4, radiusArguments.size,
-            "expected exactly four drawLight radius arguments (torch, pearl, lure, mote), found " +
-            "$radiusArguments — a light has been added or removed without this test being read"
+            3, radiusArguments.size,
+            "expected exactly three drawLight radius arguments (torch, pearl, lure), found " +
+            "$radiusArguments — a light has been added or removed without this test being read. " +
+            "It was four until 2026-08-17, when the glowing motes stopped emitting"
         )
         radiusArguments.forEach { argument ->
             assertTrue(
@@ -784,12 +737,6 @@ class DiveLightingTest
             )
         }
 
-        // The local the motes hoist must itself come from the one conversion — otherwise the check
-        // above is satisfied by a name and the arithmetic behind it is unguarded.
-        assertTrue(
-            Regex("val radius = falloffRadius\\(").containsMatchIn(source),
-            "drawMoteLights hoists a `radius` local that no longer comes from falloffRadius"
-        )
         assertEquals(
             1, Regex("fun falloffRadius\\(").findAll(source).count(),
             "there must be exactly one definition of falloffRadius"
@@ -797,27 +744,20 @@ class DiveLightingTest
     }
 
     /**
-     * A PEARL MUST NOT LIGHT THE FRAME AND THE TORCH MUST, AND A MOTE MUST NEVER OUT-LIGHT A PEARL.
+     * A PEARL MUST NOT LIGHT THE FRAME AND THE TORCH MUST — spec §17's ordering, stated as a
+     * relationship rather than as two decimals.
      *
-     * The first two halves are spec §17's ordering — the torch is the deep's light source, the
-     * pearls are what it finds — stated as a relationship rather than as two decimals.
+     * ## IT USED TO CARRY A MOTE CLAUSE TOO, AND THAT WHOLE LINE OF ARGUMENT IS NOW MOOT
      *
-     * ## THE MOTE CLAUSE USED TO COMPARE REACHES, AND THAT COMPARISON STOPPED MEANING ANYTHING
-     *
-     * It read `MOTE_REACH_METRES < PEARL_REACH_METRES`, which was a proxy for *"the mote field is
-     * not a second lighting rig"* while the two lights' brightnesses were an order of magnitude
-     * apart and only their reaches were in question. `PEARL_REACH_METRES` is now 0.25 m against a
-     * mote's 1 m, so that proxy is false while the property it stood for is still comfortably
-     * true — a mote delivers a twenty-fourth of a pearl's irradiance and the pearl's shorter reach
-     * costs it a sixteenth, so a pearl out-delivers a mote at every distance, by 1.5x at worst.
-     *
-     * So the proxy is replaced by the quantity itself, swept across the whole visible column
-     * rather than sampled: at NO distance may one mote put more light into the water than one
-     * pearl. That is what "second lighting rig" actually means, it is the statement that survives
-     * a reach change on either side, and it is strictly stronger than the ordering it replaces.
+     * The clause swept the visible column asserting that at no distance did one mote put more light
+     * into the water than one pearl — *"the mote field is not a second lighting rig"*, which is what
+     * `2026-08-13-deep-water-lighting.md` §2b found had actually happened. The motes stopped
+     * emitting altogether on 2026-08-17 at the owner's instruction (*"I only want those not affected
+     * by GI"*), so the strongest form of that property now holds by construction and
+     * `MotesTest.the lighting pass does not touch the mote field` is what keeps it holding.
      */
     @Test
-    fun `a pearl's reach is its own body, the torch's is the frame, and a mote never outshines a pearl`()
+    fun `a pearl's reach is its own body and the torch's is the frame`()
     {
         val across = 20f
         assertTrue(
@@ -830,21 +770,6 @@ class DiveLightingTest
             1f, DiveLighting.attenuationAt(across, DiveLighting.TORCH_REACH_METRES), 1e-6f,
             "the torch has stopped reaching across the frame, so nothing replaces the daylight"
         )
-
-        var distance = 0.1f
-        while (distance <= Framing.VISIBLE_DEPTH_METRES)
-        {
-            val pearl = DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE *
-                DiveLighting.attenuationAt(distance, DiveLighting.PEARL_REACH_METRES)
-            val mote = DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE *
-                DiveLighting.attenuationAt(distance, DiveLighting.MOTE_REACH_METRES)
-            assertTrue(
-                mote < pearl,
-                "at ${distance}m one mote delivers $mote against a pearl's $pearl — the mote field " +
-                "is a second lighting rig again, which is what it was before 2026-08-13"
-            )
-            distance += 0.1f
-        }
     }
 
     /**

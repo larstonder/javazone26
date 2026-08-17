@@ -427,15 +427,6 @@ object DiveLighting
     internal const val PEARL_REACH_METRES = Look.PEARL_REACH_METRES
 
     /**
-     * How far a glowing mote is at full brightness, in metres. One metre — a mote lights ITSELF and
-     * the water immediately around it, which is what `Motes`' own doc argues suspended matter should
-     * do, and nothing further. There are 25-60 of them on screen and every one is also an occluder
-     * (see the deep-water plan's §0), so their aggregate reach is the quantity that matters and this
-     * is what bounds it.
-     */
-    internal const val MOTE_REACH_METRES = Look.MOTE_REACH_METRES
-
-    /**
      * # THE ONE UNIT: irradiance delivered at ONE METRE, on axis
      *
      * `intensity` is what `drawLight` takes, and it is NOT comparable between two lights: a 50-degree
@@ -955,29 +946,13 @@ object DiveLighting
     /** @see PEARL_FRACTION_OF_TORCH */
     internal val PEARL_IRRADIANCE_AT_ONE_METRE = TORCH_ABYSS_IRRADIANCE * PEARL_FRACTION_OF_TORCH
 
-    /**
-     * A glowing mote at FULL alpha, as a fraction of a pearl. **A twenty-fourth.**
-     *
-     * Stated at full alpha — i.e. at `Motes.MOTE_ALPHA`, the peak the depth ramp ever reaches — so
-     * that this number is directly comparable with a pearl's rather than being a per-mote quantity
-     * nobody can hold beside one. [moteIntensity] applies the mote's own alpha on top.
-     *
-     * WHY IT IS EXPRESSED PER MOTE AND NOT PER QUAD. Motes vary in size from 0.35 m to 0.85 m
-     * (`Motes.MIN_SIZE_METRES`/`MAX_SIZE_METRES`), and a light's cast is linear in its emitter's
-     * size — so the old flat `GLOW_INTENSITY` made a big mote cast two and a half times what a small
-     * one did, on top of the alpha spread that is supposed to be the only variation in the field.
-     * In this unit every mote delivers the same irradiance and only its alpha varies, which is what
-     * `Motes`' own doc means by *"one substance catching the light unevenly"*.
-     *
-     * The 2026-08-13 baseline at 140 m found the motes were the BRIGHTEST thing in the Abyss, out-
-     * shining the pearls they are camouflage for. A twenty-fourth of a pearl is the same order as
-     * where the field ended up after that was fixed (0.05 x 0.25 x ~0.6 m = 0.0075 in this unit,
-     * against 0.0075 here) — again, the balance was signed off and this is about the unit.
-     */
-    internal const val MOTE_FRACTION_OF_PEARL = Look.MOTE_FRACTION_OF_PEARL
-
-    /** @see MOTE_FRACTION_OF_PEARL */
-    internal val MOTE_IRRADIANCE_AT_ONE_METRE = PEARL_IRRADIANCE_AT_ONE_METRE * MOTE_FRACTION_OF_PEARL
+    // A glowing mote used to be quoted here as a twenty-fourth of a pearl. The motes stopped
+    // emitting on 2026-08-17 at the owner's instruction — *"I only want those not affected by
+    // GI"* — so `MOTE_FRACTION_OF_PEARL`, `MOTE_IRRADIANCE_AT_ONE_METRE`, `MOTE_REACH_METRES` and
+    // `moteIntensity` are all gone, and `Motes`' own "THE GLOWING SUBSET" section carries the
+    // argument. THERE ARE THREE LIGHTS NOW, not four: the torch, the pearls, and the lure that is
+    // drawn as a pearl. Prose elsewhere in this file that says "all four of the game's lights"
+    // predates that.
 
     /**
      * Speed (m/s) at which the beam reaches full focus. Also the cutoff below which the
@@ -1504,7 +1479,6 @@ object DiveLighting
         // otherwise re-read a shared engine object per pearl. No allocation either way.
         val pixelsPerMetre = cam.scale.x
 
-        drawMoteLights(surface, renderer, cam, pixelsPerMetre)
         drawPearlLights(surface, renderer, sim, cam, pixelsPerMetre)
         drawAnglerfishLight(surface, renderer, sim, cam, pixelsPerMetre)
         drawDiverBeam(surface, renderer, sim, cam, pixelsPerMetre)
@@ -1556,44 +1530,14 @@ object DiveLighting
      */
     internal const val LIGHT_CULL_MARGIN_METRES = 3f
 
-    /**
-     * The glowing marine snow — an ambient blue wash through the water.
-     *
-     * The owner asked for the motes to *"be more of a light source"*, so a quarter of them
-     * ([Motes.GLOW_IN]) emit. `Motes`' own doc has the argument for why it is a quarter and not all
-     * of them: a light quad is a region rays terminate on, so every emitter is also a small
-     * occluder of the torch, and the torch is the deep's primary light by the same owner's
-     * instruction.
-     *
-     * ISSUED FIRST, before the pearls and the beam. Nothing depends on the order for correctness —
-     * `GiSceneRenderer` accumulates a batch that is solved once — but a mote is the dimmest thing
-     * in the frame by two orders of magnitude and putting it first keeps this list sorted by how
-     * much each light matters, which is how the rest of the file reads.
-     *
-     * The intensity carries the mote's own `alpha`, so the depth ramp that fades the dots near the
-     * surface fades their contribution with them, and `Motes.forEachVisible` is the SAME traversal
-     * that draws the dots — a light cannot be issued for a mote that was not drawn, nor land
-     * anywhere but exactly on it.
-     */
-    private fun drawMoteLights(surface: Surface, renderer: GiSceneRenderer, cam: Camera, pixelsPerMetre: Float)
-    {
-        val emitter = LightEmitter.emitter()
-        val radius = falloffRadius(MOTE_REACH_METRES, pixelsPerMetre)
-        surface.setDrawColor(Motes.MOTE_RED, Motes.MOTE_GREEN, Motes.MOTE_BLUE)
-        Motes.forEachVisible(cam) { x, depth, size, alpha, glows ->
-            if (glows)
-            {
-                renderer.drawLight(
-                    texture = emitter,
-                    x = x, y = depth, w = size, h = size,
-                    angle = 0f,
-                    intensity = moteIntensity(size, alpha),
-                    coneAngle = WIDE_GLOW_CONE_ANGLE,
-                    radius = radius
-                )
-            }
-        }
-    }
+    // `drawMoteLights` was here, and was issued first, before the pearls and the beam. A quarter of
+    // the marine snow ([Motes]) emitted, at the owner's request that the motes *"be more of a light
+    // source"*. It was removed on 2026-08-17 when he saw what it actually looked like beside a
+    // plain mote — *"I only want those not affected by GI"* — and `Motes`' own "THE GLOWING SUBSET"
+    // section holds the full argument. The short version is that a GI emitter is a region rays
+    // TERMINATE on, so each glowing mote wore a halo and a dark occlusion surround that no
+    // non-emitting mote had, which made one field read as two kinds of object. The motes are a
+    // foreground overlay again; the light map still darkens them, and the torch still finds them.
 
     private fun drawPearlLights(surface: Surface, renderer: GiSceneRenderer, sim: DiveSim, cam: Camera, pixelsPerMetre: Float)
     {
@@ -1824,22 +1768,7 @@ object DiveLighting
     internal fun pearlIntensity(): Float =
         intensityFor(PEARL_IRRADIANCE_AT_ONE_METRE, PEARL_LIGHT_SIZE_METRES, WIDE_GLOW_CONE_ANGLE)
 
-    /**
-     * The `drawLight` intensity for a glowing mote of [sizeMetres] drawn at [alpha].
-     *
-     * THE ALPHA IS NORMALISED BY `Motes.MOTE_ALPHA` rather than used raw, which is what lets
-     * [MOTE_IRRADIANCE_AT_ONE_METRE] be stated as a fraction of a pearl's instead of as a number
-     * that only means anything once you have gone and looked up the mote field's depth ramp. A
-     * mote at the field's peak alpha delivers exactly [MOTE_IRRADIANCE_AT_ONE_METRE]; the ramp
-     * that fades the dots near the surface fades their light with them, so a mote cannot light the
-     * water from a depth at which the mote itself is invisible.
-     *
-     * THE SIZE DIVIDES OUT, which is the behaviour change: every mote now delivers the same
-     * irradiance whatever its quad happens to be, instead of a 0.85 m one casting 2.4x what a
-     * 0.35 m one does on top of the alpha spread that is meant to be the field's only variation.
-     */
-    internal fun moteIntensity(sizeMetres: Float, alpha: Float): Float =
-        intensityFor(MOTE_IRRADIANCE_AT_ONE_METRE * (alpha / Motes.MOTE_ALPHA), sizeMetres, WIDE_GLOW_CONE_ANGLE)
+    // `moteIntensity` was here. See the note where `MOTE_FRACTION_OF_PEARL` used to be declared.
 
     /**
      * The torch's irradiance at one metre at [depth] — the base [beamIntensity] focuses. Continuous

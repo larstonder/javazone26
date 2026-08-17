@@ -296,6 +296,15 @@ Each is one dial, with the measurement that decides whether to keep it. Do them 
 time**, against a bit-identical control pair with all three phase pins set.
 
 1. **Stop the motes emitting** (`Motes.GLOW_IN` -> none, or revert `drawMoteLights`).
+   **DONE, 2026-08-17** — and not for the reason predicted here. The owner did not report the
+   deep as "fought"; he looked at a shallow frame and saw that a glowing mote and a plain one
+   are two visibly different objects — the emitter wears a halo and a dark occlusion surround
+   that the plain dab does not. *"I only want those not affected by GI."* `GLOW_IN`,
+   `drawMoteLights`, `moteIntensity`, `MOTE_REACH_METRES` and `MOTE_FRACTION_OF_PEARL` are all
+   gone; `Motes`' "THE GLOWING SUBSET" section is the standing record and
+   `MotesTest.the lighting pass does not touch the mote field` is the guard. The trade this
+   paragraph flagged — the motes stop being a light source, which the owner had asked for — was
+   put back to him and he took it.
    Reverses today's change and tests A1 directly. If the deep brightens materially, the
    owner's "fighting" is confirmed as emitter occlusion and the motes go back to being a
    pure overlay — which is what `Motes`' class doc originally argued for, on precisely this

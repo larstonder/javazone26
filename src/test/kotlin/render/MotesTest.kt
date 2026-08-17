@@ -222,10 +222,6 @@ class MotesTest
      * produces (`CameraRig.pixelsPerMetre` is the one place a metre becomes a pixel) and the same
      * alpha threshold `Motes.render` skips on.
      */
-    /** As [visibleMoteCount], but only the motes that are also GI emitters. @see Motes.glows */
-    private fun visibleGlowingCount(pixelWidth: Float, pixelHeight: Float, cameraDepth: Float) =
-        visibleMoteCount(pixelWidth, pixelHeight, cameraDepth) { cellX, cellY -> Motes.glows(cellX, cellY) }
-
     private fun visibleMoteCount(
         pixelWidth: Float,
         pixelHeight: Float,
@@ -669,150 +665,45 @@ class MotesTest
         )
     }
 
-    // --- THE GLOWING SUBSET ---------------------------------------------------------------
+    // --- NO MOTE IS A LIGHT -------------------------------------------------------------------
     //
-    // Added when the owner asked for the motes to "be more of a light source", which reversed this
-    // file's own "a mote is not a drawLight and casts nothing". The reversal is safe only inside
-    // bounds, and these are the bounds.
-
-    /**
-     * THE EMITTER COUNT ON SCREEN IS BOUNDED IN ABSOLUTE TERMS.
-     *
-     * The first version of this test compared the glowing fraction against `1f / Motes.GLOW_IN` —
-     * i.e. against the very constant it was meant to guard — so setting `GLOW_IN = 1` and making
-     * EVERY mote an emitter sailed through it. Caught by mutation, not by reading it. The bound has
-     * to be an absolute count, because what it protects is absolute: every emitter is a quad
-     * rasterised into `gi_local_scene` AND a region the torch's rays terminate on, and neither cost
-     * cares what fraction of the field it represents.
-     *
-     * 20..90 keeps the emitters the same order as the pearls and vents already on screen. The
-     * ceiling is the one that matters — the 4x GI resolution bump of 2026-08-12 is underneath this.
-     */
-    @Test
-    fun `the glowing motes on screen stay the same order as the pearls already lit`()
-    {
-        val panels = listOf(
-            Triple("16:9 (1920x1080)", 1920f, 1080f),
-            Triple("21:9 (2560x1080)", 2560f, 1080f),
-            Triple("32:9 (3840x1080)", 3840f, 1080f)
-        )
-        for ((name, w, h) in panels)
-        {
-            var fewest = Int.MAX_VALUE
-            var most = 0
-            var cameraDepth = 6f
-            while (cameraDepth <= Tuning.MAX_DEPTH)
-            {
-                val count = visibleGlowingCount(w, h, cameraDepth)
-                fewest = min(fewest, count)
-                most = max(most, count)
-                cameraDepth += 0.5f
-            }
-            assertTrue(
-                fewest >= 20 && most <= 90,
-                "$name lights $fewest..$most motes over a dive; the design range is 20..90. Every " +
-                    "one is a GI emitter and a small occluder of the torch — Motes.GLOW_IN is the dial"
-            )
-        }
-    }
+    // A quarter of the field emitted between 2026-08-13 and 2026-08-17, after the owner asked for
+    // the motes to "be more of a light source". He removed it on sight of the result: a GI emitter
+    // is a region rays TERMINATE on, so a glowing mote wore a halo and a dark occlusion surround
+    // that a plain one did not, and one field read as two kinds of object. *"I only want those not
+    // affected by GI."* `Motes`' own "THE GLOWING SUBSET" section carries the full argument, and
+    // this is the guard against the change coming back by accident.
+    //
+    // It replaces three tests that bounded the emitter count, decorrelated the glow stream from the
+    // size stream, and ordered a mote's emission below a pearl's. All three were bounds on a thing
+    // that no longer exists, and a test that cannot fail is worse than no test.
 
     @Test
-    fun `the glowing subset is decorrelated from how big a mote looks`()
+    fun `the lighting pass does not touch the mote field`()
     {
-        // Chosen from its own hash stream, so glow must not track size — otherwise the field reads
-        // as two classes of object rather than one substance catching the light unevenly.
-        var glowingSizeSum = 0f; var glowingCount = 0
-        var darkSizeSum = 0f; var darkCount = 0
-        for (cellY in -40..40)
-        {
-            for (cellX in -40..40)
-            {
-                val size = Motes.sizeMetres(cellX, cellY)
-                if (Motes.glows(cellX, cellY)) { glowingSizeSum += size; glowingCount++ }
-                else { darkSizeSum += size; darkCount++ }
-            }
-        }
-        val glowingMean = glowingSizeSum / glowingCount
-        val darkMean = darkSizeSum / darkCount
-        assertTrue(
-            abs(glowingMean - darkMean) < 0.05f,
-            "glowing motes average $glowingMean m and dark ones $darkMean m — the glow stream has " +
-                "become correlated with the size stream, so the light picks out the big ones"
-        )
-    }
-
-    /**
-     * THE FIELD IS A WASH, NOT A SECOND LIGHTING RIG.
-     *
-     * The torch was made the deep's primary light source at the owner's request on 2026-08-12 and
-     * the pearls were cut to a marker glow so that the beam is what reveals them. Motes that emit
-     * are the third thing in that balance and must not disturb it: a single mote has to be far
-     * below a pearl, which is itself far below the torch.
-     *
-     * ## THIS TEST USED TO BE WORTHLESS AND IS CORRECTED HERE
-     *
-     * It compared `Motes.GLOW_INTENSITY * PEAK_ALPHA` with `DiveLighting.pearlIntensity()` with
-     * `diverIntensityForDepth(MAX_DEPTH)` — three `drawLight` intensities with three different
-     * emitter sizes and two different cone widths behind them, i.e. **three different quantities**,
-     * so the inequalities between them meant nothing. `2026-08-13-deep-water-lighting.md` §2b found
-     * it passing while the motes were measurably the BRIGHTEST thing in the Abyss, out-shining the
-     * pearls they are camouflage for.
-     *
-     * The one unit (`DiveLighting.irradianceAtOneMetre`) is what makes the comparison legitimate,
-     * and the three values are now a single anchor and two stated fractions of it — so this
-     * asserts the ORDER, which is the design requirement, and `DiveLightingTest` asserts the
-     * fractions that produce it.
-     *
-     * It is still a statement about EMISSION and not about the composited frame. That gap is real
-     * and cannot be closed in a unit test: what reaches the screen also depends on the light map,
-     * the multiply, ACES and a thresholded bloom, none of which exist without a GL context. §2b has
-     * the capture protocol that does close it.
-     */
-    @Test
-    fun `a glowing mote is dimmer than a pearl, which is dimmer than the torch`()
-    {
-        val brightestMote = DiveLighting.MOTE_IRRADIANCE_AT_ONE_METRE
-        val pearl = DiveLighting.PEARL_IRRADIANCE_AT_ONE_METRE
-        val torchInTheDark = DiveLighting.torchIrradianceForDepth(Tuning.MAX_DEPTH)
-
-        assertTrue(
-            brightestMote < pearl * 0.5f,
-            "the brightest mote delivers $brightestMote at one metre against a pearl's $pearl — a " +
-                "mote at half a pearl's output stops being an ambient wash and starts competing " +
-                "with the thing the player is hunting for"
-        )
-        assertTrue(
-            pearl < torchInTheDark,
-            "the torch is no longer the brightest light in the deep"
-        )
-    }
-
-    @Test
-    fun `the lights and the dots come out of the same traversal`()
-    {
-        // A light offset from the dot it belongs to is the drift class CLAUDE.md devotes a section
-        // to, and the only structural defence is that there is exactly one cell walk. Both consumers
-        // must go through Motes.forEachVisible; a second hand-rolled loop is the regression.
-        val motes = File("src/main/kotlin/render/Motes.kt").readText()
         val lighting = File("src/main/kotlin/render/DiveLighting.kt").readText()
 
+        // The traversal is how a light would be PLACED on a mote — `Motes.forEachVisible` was the
+        // shared cell walk precisely so an emitter could not land anywhere but on its own dot.
         assertTrue(
-            motes.contains("fun render(surface: Surface, cam: Camera)") &&
-                motes.substringAfter("fun render(surface: Surface, cam: Camera)").contains("forEachVisible"),
-            "Motes.render no longer walks the cells through forEachVisible"
+            "Motes.forEachVisible" !in lighting,
+            "DiveLighting walks the mote field again. Every emitter is a region GI's rays terminate " +
+                "on, so a mote that emits wears an occlusion surround a plain mote does not and the " +
+                "field stops reading as one substance — see Motes' THE GLOWING SUBSET"
         )
+        // And the intensity is how one would be SCALED, if a hand-rolled second loop placed it.
+        // The open paren is load-bearing: the comments that record the removal name the function,
+        // so scanning for the bare identifier fails against the very note explaining why it is gone.
         assertTrue(
-            lighting.contains("Motes.forEachVisible"),
-            "DiveLighting.drawMoteLights no longer walks the cells through Motes.forEachVisible, so " +
-                "the emitters and the dots are derived separately and can drift apart"
+            "moteIntensity(" !in lighting,
+            "DiveLighting.moteIntensity is back, so something is emitting as a mote"
         )
+        // Sanity: this test is reading the file it thinks it is, so the two absences above mean
+        // something. Without it, a renamed or moved DiveLighting.kt would pass silently.
         assertTrue(
-            lighting.contains("intensity = moteIntensity(size, alpha)"),
-            "a glowing mote's emission no longer carries its own SIZE and ALPHA through " +
-                "DiveLighting.moteIntensity. The alpha is what stops a mote lighting the water " +
-                "from a depth at which the mote itself is invisible; the size is what stops a big " +
-                "mote casting 2.4x what a small one does on top of the alpha spread that is " +
-                "supposed to be the field's only variation"
+            "drawPearlLights" in lighting,
+            "DiveLighting.kt no longer contains the pearl light pass, so the two assertions above " +
+                "are checking the wrong file"
         )
     }
 }

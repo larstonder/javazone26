@@ -103,10 +103,11 @@ pearls -> anglerfish -> diver -> **motes last** (`:417`). Each of those boundari
 a comment at the call site; the backdrop in particular *must* sit between the opaque bands and
 the opaque walls, which is what confines the silhouettes to the column with no clip test.
 
-Inside `DiveLighting.render` (`DiveLighting.kt:1497`), immediate-mode onto GI's local scene
-surface: mote lights, pearl lights, anglerfish lure, diver beam. Order is presentational only -
-`GiSceneRenderer` accumulates a batch solved once - but it is sorted by how much each light
-matters.
+Inside `DiveLighting.render`, immediate-mode onto GI's local scene surface: pearl lights,
+anglerfish lure, diver beam. Order is presentational only - `GiSceneRenderer` accumulates a
+batch solved once - but it is sorted by how much each light matters. A fourth pass, `mote
+lights`, was issued first between 2026-08-13 and 2026-08-17; **the motes are not lights**, and
+`Motes`' "THE GLOWING SUBSET" section is the argument.
 
 ### Why the order is load-bearing
 
@@ -217,7 +218,7 @@ whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min`
 | `DepthBlend.kt` | Smooth per-zone interpolation anchored on zone **midpoints**, so nothing steps at a boundary. Zero allocation. |
 | `RockFace.kt` | The cliff: one edge tile per side (never tiled horizontally), a mirrored body behind it, and a crest above the waterline. The geometry that makes "exactly one cliff sprite at each end" structural. |
 | `Backdrop.kt` | Three parallax silhouette ridges, alpha masks tinted by `DiveRenderer.silhouetteColor`. Vertical parallax only, because there is no horizontal camera. |
-| `Motes.kt` | Marine snow as a **stateless hashed lattice**, not a particle system: culled by construction, infinite, deterministic, zero-allocation. Drawn on `main` so GI darkens it. |
+| `Motes.kt` | Marine snow as a **stateless hashed lattice**, not a particle system: culled by construction, infinite, deterministic, zero-allocation. Drawn on `main` so GI darkens it, and it emits nothing - a mote is an overlay the water is seen through, and only the torch makes one legible in the deep. |
 
 ### Lighting
 
