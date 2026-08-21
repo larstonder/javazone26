@@ -116,6 +116,9 @@ tasks.register<Zip>("buildWin64Release") {
         }
     }
     from(releaseBuildDir)
+    // The booth is started by this, not by the exe - see the script's own header, and
+    // BoothLauncherTest, which fails the build if this line is ever dropped.
+    from(file("tools/booth/start-booth.bat"))
     destinationDirectory.set(file("release/win64"))
     archiveFileName.set("${releaseName}.zip")
 }
