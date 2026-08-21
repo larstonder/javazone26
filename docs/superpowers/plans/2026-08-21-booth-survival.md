@@ -718,7 +718,7 @@ git commit -m "fix: a thrown frame no longer opens Notepad over the cabinet"
 - Modify: `build.gradle.kts` (the `buildWin64Release` Zip task, ~line 108)
 
 **Interfaces:**
-- Consumes: `booth.BoothLog` (Task 1) writes the log the watchdog's own echoes join.
+- Consumes: nothing in code. NOTE: the watchdog's `echo` lines do **not** reach the booth log — `BoothLog` tees the JVM's `System.out`, and a `.bat` echo goes to the cmd console, which a cabinet has nowhere to show. The script therefore appends its own restart history to `%USERPROFILE%\EnPustTil\logs\watchdog.log`, beside it.
 - Produces: `en-pust-til-1.0.zip` gains `start-booth.bat` at its root, beside `en-pust-til.exe`.
 
 - [ ] **Step 1: Write the failing test**
@@ -767,6 +767,17 @@ class BoothLauncherTest
     }
 
     @Test
+    fun `the watchdog records its restart history to a file`()
+    {
+        // A cabinet has nowhere to show a cmd window, so echoes that only reach the console
+        // are echoes nobody reads. This is NOT the booth log - BoothLog tees the JVM's
+        // System.out, and these lines are the shell's.
+        val text = script.readText().lowercase()
+
+        assertTrue(text.contains("watchdog.log"), "the restart history never reaches disk")
+    }
+
+    @Test
     fun `the release zip ships the watchdog beside the exe`()
     {
         val build = File("build.gradle.kts").readText()
@@ -809,10 +820,16 @@ REM ---------------------------------------------------------------------------
 
 cd /d "%~dp0"
 
+REM  Its own file, NOT the booth log: BoothLog tees the JVM's System.out, and these
+REM  echoes are the shell's, not the JVM's. A cabinet has nowhere to show a cmd window
+REM  anyway, so the restart history has to reach disk to be worth writing.
+set "WDLOG=%USERPROFILE%\EnPustTil\logs\watchdog.log"
+if not exist "%USERPROFILE%\EnPustTil\logs" mkdir "%USERPROFILE%\EnPustTil\logs"
+
 :relaunch
-echo [watchdog] starting en-pust-til.exe at %DATE% %TIME%
+echo [watchdog] starting en-pust-til.exe at %DATE% %TIME%>>"%WDLOG%"
 start /wait "" "en-pust-til.exe"
-echo [watchdog] exited with code %ERRORLEVEL% at %DATE% %TIME%
+echo [watchdog] exited with code %ERRORLEVEL% at %DATE% %TIME%>>"%WDLOG%"
 echo [watchdog] restarting in 5 seconds - close this window to stop the cabinet
 timeout /t 5 /nobreak >nul
 goto :relaunch
@@ -1880,15 +1897,17 @@ class ScoreRepositoryTest
 {
     // jacksonObjectMapper is already on the classpath via the engine, and DataImpl uses the
     // same library - so the fake exercises real serialisation rather than mocking it away.
-    private val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
-
-    private inner class FakeStore(val dir: File) : ScoreStore
+    private class FakeStore(val dir: File) : ScoreStore
     {
         val writes = mutableListOf<String>()
 
         override fun exists(name: String) = File(dir, name).exists()
         override fun fileFor(name: String) = File(dir, name)
         override fun listNames(): List<String> = dir.listFiles()?.map { it.name } ?: emptyList()
+
+        // jacksonObjectMapper is already on the classpath via the engine, and DataImpl uses
+        // the same library - so the fake exercises real serialisation rather than mocking it away.
+        private val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
 
         override fun load(name: String): ScoreboardData?
         {
@@ -1919,8 +1938,12 @@ class ScoreRepositoryTest
      * A non-empty DIRECTORY where scoreboard.json should be: Files.move refuses to replace
      * it on both APFS and NTFS. This is the closest reachable stand-in for the booth's real
      * failure - an indexer or AV on Windows holding scoreboard.json open.
+     *
+     * NOT an `inner` class, deliberately: Kotlin cannot reference an inner class constructor
+     * in a supertype delegation expression, so `ScoreStore by FakeStore(dir)` only compiles
+     * with both classes top-level-private in this file.
      */
-    private inner class UnpromotableStore(dir: File) : ScoreStore by FakeStore(dir)
+    private class UnpromotableStore(dir: File) : ScoreStore by FakeStore(dir)
     {
         private val blocked = File(dir, ScoreRepository.LIVE_FILE).apply {
             mkdirs()
