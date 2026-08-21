@@ -13,9 +13,18 @@ import kotlin.test.assertTrue
  *
  * Round 1 review (2026-08-21) found two Criticals that ALL FIVE original tests missed
  * because they only checked for a substring anywhere in the file, comments included:
- * `start` with no `/wait` is a fork bomb, and `%TIME%>>` truncates the log about one line
- * in ten. `executableLines` exists so a delay or a log path mentioned only in a REM cannot
- * satisfy an assertion that is supposed to be checking runnable code.
+ * `start` with no `/wait` is a fork bomb, and `%TIME%>>` sends the whole echoed line to a
+ * handle `echo` never writes to (empirically stderr, handle 2) - so the log receives
+ * NOTHING from a trailing-redirect line, every single time, not "sometimes" and not "a
+ * truncated fragment". `executableLines` exists so a delay or a log path mentioned only in
+ * a REM cannot satisfy an assertion that is supposed to be checking runnable code.
+ *
+ * Round 2 review found that two of those guards still had gaps: the log-path test was
+ * satisfied by the `set "WDLOG=...watchdog.log"` line alone (deleting both `>>"%WDLOG%"`
+ * redirects - i.e. undoing the whole Critical 2 fix - left every test green), and the
+ * redirect-shape regex required `>>` and so missed a regression to a single `>` (same
+ * handle misparse, and it also truncates the log file every iteration instead of
+ * appending). Both are closed below.
  */
 class BoothLauncherTest
 {
@@ -80,17 +89,24 @@ class BoothLauncherTest
     }
 
     @Test
-    fun `the watchdog records its restart history to a file, on an executable line`()
+    fun `the watchdog records its restart history to a file, on an executable line that actually writes it`()
     {
         // A cabinet has nowhere to show a cmd window, so echoes that only reach the console
         // are echoes nobody reads. This is NOT the booth log - BoothLog tees the JVM's
-        // System.out, and these lines are the shell's. Scanning executableLines means a
-        // REM that merely mentions the filename cannot satisfy this on its own.
+        // System.out, and these lines are the shell's.
+        //
+        // Round 2 finding: a bare `contains("watchdog.log")` over executableLines was
+        // satisfied by `set "WDLOG=...watchdog.log"` alone, which only DEFINES the path and
+        // writes nothing - deleting both `>>"%WDLOG%"` redirects (undoing Critical 2
+        // entirely) left this assertion green. Requiring "echo", ">>" and "%wdlog%"
+        // together on one executable line closes that: a line that sets the variable but
+        // never redirects to it can no longer pass.
         val lines = executableLines(script.readText().lowercase())
 
         assertTrue(
-            lines.any { it.contains("watchdog.log") },
-            "the restart history never reaches disk as code - the file path must appear on a line cmd runs"
+            lines.any { it.contains("echo") && it.contains(">>") && it.contains("%wdlog%") },
+            "no executable line actually writes a restart record to the log - " +
+                "a REM, or the set \"WDLOG=...\" line alone, is not enough"
         )
     }
 
@@ -98,22 +114,30 @@ class BoothLauncherTest
     fun `no echo line redirects immediately after a percent-variable close, which cmd would misread as a handle`()
     {
         // cmd expands percent variables BEFORE it scans for redirection operators, and a
-        // single digit immediately before ">>" names a handle rather than starting a
-        // redirect. %TIME% is HH-mm-ss-ff on every locale, so its last character is always
-        // a digit: "...%TIME%>>" silently truncates the echoed line and redirects only a
-        // trailing fragment. Leading redirection (">>\"file\" echo ...") never has this
-        // problem because nothing precedes the operator.
+        // digit 0-9 immediately before a redirection operator is consumed as a HANDLE
+        // SPECIFIER rather than printed. %TIME%'s last character is always such a digit, so
+        // "...%TIME%>>" (or "...%TIME%>") redirects some handle other than echo's actual
+        // stdout - empirically stderr, handle 2, which `echo` never writes to - so the log
+        // receives NOTHING from that line, every time; the (still-mangled) text goes,
+        // unredirected, to the console instead, which a headless booth has nowhere to show.
+        // Leading redirection (">>\"file\" echo ...") never has this problem because
+        // nothing precedes the operator.
+        //
+        // Round 2 finding: the regex required ">>" and so missed a regression to a single
+        // ">" - the identical handle misparse, and additionally TRUNCATES the log file on
+        // every iteration instead of appending to it. `[0-9]` was also missing from the
+        // variable-name class, though %TIME%/%WDLOG% don't need it themselves.
         //
         // Scanned over executableLines, not the raw file: a REM explaining this exact bug
         // has to be able to quote the buggy syntax it is warning about without tripping
         // the very check meant to catch the syntax in CODE.
         val lines = executableLines(script.readText())
-        val badRedirect = Regex("%[A-Za-z_]+%>>")
+        val badRedirect = Regex("%[A-Za-z_0-9]+%>{1,2}")
 
         assertTrue(
             lines.none { badRedirect.containsMatchIn(it) },
-            "a %VAR%>> with no space lets cmd read the variable's last character as a redirection handle, " +
-                "silently truncating the logged line"
+            "a %VAR% immediately followed by > or >> lets cmd read the variable's last character as a " +
+                "redirection handle, and the log receives nothing from that line"
         )
     }
 
@@ -134,9 +158,14 @@ class BoothLauncherTest
     @Test
     fun `the script has CRLF line endings throughout`()
     {
-        // There is no .gitattributes pinning this, so a clone with core.autocrlf=input
-        // would silently strip every CR on checkout. Assert the raw bytes rather than
-        // trusting the working tree to preserve what was committed.
+        // This asserts the WORKING-TREE file, which is what the release zip actually ships
+        // and what a booth machine actually runs - it is not, by itself, proof of what is
+        // in the committed blob. A `.gitattributes` entry (`tools/booth/*.bat text
+        // eol=crlf`) is what makes the working tree reliably CRLF regardless of a
+        // contributor's `core.autocrlf` setting: `eol=crlf` forces CRLF on checkout no
+        // matter what `core.autocrlf` says, closing the gap where `git add` on a machine
+        // with `core.autocrlf=input` could LF-ify the file with this test still green (it
+        // was reading the very working tree that machine had just written).
         val bytes = script.readBytes()
 
         for (i in bytes.indices)

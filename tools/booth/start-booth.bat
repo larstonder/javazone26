@@ -30,12 +30,16 @@ set "WDLOG=%USERPROFILE%\EnPustTil\logs\watchdog.log"
 if not exist "%USERPROFILE%\EnPustTil\logs" mkdir "%USERPROFILE%\EnPustTil\logs"
 
 :relaunch
-REM  Leading redirection, deliberately: cmd expands %TIME% BEFORE it scans for
-REM  redirection operators, and %TIME%'s last character is always a digit (it is
-REM  HH-mm-ss-ff on every locale). "...%TIME%>>" would therefore be misread as a
-REM  digit naming a redirection HANDLE, not the start of ">>" - silently truncating
-REM  the echoed line and redirecting only what followed the swallowed digit.
-REM  Putting ">>" first, with nothing ahead of it, cannot be misparsed this way.
+REM  Leading redirection, deliberately - and this is total loss, not truncation.
+REM  cmd expands %TIME% BEFORE it scans for redirection operators, and a digit 0-9
+REM  immediately before a redirection operator is consumed as a HANDLE SPECIFIER,
+REM  never printed. %TIME%'s last character is always such a digit, so
+REM  "...%TIME%>>" (or a regressed "...%TIME%>") redirects some handle other than
+REM  echo's actual stdout - empirically stderr, handle 2, which echo never writes
+REM  to - so the log receives NOTHING from that line, every time; the (still-
+REM  mangled) text goes, unredirected, to the console, which a headless booth has
+REM  nowhere to show. Putting ">>" first, with nothing ahead of it, cannot be
+REM  misparsed this way at all.
 >>"%WDLOG%" echo [watchdog] starting en-pust-til.exe at %DATE% %TIME%
 REM  /wait matters exactly as much as stayAlive = true in build.gradle.kts does:
 REM  launch4j's gui-header launcher returns as soon as it has spawned javaw unless
@@ -43,11 +47,21 @@ REM  told to stay alive, so /wait alone is not enough - both have to hold for th
 REM  to actually wait for the JVM rather than the launcher.
 start /wait "" "en-pust-til.exe"
 >>"%WDLOG%" echo [watchdog] exited with code %ERRORLEVEL% at %DATE% %TIME%
-REM  ping, not timeout: timeout refuses to run when stdin is not a console (e.g. a
-REM  Scheduled Task set to run whether a user is logged on or not) - it prints an
-REM  error and returns immediately even with /nobreak, and >nul hides that error.
-REM  Combined with a launcher that does not actually wait, that turns into a
-REM  restart loop at full speed. ping has no console/stdin dependency: six pings
-REM  to the loopback address, one per second, is a ~5 second delay either way.
-ping -n 6 127.0.0.1 >nul
+REM  ping first: no console/stdin dependency (unlike timeout, which refuses to run
+REM  when stdin is not a console - e.g. a Scheduled Task set to run whether a user
+REM  is logged on or not - printing an error and returning immediately even with
+REM  /nobreak) and no network/DNS dependency (127.0.0.1 needs neither and is exempt
+REM  from firewall filtering). Six pings, one per second, is a ~5 second delay.
+REM
+REM  But ping.exe itself can still fail fast and silently: blocked by AppLocker/
+REM  WDAC or an EDR agent, a broken PATH, or a hard transmit error all make it
+REM  return immediately with no delay at all, and >nul hides the error either way -
+REM  collapsing the delay to ~0 in exactly the boot-crash-loop scenario it exists
+REM  for. Each "||" only runs when the command before it already failed, so this
+REM  chain costs nothing when ping works: it falls back to timeout (fine from a
+REM  real console), and finally to `waitfor /t 5 <name>`, which ships in System32,
+REM  needs neither stdin nor a network, waits the full 5s for a signal that will
+REM  never arrive, then returns 1 - harmless, since nothing after this line reads
+REM  ERRORLEVEL.
+ping -n 6 127.0.0.1 >nul 2>&1 || timeout /t 5 /nobreak >nul 2>&1 || waitfor /t 5 EptRestart >nul 2>&1
 goto :relaunch
