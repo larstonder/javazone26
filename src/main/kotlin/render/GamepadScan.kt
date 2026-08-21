@@ -25,6 +25,19 @@ package render
  * without booting the engine - same reasoning as [LifecycleInputEdges]'s ordinals-and-ints
  * shape. `Gamepad.id` is an Int (verified: `javap -p
  * no/njoh/pulseengine/core/input/Gamepad.class`).
+ *
+ * Called on the FIXED-tick update path (`EnPustTil.readInput`), so CLAUDE.md's
+ * no-per-frame-allocation rule applies. `padIds.firstOrNull { it == preferred }` would be
+ * inlined (no lambda object), but a `List<Int>` still resolves that call through the
+ * `Iterable<T>` extension, which allocates one `Iterator` per call — an indexed loop over
+ * `padIds.indices` does the identical search with none. The trailing `padIds.firstOrNull()`
+ * (no predicate) is the one call left as a stdlib call: Kotlin overloads it specifically
+ * for `List<T>` as `if (isEmpty()) null else this[0]`, which is already indexed and
+ * allocates nothing — see `EnPustTil.gamepadIdBuffer`'s doc for the equivalent fix on the
+ * call site that builds [padIds] in the first place.
  */
-fun selectGameplayPad(padIds: List<Int>, preferred: Int?): Int? =
-    padIds.firstOrNull { it == preferred } ?: padIds.firstOrNull()
+fun selectGameplayPad(padIds: List<Int>, preferred: Int?): Int?
+{
+    for (i in padIds.indices) if (padIds[i] == preferred) return padIds[i]
+    return padIds.firstOrNull()
+}

@@ -1,5 +1,6 @@
 package render
 
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -328,34 +329,26 @@ class LifecycleInputEdgesTest
     }
 
     /**
-     * THE HAZARD Task 7 (booth-configurable button map) introduced: `EnPustTil.restartButton`
-     * and `restartButtonAlt` are both read from application.cfg now, and a technician who
-     * finds START unmapped at the booth could reasonably set BOTH keys to the same physical
-     * button. If `EnPustTil`'s wiring then called [LifecycleInputEdges.offer] once per
-     * configured button unconditionally, the two calls would carry the IDENTICAL (padId,
-     * ordinal) source key, and the second call would observe state the first one wrote in
-     * the SAME frame - which is why that wiring guards against it (`if (restartButtonAlt
-     * != restartButton)` beside the offer calls in `updateGame`).
+     * THE HAZARD this guards, unchanged from the first version of this test:
+     * `EnPustTil.restartButton`/`restartButtonAlt` are both read from application.cfg
+     * (Task 7), and a technician who finds START unmapped could reasonably set BOTH keys
+     * to the same physical button (or two aliases of it - see the `.code` fix in
+     * `EnPustTil`'s offer wiring). That produces two calls to [offer] in one frame
+     * carrying the IDENTICAL (padId, buttonOrdinal) source key.
      *
-     * This test is what justifies the guard: [offer] advances `heldSeconds` by `dt` on
-     * every call for an already-seen source, so offering the same source TWICE in one
-     * frame advances it by `2*dt` instead of `dt`. After the SAME number of elapsed
-     * frames, a source offered once per frame correctly reads as not-yet-stuck, while an
-     * identically-held source offered TWICE per frame has already crossed [STUCK] -
-     * silently halving how long a real hold takes to trip stuck detection (and, by the
-     * same mechanism, halving how long a chattering source takes to look "settled").
-     *
-     * Note what is NOT corrupted: `wasPressed[i]` is already `true` after the first
-     * call, so the second call's `risingTransition` is false and no duplicate EDGE fires
-     * - a duplicate offer is harmless for [commit]'s return value. It is only the time
-     * bookkeeping ([isStuck], [chatterCount]) that a duplicate offer breaks, and that is
-     * still worth preventing at the call site rather than relying on this class to
-     * defend against a caller offering the same source twice.
+     * WHAT CHANGED FROM THE FIRST VERSION OF THIS TEST, AND WHY. The first version
+     * asserted `isStuck` was TRUE after a double-offer sequence that should not have
+     * tripped it — a characterization test of the defect: it passed by demonstrating the
+     * bug, not by demonstrating correctness, so hardening [offer] against the hazard
+     * (THE DUPLICATE-OFFER GUARD in [offer]'s KDoc) made this test FAIL and read as a
+     * regression. This version asserts the intended behaviour instead: a duplicate offer
+     * in the same frame changes NOTHING about the bookkeeping a single offer would have
+     * produced.
      */
     @Test
-    fun `offering the same source twice in one frame doubles its held-time accumulation`()
+    fun `a duplicate offer in one frame changes nothing`()
     {
-        val framesElapsed = 70 // chosen so single*dt < STUCK <= double*dt, see below
+        val framesElapsed = 70 // well under STUCK_SECONDS / dt at a single offer per frame
 
         val single = newEdges() // STUCK = 2f
         single.begin(0f); single.offer(0, START, false); single.commit()
@@ -364,13 +357,42 @@ class LifecycleInputEdgesTest
 
         val doubled = newEdges()
         doubled.begin(0f); doubled.offer(0, START, false); doubled.commit()
+        var edgeCount = 0
         repeat(framesElapsed) {
             doubled.begin(0.016f)
-            doubled.offer(0, START, true)
-            doubled.offer(0, START, true) // the exact hazard: same source, same frame
-            doubled.commit()
+            doubled.offer(0, START, true) // first offer this frame
+            doubled.offer(0, START, true) // the exact hazard: same source, same frame, again
+            if (doubled.commit()) edgeCount++
         }
-        assertTrue(doubled.isStuck(0, START), "double-offered, the same 70 frames accumulate as 2.24s - past STUCK")
+        assertFalse(doubled.isStuck(0, START), "a duplicate offer must not accelerate stuck detection")
+        assertEquals(1, edgeCount, "the press produces exactly one edge, not one per offer() call")
+    }
+
+    /**
+     * A SOURCE-SCANNING GUARD for the call-site half of THE DUPLICATE-OFFER GUARD
+     * documented in [LifecycleInputEdges.offer]'s KDoc. [offer] now defends its own
+     * bookkeeping against a duplicate call (see `a duplicate offer in one frame changes
+     * nothing`, above), so `EnPustTil`'s `if (restartButtonAlt.code != restartButton.code)`
+     * beside the offer calls is only an OPTIMISATION now — but nothing else in this
+     * codebase would notice if someone deleted that `if` and reintroduced a pointless
+     * second call on every frame the two buttons collide. A line-based scan, not a real
+     * lexer — same reasoning as `DrawTest`/`MainCameraOwnershipTest`'s `productionSources`.
+     */
+    @Test
+    fun `EnPustTil still skips the second restart-button offer when the codes match`()
+    {
+        val source = File("src/main/kotlin/EnPustTil.kt").readText()
+        val guarded = Regex(
+            """if\s*\(\s*restartButtonAlt\.code\s*!=\s*restartButton\.code\s*\)\s*\R\s*lifecycleEdges\.offer\(pad\.id,\s*restartButtonAlt\.code"""
+        )
+
+        assertTrue(
+            guarded.containsMatchIn(source),
+            "expected the restartButtonAlt offer call in EnPustTil's updateGame to be guarded by " +
+            "`if (restartButtonAlt.code != restartButton.code)` immediately above it. See " +
+            "LifecycleInputEdges.offer's KDoc for why LifecycleInputEdges itself now tolerates a " +
+            "duplicate offer, and why the call site should still avoid making a pointless one."
+        )
     }
 
     private companion object

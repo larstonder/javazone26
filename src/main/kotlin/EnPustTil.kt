@@ -9,6 +9,7 @@ import no.njoh.pulseengine.core.PulseEngineGame
 import no.njoh.pulseengine.core.asset.types.Font
 import no.njoh.pulseengine.core.graphics.api.Multisampling
 import no.njoh.pulseengine.core.graphics.surface.Surface
+import no.njoh.pulseengine.core.input.Gamepad
 import no.njoh.pulseengine.core.input.GamepadAxis
 import no.njoh.pulseengine.core.input.GamepadButton
 import no.njoh.pulseengine.core.input.Key
@@ -68,8 +69,10 @@ fun main()
 const val GAME_NAME = "EnPustTil"
 
 /**
- * Parses the "dailySeed" override read from application.cfg (see [EnPustTil.onCreate]).
- * Pure and engine-free specifically so it is unit testable without standing up a
+ * Parses a "dailySeed" value already known to be a `String` — i.e. application.cfg's
+ * loader did NOT type-coerce it into an `Int` or a `Float` (see [resolveDailySeed], the
+ * actual call site, for why a String is only ONE of three shapes this value can arrive
+ * in). Pure and engine-free specifically so it is unit testable without standing up a
  * PulseEngine instance — see EnPustTilSeedTest.
  *
  * Returns [fallback] (the compile-time [EnPustTil.DAILY_SEED]) for both cases a
@@ -78,6 +81,48 @@ const val GAME_NAME = "EnPustTil"
  * never crash the booth machine; it just silently reuses day one's seed instead).
  */
 fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
+
+/**
+ * Resolves "dailySeed" across every shape `ConfigurationImpl`'s own loader can store ONE
+ * text value as. Reading only [no.njoh.pulseengine.core.config.Configuration.getString]
+ * — which this code did until this function existed — is why the day-two procedure never
+ * actually worked: `ConfigurationImpl.loadConfigFile` type-coerces every property value
+ * BEFORE storing it (decompiled: all-digits parses as `Integer`, digits-with-one-dot as
+ * `Float`, anything else stays `String`), and `getString` returns null for anything not
+ * literally stored as a `String`.
+ *
+ * EMPIRICALLY VERIFIED against the real `ConfigurationImpl` (not reasoned from the
+ * decompiled loader alone — see task-6-7-report.md for the harness and full output):
+ *
+ *  - **Every real seed used at this booth so far (`20260902`, `20260903` — all digits)
+ *    stores as `Integer`.** `getString` returns null for it; this is the entire bug this
+ *    function exists to fix. [rawInt] is checked FIRST for exactly this reason: it is the
+ *    shape a legitimate seed actually arrives in, not an edge case.
+ *  - **A seed above `Int.MAX_VALUE` does NOT arrive as a `String`**, and the earlier
+ *    version of this finding assumed it would — that assumption was WRONG, empirically.
+ *    `Integer.parseInt` throws inside `loadConfigFile`, uncaught per-entry, which aborts
+ *    parsing application.cfg IN ITS ENTIRETY: every other key in the file — `screenMode`,
+ *    `logLevel`, the whole button map, everything — silently reverts to ITS compiled
+ *    default for that run too, not just dailySeed. Confirmed directly: a two-key file with
+ *    `dailySeed = 99999999999` on one line and a second key on the next line comes back
+ *    with BOTH keys unreadable. There is no recovery available at this call site — by the
+ *    time `createGame` runs, the load has already silently failed — so the only real
+ *    defence is staying under 10 digits, and that is why application.cfg's own comment
+ *    says so explicitly rather than implying this function absorbs it.
+ *  - **Text containing a `.` (a stray decimal point) stores as `Float`.** There is no
+ *    meaningful integer to recover from a fractional value (every real seed here is a
+ *    bare integer, so a decimal point is definitionally a typo), and rounding or
+ *    truncating it would silently substitute a seed nobody chose. It degrades exactly
+ *    like a non-numeric typo: [fallback], not a guess.
+ *  - **Any other non-numeric typo stores as `String`** and is handled by [parseDailySeed]
+ *    exactly as before.
+ *  - **An absent key** returns null from every getter and falls back exactly as before.
+ *
+ * [rawInt] and [rawString] rather than a `Configuration` reference, so this stays pure
+ * and testable without booting the engine — same reasoning as [parseGamepadButton].
+ */
+fun resolveDailySeed(rawInt: Int?, rawString: String?, fallback: Long): Long =
+    rawInt?.toLong() ?: parseDailySeed(rawString, fallback)
 
 /**
  * Parses a `GamepadButton` name read from application.cfg (kickButton / bleedButton /
@@ -109,12 +154,122 @@ fun parseGamepadButton(raw: String?, fallback: GamepadButton): GamepadButton
 }
 
 /**
- * Parses the `stickDeadzone` override. Clamped to 0..0.9: 1.0 or above makes the stick
- * permanently dead (the diver could never be steered), and a negative value makes a
- * resting stick read as full deflection (the diver swims on its own, forever, on the
- * attract screen). Both are worse than any legitimate value.
+ * A warning message for `createGame` to log if [raw] looks like a typo application.cfg
+ * silently swallowed, or null if the key is either absent or a genuinely recognised name.
+ *
+ * WHY THIS EXISTS. [parseGamepadButton] falls back to [default] for every unparseable
+ * [raw] — correctly, a typo must never crash the booth machine — but that means a typo
+ * and a deliberate "use the compiled default" edit are otherwise INDISTINGUISHABLE: both
+ * produce [resolved] == [default] and, before this, nothing printed anywhere a technician
+ * would see it. A typo is left silently unbound in front of a queue with the reasonable
+ * conclusion "the config file doesn't work" — the precise failure Task 7 exists to
+ * prevent, arriving through a different door.
+ *
+ * The heuristic: [raw] is present, resolved to [default], AND [raw] (trimmed,
+ * case-insensitively) is NOT [default]'s own name — i.e. a technician who explicitly
+ * writes the default's name back gets no warning (a real, deliberate edit, not a
+ * silently-swallowed typo), but anything else that fell back does. Not perfect — it
+ * cannot tell "typed the default on purpose" apart from "typo that happens to coincide
+ * with the default's name" — but it is the caller-side comparison this project's
+ * `parseDailySeed`-family functions already use in place of threading a result type
+ * through every parser.
+ */
+fun gamepadButtonConfigWarning(key: String, raw: String?, resolved: GamepadButton, default: GamepadButton): String?
+{
+    if (raw == null || resolved != default) return null
+    if (raw.trim().equals(default.name, ignoreCase = true)) return null
+    return "application.cfg: $key = \"$raw\" is not a recognised GamepadButton name - using the compiled default ($default). See application.cfg's BUTTON MAP comment for valid names."
+}
+
+/**
+ * Warnings for configured-button collisions that are ALWAYS a mistake, regardless of
+ * `RunLifecycle`'s state — currently just `kickButton == bleedButton` (by
+ * [GamepadButton.code]). One warning string per problem, ready to log; empty when nothing
+ * collides.
+ *
+ * WHY ONLY THIS ONE PAIR, when application.cfg configures four buttons and there are six
+ * possible pairs among them. This function used to warn on ALL SIX — "any two of the four
+ * collide" — until that was checked against the compiled defaults themselves and found to
+ * be self-contradicting: `EnPustTil`'s `DEFAULT_KICK_BUTTON` and
+ * `DEFAULT_RESTART_BUTTON_ALT` are BOTH `A`, on purpose (see the doc above those
+ * constants — A is deliberately kept as a secondary restart button in case START is
+ * unmapped; not linked here — `EnPustTil`'s companion object is `private`, so a KDoc link
+ * to a member of it cannot resolve from a top-level function outside the class). A
+ * version that warned on every pairwise collision would log a WARNING ON EVERY SINGLE
+ * UNTOUCHED BOOTH BOOT, for a "collision" that is the shipped, tested, documented design —
+ * exactly the kind of cried-wolf noise that makes a technician start ignoring the booth
+ * log.
+ *
+ * The other five pairs are safe for reasons specific to THIS codebase, verified against
+ * source rather than assumed:
+ *  - `kickButton`/`bleedButton` colliding with `restartButton`/`restartButtonAlt`, in
+ *    EITHER direction, is harmless: `RunLifecycle.update`'s `PLAYING` branch (`:252-256`)
+ *    consults only `runOver` and `pauseEdge` — `pressedEdge` (the restart/confirm signal
+ *    kick/bleed would collide with) is not read AT ALL while a run is in progress, and
+ *    `readInput`'s kick/bleed reads only matter while `DiveSim` is ticking, i.e. while
+ *    `PLAYING`. The two signals are only ever "live" in disjoint states, so one button
+ *    driving both never produces a conflicting read.
+ *  - `restartButton == restartButtonAlt` is exactly the case
+ *    `LifecycleInputEdges.offer`'s duplicate-offer guard exists for (see its KDoc), and a
+ *    reasonable technician choice in its own right (force both onto a button already
+ *    known to work). Warning about it would be warning about a supported configuration.
+ *
+ * `kickButton == bleedButton` has no such escape: both buttons are read on the SAME state
+ * (`PLAYING`) for two DIFFERENT, simultaneously-meaningful actions (kick propels toward
+ * the surface, bleed releases air) — see `dive/Tuning.kt` and the design spec §4 for why
+ * they are not interchangeable. Colliding them is never safe and is exactly the plausible
+ * booth copy-paste (four adjacent lines, one mis-edited) this function exists to catch.
+ *
+ * Compared on [GamepadButton.code], not name or `.ordinal`, so an alias does not evade
+ * the check: `GamepadButton` has entries that name-compare as different buttons but are
+ * the SAME physical input on this hardware (`A`/`CROSS`, `X`/`SQUARE`, `DPAD_LEFT`/`LAST`,
+ * ... — verified from the jar's static initialiser, each alias constructed with the
+ * original's `code`). `kickButton = A` / `bleedButton = CROSS` is exactly as broken as
+ * `kickButton = A` / `bleedButton = A`, and only the `.code` comparison catches both.
+ *
+ * Pure, so it is unit-testable without an engine. Called ONCE at startup (`createGame`),
+ * not per frame, so the small `List`/string-building cost here is unlike the constraints
+ * on `readInput`'s allocation-free path.
+ */
+fun gamepadButtonCollisionWarnings(
+    kickButton: GamepadButton,
+    bleedButton: GamepadButton,
+    restartButton: GamepadButton,
+    restartButtonAlt: GamepadButton
+): List<String>
+{
+    // restartButton/restartButtonAlt are read but not compared — see the class doc for
+    // why every collision involving them is safe by this codebase's own design and would
+    // be a false alarm.
+    if (kickButton.code == bleedButton.code)
+        return listOf("application.cfg: kickButton and bleedButton both resolve to the same physical button ($kickButton, code ${kickButton.code}) - kick and bleed would always fire together. Check for a copy-paste.")
+    return emptyList()
+}
+
+/**
+ * Parses the `stickDeadzone` override ALREADY KNOWN TO BE a `Float` — see
+ * [resolveDeadzone] for why a `Float` is only one of two shapes this value can arrive in.
+ * Clamped to 0..0.9: 1.0 or above makes the stick permanently dead (the diver could never
+ * be steered), and a negative value makes a resting stick read as full deflection (the
+ * diver swims on its own, forever, on the attract screen). Both are worse than any
+ * legitimate value.
  */
 fun parseDeadzone(raw: Float?, fallback: Float): Float = (raw ?: fallback).coerceIn(0f, 0.9f)
+
+/**
+ * Resolves `stickDeadzone` across both shapes application.cfg's loader can store it as —
+ * the SAME coercion mechanism [resolveDailySeed] documents at length, hitting a second
+ * key in this exact `createGame` block. A technician disabling the deadzone writes `0`
+ * (the natural way to write "off"), which is all-digits and therefore stores as `Integer`,
+ * not `Float` — so a version of this reading only [no.njoh.pulseengine.core.config
+ * .Configuration.getFloat] would silently ignore `stickDeadzone = 0` and keep
+ * `EnPustTil`'s compiled `DEFAULT_STICK_DEADZONE` (not linked — that companion is
+ * `private`, so a KDoc link to it cannot resolve from a top-level function). [rawInt] is
+ * checked first so that value is reachable; a value written WITH a decimal point (`0.2`,
+ * `0.35`, ...) still arrives as `Float` and is unaffected.
+ */
+fun resolveDeadzone(rawInt: Int?, rawFloat: Float?, fallback: Float): Float =
+    parseDeadzone(rawInt?.toFloat() ?: rawFloat, fallback)
 
 /**
  * Parses `EPT_DEPTH` — the DEV-ONLY depth pin that puts the diver at a fixed depth so the
@@ -626,11 +781,17 @@ class EnPustTil : PulseEngineGame()
      * allocation in this exact file was a review finding one task ago). Cleared and refilled
      * each call rather than sized once: the booth normally has one pad, but a second HID
      * plugged in mid-session must still be seen without this buffer needing to grow past a
-     * size chosen for the common case. The residual cost — each `Int` id boxes into an
-     * `Integer` on `add`, since `selectGameplayPad` takes `List<Int>` to stay pure and
-     * engine-free — is the same handful-of-small-objects allowance `LifecycleInputEdges`'s
-     * class doc already documents for gamepad iteration elsewhere in this codebase, and is
-     * bounded by how many gamepads GLFW enumerates, not by frame rate.
+     * size chosen for the common case.
+     *
+     * The boxing an earlier version of this doc apologised for is NOT a real cost: every
+     * GLFW joystick id is 0..15 (`GLFW_JOYSTICK_1`..`GLFW_JOYSTICK_LAST`), and the JVM's
+     * `Integer` cache covers -128..127 by spec — `ArrayList<Int>.add` autoboxes into an
+     * already-existing `Integer`, not a new one, for every id this hardware can ever
+     * produce. That was wrong in the PESSIMISTIC direction: it named a free operation as a
+     * cost and left the real one unnamed. The real one was the `Iterator` `pads
+     * .firstOrNull { it.id == chosenId }` allocated resolving [selectGameplayPad]'s answer
+     * back to a `Gamepad` — fixed alongside this doc with an indexed loop; see [readInput].
+     * [selectGameplayPad] itself is allocation-free for the same reason — see its doc.
      */
     private val gamepadIdBuffer = ArrayList<Int>(4)
 
@@ -760,16 +921,61 @@ class EnPustTil : PulseEngineGame()
         // application.cfg (loaded by the engine before onCreate runs — see dailySeed's
         // doc) is the only source for a technician's day-two override. See
         // application.cfg for the exact commented-out line to uncomment/edit on-site.
-        dailySeed = parseDailySeed(engine.config.getString("dailySeed"), DAILY_SEED)
+        //
+        // getInt checked FIRST, not getString — see resolveDailySeed's doc. A plain
+        // all-digit seed (every real one used at this booth) is stored as an Integer by
+        // application.cfg's own loader, and getString returns null for it; reading only
+        // getString is why the day-two procedure never actually worked before this fix.
+        val dailySeedRawInt = engine.config.getInt("dailySeed")
+        val dailySeedRawString = engine.config.getString("dailySeed")
+        dailySeed = resolveDailySeed(dailySeedRawInt, dailySeedRawString, DAILY_SEED)
+        // A Float here means the value contained a decimal point — a typo, since every
+        // real seed is a bare integer — and resolveDailySeed already fell back silently.
+        // WARN so that fallback is distinguishable from "the file wasn't touched" (same
+        // reasoning as gamepadButtonConfigWarning below).
+        if (dailySeedRawInt == null && dailySeedRawString == null)
+            engine.config.getFloat("dailySeed")?.let {
+                Logger.warn { "application.cfg: dailySeed = $it has a decimal point - seeds must be a whole number; using $dailySeed instead" }
+            }
+        // "Daily seed: $dailySeed" is logged below, once sim/scoreRepository are actually
+        // built from it — see that line for why it sits there rather than here.
 
         // Beside dailySeed, and for the same reason: application.cfg is the only thing a
         // technician can edit at the booth without a toolchain.
-        kickButton = parseGamepadButton(engine.config.getString("kickButton"), DEFAULT_KICK_BUTTON)
-        bleedButton = parseGamepadButton(engine.config.getString("bleedButton"), DEFAULT_BLEED_BUTTON)
-        restartButton = parseGamepadButton(engine.config.getString("restartButton"), DEFAULT_RESTART_BUTTON)
-        restartButtonAlt = parseGamepadButton(engine.config.getString("restartButtonAlt"), DEFAULT_RESTART_BUTTON_ALT)
-        stickDeadzone = parseDeadzone(engine.config.getFloat("stickDeadzone"), DEFAULT_STICK_DEADZONE)
-        Logger.info { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt deadzone=$stickDeadzone" }
+        val kickButtonRaw = engine.config.getString("kickButton")
+        val bleedButtonRaw = engine.config.getString("bleedButton")
+        val restartButtonRaw = engine.config.getString("restartButton")
+        val restartButtonAltRaw = engine.config.getString("restartButtonAlt")
+        kickButton = parseGamepadButton(kickButtonRaw, DEFAULT_KICK_BUTTON)
+        bleedButton = parseGamepadButton(bleedButtonRaw, DEFAULT_BLEED_BUTTON)
+        restartButton = parseGamepadButton(restartButtonRaw, DEFAULT_RESTART_BUTTON)
+        restartButtonAlt = parseGamepadButton(restartButtonAltRaw, DEFAULT_RESTART_BUTTON_ALT)
+        // stickDeadzone = 0 (the natural way to write "disable the deadzone") is all-digit
+        // and therefore an Integer under the same coercion, not a Float — see
+        // resolveDeadzone's doc. getInt checked first for the same reason dailySeed's is.
+        stickDeadzone = resolveDeadzone(engine.config.getInt("stickDeadzone"), engine.config.getFloat("stickDeadzone"), DEFAULT_STICK_DEADZONE)
+
+        // WARN, not INFO (this line used to be INFO, which application.cfg's own
+        // logLevel = WARN booth default never reaches — see BoothLog). Without this line
+        // at a level the booth log actually keeps, a mistyped `restartbutton = STRAT`
+        // falls back to the compiled default with NO signal anywhere, and the reasonable
+        // conclusion for a technician is "the config file doesn't work" — precisely the
+        // failure Task 7 exists to prevent.
+        Logger.warn { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt deadzone=$stickDeadzone" }
+
+        // Per-key: the summary line above says WHAT was resolved, not whether a key was
+        // actually present and malformed versus simply absent. A typo and "the file was
+        // never touched" both print the same summary otherwise.
+        gamepadButtonConfigWarning("kickButton", kickButtonRaw, kickButton, DEFAULT_KICK_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("bleedButton", bleedButtonRaw, bleedButton, DEFAULT_BLEED_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("restartButton", restartButtonRaw, restartButton, DEFAULT_RESTART_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("restartButtonAlt", restartButtonAltRaw, restartButtonAlt, DEFAULT_RESTART_BUTTON_ALT)?.let { Logger.warn { it } }
+
+        // A plausible booth copy-paste (kickButton = bleedButton, or any two of these four
+        // landing on the same physical button) makes the game partly or fully unplayable
+        // with no signal anywhere else — see gamepadButtonCollisionWarnings's doc.
+        gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt)
+            .forEach { Logger.warn { it } }
 
         // Read ONCE, here, beside the other capture pins — see parseDepthPin. Null at the
         // booth, where EPT_DEPTH is not set, so applyDepthPin below is a null check per run.
@@ -1162,23 +1368,26 @@ class EnPustTil : PulseEngineGame()
         // edge the result, which one stuck button could hold true forever.
         lifecycleEdges.begin(engine.data.deltaTime)
         engine.input.gamepads.forEach { pad ->
-            lifecycleEdges.offer(pad.id, restartButton.ordinal, pad.isPressed(restartButton))
+            // Keyed on .code, not .ordinal: GamepadButton has aliases sharing one physical
+            // button's code (A/CROSS both 0, X/SQUARE both 2, DPAD_LEFT/LAST both 14, ...).
+            // Two DIFFERENT GamepadButton values with the same .code are the same physical
+            // input, and .ordinal would give them two different source keys — which would
+            // report "2 STUCK" for one jammed button, or "2 CHATTERING" for one bad
+            // contact, on the exact status line BoothStatus/chatterCount's doc says must
+            // tell an attendant which repair to attempt. .code collapses aliases correctly
+            // by construction; the existing tests are unaffected (START and A have
+            // ordinal == code).
+            lifecycleEdges.offer(pad.id, restartButton.code, pad.isPressed(restartButton))
             // restartButton/restartButtonAlt are BOTH config now (Task 7), and a
             // technician who finds START unmapped could reasonably set both keys to the
-            // same button. Without this guard that would offer the identical (padId,
-            // ordinal) source to LifecycleInputEdges twice in one frame — harmless for the
-            // edge itself (wasPressed[i] is already true after the first call, so the
-            // second call's risingTransition is false, and no duplicate edge fires), but
-            // NOT harmless for its time bookkeeping: `offer` advances heldSeconds and
-            // secondsSinceEdge by dt on every call for an already-seen source, so two
-            // calls in one frame advance both by 2*dt — silently halving how many real
-            // seconds it takes to trip LifecycleInputEdges.STUCK_SECONDS, and halving how
-            // many frames a chattering source needs to look "settled"
-            // (CHATTER_SETTLE_SECONDS), defeating the exact detector that class exists
-            // for. See LifecycleInputEdgesTest's duplicate-offer test for the measured
-            // effect.
-            if (restartButtonAlt != restartButton)
-                lifecycleEdges.offer(pad.id, restartButtonAlt.ordinal, pad.isPressed(restartButtonAlt))
+            // same button (or two aliases of it). This guard is an OPTIMISATION, not the
+            // safety net — LifecycleInputEdges.offer defends itself against the identical
+            // (padId, code) source being offered twice in one frame (see its KDoc for why
+            // that bookkeeping corruption, not the edge itself, was the actual hazard).
+            // Skipping the call entirely when the codes already match just avoids paying
+            // for a call whose result is thrown away.
+            if (restartButtonAlt.code != restartButton.code)
+                lifecycleEdges.offer(pad.id, restartButtonAlt.code, pad.isPressed(restartButtonAlt))
         }
         lifecycleEdges.offerKeyboardEdge(engine.input.wasClicked(Key.SPACE))
         val actionPressed = lifecycleEdges.commit()
@@ -1829,7 +2038,11 @@ class EnPustTil : PulseEngineGame()
         gamepadIdBuffer.clear()
         for (i in pads.indices) gamepadIdBuffer.add(pads[i].id)
         val chosenId = selectGameplayPad(gamepadIdBuffer, activePadId)
-        val pad = pads.firstOrNull { it.id == chosenId }
+        // Indexed, not `pads.firstOrNull { it.id == chosenId }` — that resolves through
+        // the Iterable<T> extension and allocates one Iterator per call. See
+        // gamepadIdBuffer's doc for the matching fix on the id list this reads.
+        var pad: Gamepad? = null
+        for (i in pads.indices) if (pads[i].id == chosenId) { pad = pads[i]; break }
         val padX = pad?.getAxis(GamepadAxis.LEFT_X)?.deadzone() ?: 0f
         val padY = pad?.getAxis(GamepadAxis.LEFT_Y)?.deadzone() ?: 0f
 

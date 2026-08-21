@@ -29,10 +29,15 @@ package render
  *     like every other segment, and [EnPustTil.renderGame] draws it as the entire frame
  *     (there is no `DiveSim` left to draw a world or a HUD around) rather than as one
  *     ignorable line among many.
- *  5. **A mistyped `dailySeed`.** `parseDailySeed` is `raw?.toLongOrNull() ?: fallback` by
- *     design — a typo must never crash the booth machine — so day two would quietly run day
- *     one's column and append to day one's leaderboard. Showing the ACTIVE seed makes the
- *     day-two switch verifiable without a log: the number either changed or it did not.
+ *  5. **A mistyped, or too-large, `dailySeed`.** `EnPustTil.resolveDailySeed` falls back
+ *     to the compiled default (or whatever seed was already active) for a typo or a stray
+ *     decimal point, by design — a typo must never crash the booth machine — and above
+ *     ten digits the WHOLE of application.cfg silently fails to load, reverting every
+ *     other key too (see `resolveDailySeed`'s doc and CLAUDE.md's day-two paragraph for
+ *     why). Either way, day two would quietly run day one's column and append to day
+ *     one's leaderboard with nothing else on screen to say so. Showing the ACTIVE seed
+ *     makes the day-two switch verifiable without a log: the number either changed or it
+ *     did not.
  *
  * All of these reach the booth log file (see `booth/BoothLog.kt`), but nobody reads a log
  * with a queue waiting.

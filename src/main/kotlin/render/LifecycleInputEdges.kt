@@ -67,10 +67,11 @@ package render
  * which is what let one stuck button defeat every other source (see THE BUG THIS FIXES,
  * above).
  *
- * This does NOT apply to gameplay (movement/kick/bleed) — see
- * [EnPustTil.readInput]/[render.selectGameplayPad], which follows the ONE pad whose
- * button actually started the run: two people fighting over one diver via two different
- * pads is worse than one person plugged into the wrong slot.
+ * This does NOT apply to gameplay (movement/kick/bleed) — see [selectGameplayPad], which
+ * follows the ONE pad whose button actually started the run: two people fighting over one
+ * diver via two different pads is worse than one person plugged into the wrong slot.
+ * (Not linked as `EnPustTil.readInput` above: that method is `private`, so a KDoc link to
+ * it across packages cannot resolve.)
  */
 class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
 {
@@ -145,6 +146,41 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
         for (i in seenThisFrame.indices) seenThisFrame[i] = false
     }
 
+    /**
+     * Offers this frame's level for one (padId, buttonOrdinal) source. Safe to call
+     * MORE THAN ONCE per source per frame — see THE DUPLICATE-OFFER GUARD below — but the
+     * class's callers should still prefer not to: a caller that can cheaply avoid a
+     * pointless second call (`EnPustTil`'s wiring skips it when two configured buttons
+     * resolve to the same physical button) should, since the guard exists to make a
+     * caller's MISTAKE harmless, not to make redundant calls free.
+     *
+     * THE DUPLICATE-OFFER GUARD, AND WHY IT LIVES HERE RATHER THAN AT ONE CALL SITE.
+     * `EnPustTil.restartButton`/`restartButtonAlt` became independently configurable
+     * (application.cfg), and a technician who finds START unmapped could reasonably set
+     * BOTH keys to the same physical button. Offering the identical (padId, buttonOrdinal)
+     * source twice in one frame is harmless for the EDGE itself — `wasPressed[i]` is
+     * already `true` after the first call in a frame, so a same-frame repeat's
+     * `risingTransition` is false and no duplicate edge fires — but it is NOT harmless for
+     * the TIME bookkeeping below: `heldSeconds`/`secondsSinceEdge` advance by `dt` on every
+     * call for an already-seen source, so two calls in one frame would advance both by
+     * `2*dt` instead of `dt`, silently halving how many real seconds it takes to trip
+     * [STUCK_SECONDS] and — worse — halving how many frames a CHATTERING source needs to
+     * look "settled" ([CHATTER_SETTLE_SECONDS]), defeating the exact detector this class's
+     * doc says a chattering encoder must not be able to escape. A single `if` at one call
+     * site could enforce "offer each source once" for today's one known way to trigger it,
+     * but the invariant this class's correctness actually depends on — at most one `offer`
+     * counted per source per frame — belongs on the class whose bookkeeping it protects,
+     * not on whichever caller happened to be the first to need it. See
+     * `LifecycleInputEdgesTest`'s `a duplicate offer in one frame changes nothing` for the
+     * hardened behaviour this produces, and its class doc's "characterization test of the
+     * defect" note for the version of that test this replaced.
+     *
+     * A second offer in the same frame still updates the LEVEL — `wasPressed[i]` is OR'd
+     * with [pressed] rather than ignored — so a caller offering two aliases of one
+     * physical button (one read as pressed, one not, on the same frame — should not
+     * happen with `Gamepad.isPressed` on the same button but costs nothing to tolerate)
+     * does not lose a genuine press.
+     */
     fun offer(padId: Int, buttonOrdinal: Int, pressed: Boolean)
     {
         var i = indexOf(padId, buttonOrdinal)
@@ -166,7 +202,17 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
             i = padIds.size - 1
         }
 
+        // See THE DUPLICATE-OFFER GUARD in this method's KDoc. seenThisFrame[i] is already
+        // true here only when a PRIOR offer() call this same frame handled this exact
+        // source — begin() is what resets it to false at the top of each frame.
+        val duplicate = !firstSight && seenThisFrame[i]
         seenThisFrame[i] = true
+        if (duplicate)
+        {
+            wasPressed[i] = wasPressed[i] || pressed
+            return
+        }
+
         val held = if (pressed) heldSeconds[i] + dt else 0f
         heldSeconds[i] = held
         secondsSinceEdge[i] = secondsSinceEdge[i] + dt
