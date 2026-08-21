@@ -1629,7 +1629,7 @@ class EnPustTil : PulseEngineGame()
         // DiveSim that scored this run: a completed entry moves to IDLE, not PLAYING, so
         // no new DiveSim has been constructed yet this frame (justStarted is false here).
         if (lifecycle.initialsJustCompleted)
-            scoreRepository.registerScore(engine, lifecycle.completedInitials, sim.banked)
+            scoreRepository.registerScore(lifecycle.completedInitials, sim.banked)
     }
 
     override fun onDestroy() = guard.run(CallbackSites.DESTROY, destroyBody)

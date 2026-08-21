@@ -39,8 +39,15 @@ import java.nio.file.StandardCopyOption
  *
  * @return true if [live] now holds [temp]'s former contents, false if the promotion
  *   could not happen at all (e.g. [temp] does not exist) — [live] is left untouched.
+ * @param onFailure called with the exception when the rename genuinely fails (as
+ *   opposed to [temp] simply not existing, which is reported only through the return
+ *   value). On Windows, `Files.move` can throw `AccessDeniedException` when an indexer
+ *   or AV holds [live] open — this used to be swallowed by a bare `catch { false }` with
+ *   no log and no rethrow, so a booth score could vanish with no trace anywhere. The
+ *   caller decides what "trace" means (see `ScoreRepository.onSaveFailure`); this
+ *   function only guarantees the exception is not silently discarded.
  */
-fun promoteAtomically(temp: File, live: File): Boolean
+fun promoteAtomically(temp: File, live: File, onFailure: (Exception) -> Unit = {}): Boolean
 {
     if (!temp.exists()) return false
     return try
@@ -55,6 +62,11 @@ fun promoteAtomically(temp: File, live: File): Boolean
     }
     catch (e: Exception)
     {
+        // This used to be a bare `false`. On Windows, Files.move can fail with
+        // AccessDeniedException when an indexer or AV holds the target open, and the
+        // caller discarded the return value — so a booth score vanished with no trace in
+        // any log, on a board the day's prizes are drawn from.
+        onFailure(e)
         false
     }
 }

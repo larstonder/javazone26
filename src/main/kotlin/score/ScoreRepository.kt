@@ -4,7 +4,6 @@ import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.console.CommandResult
 import no.njoh.pulseengine.core.service.Service
 import no.njoh.pulseengine.core.shared.utils.Logger
-import java.io.File
 import kotlin.random.Random
 
 /**
@@ -22,29 +21,45 @@ import kotlin.random.Random
  * three-letter initials specifically to avoid personal data, so there is no GDPR
  * consent flow to build here.
  *
- * PERSISTENCE SHAPE: JSON via `engine.data`, at `engine.config.saveDirectory/
- * scoreboard.json`. Every registered score triggers an async save (never blocks the
- * render thread) plus, at most once every [BACKUP_INTERVAL_MS], a rolling timestamped
- * backup (`scoreboard-backup-<epoch>.json`) — two days of booth scores in one
- * un-backed-up file is a single point of failure. A final, SYNCHRONOUS save happens in
- * [onDestroy] so a clean shutdown cannot lose the tail of scores registered since the
- * last periodic save.
+ * PERSISTENCE SHAPE: JSON via [ScoreStore] (a seam over `engine.data`, at
+ * `engine.config.saveDirectory/scoreboard.json`). Every registered score triggers an
+ * async save (never blocks the render thread) plus, at most once every
+ * [BACKUP_INTERVAL_MS], a rolling timestamped backup (`scoreboard-backup-<epoch>.json`)
+ * — two days of booth scores in one un-backed-up file is a single point of failure. A
+ * final, SYNCHRONOUS save happens in [onDestroy] so a clean shutdown cannot lose the
+ * tail of scores registered since the last periodic save.
+ *
+ * THE SEAM: [store] is normally built from the engine in [onCreate] — see
+ * [EngineScoreStore] for what was verified (by decompiling `DataImpl`) about its
+ * failure behaviour. A test constructs this class with a real [ScoreStore] directly (a
+ * temp directory, no engine at all), which is what finally lets `registerScore`, the
+ * atomic promote, the corrupt-file path and the stale-temp sweep be asserted for real —
+ * see `ScoreRepositoryTest`.
  *
  * DURABILITY: see [promoteAtomically] for exactly what guarantee the write path
  * achieves (a real atomic swap on filesystems that support it — POSIX and NTFS both do
  * — never a torn `scoreboard.json`, but not an `fsync` guarantee against true power
- * loss). Reads go through [sanitizeEntries] on top of `engine.data.loadObject`'s own
- * verified-safe null-on-failure behaviour, so a corrupt or missing file starts a fresh
- * board rather than crashing or blocking a run.
+ * loss). A failed promotion is reported through [onSaveFailure] rather than swallowed —
+ * see [saveAsync]. Reads go through [sanitizeEntries] on top of [ScoreStore.load]'s own
+ * verified null-on-failure behaviour, so a corrupt or missing file starts a fresh board
+ * rather than crashing or blocking a run.
  */
-class ScoreRepository(private val todaySeed: Long) : Service()
+class ScoreRepository(
+    private val todaySeed: Long,
+    private var store: ScoreStore? = null,
+    private val onSaveFailure: (String) -> Unit = { Logger.error { it } }
+) : Service()
 {
     private var entries: MutableList<ScoreEntry> = mutableListOf()
     private var lastBackupTimeMs = System.currentTimeMillis()
 
+    // onCreate builds the real store from the engine when one was not injected. Injection
+    // is what ScoreRepositoryTest uses; the booth always takes this branch.
     override fun onCreate(engine: PulseEngine)
     {
-        entries = loadEntries(engine).toMutableList()
+        if (store == null) store = EngineScoreStore(engine)
+        val s = store!!
+        loadInto(s)
         Logger.info { "ScoreRepository loaded ${entries.size} score(s) from ${engine.config.saveDirectory}" }
         registerWinnerCommand(engine)
     }
@@ -58,38 +73,61 @@ class ScoreRepository(private val todaySeed: Long) : Service()
      * worth recording — see [Leaderboard.isWorthRecording] — so a 0-point run never
      * costs a write.
      */
-    fun registerScore(engine: PulseEngine, initials: String, score: Int, seed: Long = todaySeed)
+    fun registerScore(initials: String, score: Int, seed: Long = todaySeed)
     {
         if (!Leaderboard.isWorthRecording(score)) return
 
         val clean = initials.uppercase().filter { it in 'A'..'Z' }.take(3).padEnd(3, 'A')
         entries.add(ScoreEntry(clean, score, seed, System.currentTimeMillis()))
 
-        saveAsync(engine)
-        maybeRollBackup(engine)
+        val s = store ?: return
+        saveAsync(s)
+        maybeRollBackup(s)
     }
 
     /**
      * Async save, promoted atomically once the write finishes — see [promoteAtomically].
-     * `engine.data.saveObjectAsync` runs the write on `Dispatchers.IO` (verified by
-     * decompiling `DataImpl`), so this never blocks the render thread, and the
-     * completion callback — which does the promotion — runs on that same background
-     * thread rather than the game thread.
+     * [ScoreStore.saveAsync] runs the write on `Dispatchers.IO` (verified by decompiling
+     * `DataImpl` — see [EngineScoreStore]'s class doc), so this never blocks the render
+     * thread, and the completion callback — which does the promotion — runs on that same
+     * background thread rather than the game thread.
      *
      * A defensive snapshot ([List], not the live [entries]) is what gets serialised:
      * without it, a score registered while a previous save is still in flight on the IO
      * thread could mutate [entries] out from under Jackson's serialiser mid-write.
      */
-    private fun saveAsync(engine: PulseEngine)
+    private fun saveAsync(s: ScoreStore)
     {
         val snapshot = ScoreboardData(entries.toList())
-        engine.data.saveObjectAsync(snapshot, TEMP_FILE) {
-            promoteAtomically(scoreFile(engine, TEMP_FILE), scoreFile(engine, LIVE_FILE))
+        val temp = freshTempName()
+        s.saveAsync(snapshot, temp) {
+            val promoted = promoteAtomically(
+                temp = s.fileFor(temp),
+                live = s.fileFor(LIVE_FILE),
+                onFailure = { e -> onSaveFailure("Could not promote $temp to $LIVE_FILE: $e") }
+            )
+            // A lost score is a real failure at a booth whose prizes are drawn from this
+            // board. It used to be discarded here with no log at all — and until
+            // booth/BoothLog.kt existed, a log would have gone nowhere anyway.
+            if (!promoted) onSaveFailure("SCORE NOT SAVED - $LIVE_FILE was not updated from $temp")
         }
     }
 
+    /**
+     * A FRESH temp name per write, not a shared constant.
+     *
+     * `saveObjectAsync` runs on `Dispatchers.IO`, a MULTI-threaded pool (verified — see
+     * [EngineScoreStore]'s class doc), and both save paths used to write to the single
+     * constant "scoreboard.json.tmp". Two overlapping writes could then have writer A's
+     * promote rename a file writer B was midway through rewriting — producing exactly the
+     * torn scoreboard.json that [promoteAtomically] exists to prevent. Runs are ~90 s
+     * apart at a booth so this was unlikely in practice; it is also free to remove, and
+     * the class doc claims the guarantee unconditionally.
+     */
+    private fun freshTempName(): String = "scoreboard.${java.util.UUID.randomUUID()}.tmp"
+
     /** At most once every [BACKUP_INTERVAL_MS] — see the class doc for why. */
-    private fun maybeRollBackup(engine: PulseEngine)
+    private fun maybeRollBackup(s: ScoreStore)
     {
         val now = System.currentTimeMillis()
         if (now - lastBackupTimeMs < BACKUP_INTERVAL_MS) return
@@ -101,7 +139,7 @@ class ScoreRepository(private val todaySeed: Long) : Service()
         // back by this game — an interrupted backup write only ever damages that one
         // timestamped file, never the live board or an earlier backup, so this does not
         // need the temp+promote dance saveAsync uses for the live file.
-        engine.data.saveObjectAsync(snapshot, backupName) { }
+        s.saveAsync(snapshot, backupName) { }
     }
 
     /**
@@ -114,15 +152,49 @@ class ScoreRepository(private val todaySeed: Long) : Service()
      */
     override fun onDestroy(engine: PulseEngine)
     {
-        val snapshot = ScoreboardData(entries.toList())
-        engine.data.saveObject(snapshot, TEMP_FILE)
-        promoteAtomically(scoreFile(engine, TEMP_FILE), scoreFile(engine, LIVE_FILE))
+        store?.let { finalSave(it) }
         Logger.info { "ScoreRepository saved ${entries.size} score(s) on shutdown" }
     }
 
-    private fun loadEntries(engine: PulseEngine): List<ScoreEntry>
+    private fun finalSave(s: ScoreStore)
     {
-        if (!engine.data.exists(LIVE_FILE)) return emptyList()
+        val snapshot = ScoreboardData(entries.toList())
+        val temp = freshTempName()
+        s.saveSync(snapshot, temp)
+        val promoted = promoteAtomically(
+            temp = s.fileFor(temp),
+            live = s.fileFor(LIVE_FILE),
+            onFailure = { e -> onSaveFailure("Could not promote $temp to $LIVE_FILE on shutdown: $e") }
+        )
+        if (!promoted) onSaveFailure("SCORE NOT SAVED ON SHUTDOWN - $LIVE_FILE was not updated from $temp")
+    }
+
+    /**
+     * Loads today's (and yesterday's, and every prior day's — see class doc) entries
+     * from [s] into [entries], and sweeps any stale temp file left behind by a crash
+     * between "temp written" and "promote called" — see [sweepStaleTemps].
+     */
+    private fun loadInto(s: ScoreStore)
+    {
+        sweepStaleTemps(s)
+        entries = loadEntries(s).toMutableList()
+    }
+
+    /**
+     * A crash between "temp written" and "promote called" leaves a temp file behind
+     * forever. Harmless individually; over two days of watchdog restarts they accumulate
+     * in the folder a technician copies to a USB stick at end of day.
+     */
+    private fun sweepStaleTemps(s: ScoreStore)
+    {
+        s.listNames()
+            .filter { it.startsWith("scoreboard.") && it.endsWith(".tmp") }
+            .forEach { runCatching { s.fileFor(it).delete() } }
+    }
+
+    private fun loadEntries(s: ScoreStore): List<ScoreEntry>
+    {
+        if (!s.exists(LIVE_FILE)) return emptyList()
 
         val loaded = try
         {
@@ -132,19 +204,20 @@ class ScoreRepository(private val todaySeed: Long) : Service()
             // top-level List<T> would erase to a raw Class<List> at runtime, losing the
             // element type Jackson needs. A wrapper class's FIELD generics are preserved
             // by Jackson's reflection-based introspection, so this round-trips correctly.
-            engine.data.loadObject<ScoreboardData>(LIVE_FILE)?.entries
+            s.load(LIVE_FILE)?.entries
         }
         catch (e: Exception)
         {
-            // Belt-and-braces: engine.data.loadObject already catches internally
-            // (verified by decompiling DataImpl.loadObject — a runCatching-shaped block
-            // that logs and returns null on ANY Throwable, including malformed JSON from
-            // a hard power-off mid-write), but this game must never depend on unverified
-            // behaviour from a third-party jar for "does not crash on a corrupt save
-            // file" — hence this redundant catch, and see the three `sanitizeEntries` cases in
-            // InitialsEntryTest (they live there because sanitizeEntries sits alongside
-            // isValidInitials, not in a file of its own) for the second, unit-tested layer of
-            // defence. This used to cite a `ScoreSanitizerTest`, which has never existed.
+            // Belt-and-braces: ScoreStore.load already catches internally — CONFIRMED by
+            // decompiling DataImpl.loadObject (see EngineScoreStore's class doc): a
+            // runCatching-shaped block that logs and returns null on ANY Throwable,
+            // including malformed JSON from a hard power-off mid-write — but this game
+            // must never depend on unverified behaviour from a third-party jar for "does
+            // not crash on a corrupt save file" — hence this redundant catch, and see the
+            // three `sanitizeEntries` cases in InitialsEntryTest (they live there because
+            // sanitizeEntries sits alongside isValidInitials, not in a file of its own)
+            // for the second, unit-tested layer of defence. This used to cite a
+            // `ScoreSanitizerTest`, which has never existed.
             Logger.error(e) { "Failed to load $LIVE_FILE — starting a fresh leaderboard" }
             null
         }
@@ -194,12 +267,15 @@ class ScoreRepository(private val todaySeed: Long) : Service()
         }
     }
 
-    private fun scoreFile(engine: PulseEngine, name: String) = File(engine.config.saveDirectory, name)
+    /** See DiveSim's `debug*` hooks — the same pattern, for the same reason: a narrow,
+     * clearly-named way for tests to drive the two engine lifecycle hooks without a
+     * booted PulseEngine. */
+    internal fun onCreateForTest() { store?.let { loadInto(it) } }
+    internal fun onDestroyForTest() { store?.let { finalSave(it) } }
 
     companion object
     {
-        private const val LIVE_FILE = "scoreboard.json"
-        private const val TEMP_FILE = "scoreboard.json.tmp"
+        internal const val LIVE_FILE = "scoreboard.json"
         private const val BACKUP_INTERVAL_MS = 30 * 60 * 1000L
     }
 }
