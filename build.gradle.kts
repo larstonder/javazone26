@@ -98,6 +98,13 @@ launch4j {
     outputDir       = releaseBuildDir
     initialHeapSize = 1024
     maxHeapSize     = 4096
+    // The plugin's own convention is false: a gui-header launcher then CreateProcess()es
+    // javaw and returns within about a second, while the game is still starting up. cmd's
+    // `start /wait` in tools/booth/start-booth.bat is satisfied against THAT return, not
+    // against the game exiting - so the watchdog would relaunch a new game every few
+    // seconds, forever, starting on the first boot at the venue. BoothLauncherTest asserts
+    // this is set.
+    stayAlive       = true
     jvmOptions      = listOf(
         "-XX:+UseZGC",            // Use Z Garbage Collector for low latency
         "-XX:SoftMaxHeapSize=2g", // 2GB target heap size to limit GC impact
