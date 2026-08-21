@@ -1,3 +1,4 @@
+import booth.BoothLog
 import dive.DiveInput
 import dive.DiveSim
 import dive.Tuning
@@ -41,7 +42,26 @@ import render.drawTextWithOutline
 import render.fillRect
 import score.ScoreRepository
 
-fun main() = PulseEngine.run<EnPustTil>()
+fun main()
+{
+    // BEFORE PulseEngine.run, deliberately: a failure during engine start-up — a missing
+    // asset, a GL context the booth GPU will not give us — happens inside run() and would
+    // otherwise be logged to a stdout nobody can read. See BoothLog's class doc for why the
+    // engine cannot write this file itself (LogTarget has no FILE entry and cannot get one).
+    //
+    // GAME_NAME is duplicated from application.cfg rather than read from it: the config is
+    // parsed by the engine, inside run(), which is after this point.
+    val log = BoothLog.install(
+        dir = BoothLog.logDirectory(System.getProperty("user.home") ?: ".", GAME_NAME),
+        startedAtMillis = System.currentTimeMillis()
+    )
+    println(if (log != null) "Booth log: ${log.absolutePath}" else "Booth log: unavailable (continuing without one)")
+
+    PulseEngine.run<EnPustTil>()
+}
+
+/** Must match `gameName` in application.cfg — see [main] for why it cannot be read from there. */
+const val GAME_NAME = "EnPustTil"
 
 /**
  * Parses the "dailySeed" override read from application.cfg (see [EnPustTil.onCreate]).
