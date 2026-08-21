@@ -124,7 +124,11 @@ fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: 
  *    survive an over-range value as a general rule: it depends on the exact key set in the
  *    file at the time and changes if a key is added or removed. The one thing this
  *    function's caller CAN do generically is notice `gameName` came back wrong — see
- *    [configFileHealthWarning].
+ *    [configFileHealthWarning] — but that check is a SPECULATIVE bonus signal, not a
+ *    reliable one: in BOTH measurements above, `gameName` survived, so
+ *    [configFileHealthWarning] would have stayed silent for the exact failures this list
+ *    documents. Its doc says so explicitly rather than letting its silence be trusted more
+ *    than it deserves.
  *  - **The boundary is EXACTLY `2147483647`, verified both sides**: `dailySeed =
  *    2147483647` loads fine (an ordinary `Integer`); `dailySeed = 2147483648` throws. "Ten
  *    digits or fewer" (an earlier version of this doc and of application.cfg) is
@@ -193,9 +197,26 @@ fun dailySeedConfigWarning(rawString: String?, rawFloat: Float?): String?
  * not attempt to say — see [resolveDailySeed]'s doc for why naming them would immediately
  * go stale.
  *
+ * THIS GUARD'S DETECTION IS SPECULATIVE, NOT RELIABLE — SAY SO RATHER THAN LET ITS SILENCE
+ * BE TRUSTED MORE THAN IT DESERVES. It did NOT fire for either failure this task actually
+ * measured: `resolveDailySeed`'s own table shows `dailySeed = 99999999999` and
+ * `targetFps = 99999999999` BOTH leaving `gameName` intact (`gameName`'s hash bucket
+ * happened to be reached before the throw in both runs). This function only helps on the
+ * runs where `gameName`'s bucket falls AFTER the abort, which has never been observed
+ * with this exact key set — so its silence means "gameName survived," never "the file
+ * loaded completely," and must not be read as the latter. A reliable version would need
+ * to compare against a known-complete key list, which drifts every time a key is added —
+ * not a trade worth making for a guard this cheap.
+ *
+ * IT ALSO HAS A FALSE-POSITIVE PATH THAT ISN'T THE FAILURE IT EXISTS FOR: a technician
+ * editing or deleting the `gameName` line itself — for any reason, including a harmless
+ * one — makes this fire with nothing actually truncated. See the `# do not edit` note
+ * application.cfg carries beside `gameName` for exactly this reason.
+ *
  * Cheaper than a documented rule a technician has to remember and re-derive by hand: this
  * is three lines, runs once at startup, and turns "read CLAUDE.md's day-two paragraph
- * correctly" into "read one WARN line in the booth log."
+ * correctly" into "read one WARN line in the booth log" — ON THE RUNS WHERE IT FIRES AT
+ * ALL. It is a bonus signal on top of the documented ceiling, not a replacement for it.
  */
 fun configFileHealthWarning(gameName: String?): String? =
     if (gameName != GAME_NAME)
