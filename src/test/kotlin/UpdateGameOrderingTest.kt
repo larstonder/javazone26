@@ -8,9 +8,10 @@ import kotlin.test.assertTrue
  * (`.superpowers/sdd/2026-08-21-booth-survival/task-9-report.md`).
  *
  * `RunLifecycle.finishInitials()` sets `initialsJustCompleted = true` and then calls
- * `enter(IDLE)`, which sets `justReturnedToIdle = true` in the SAME call — the state being
- * left is ENTER_INITIALS, not PAUSED, so the PAUSED-resume exclusion does not apply. Both
- * flags are therefore true on the exact tick a player finishes their initials. The
+ * `enter(IDLE)` WITHOUT `resuming` (it defaults to `false`), which sets
+ * `justReturnedToIdle = true` in the SAME call — `justReturnedToIdle` is keyed on the
+ * caller's resume intent, not on the state being left, so a plain `enter(IDLE)` always sets
+ * it. Both flags are therefore true on the exact tick a player finishes their initials. The
  * `justReturnedToIdle` block destroys `sim` (`sim = DiveSim(seed = dailySeed)`), so if that
  * ran first, `scoreRepository.registerScore` would read the FRESH sim's `banked == 0`, and
  * `Leaderboard.isWorthRecording(0)` would discard it with no log and no error — every real
@@ -43,8 +44,8 @@ class UpdateGameOrderingTest
             "lifecycle.justReturnedToIdle is checked at offset $returnedIndex, BEFORE " +
             "lifecycle.initialsJustCompleted at offset $initialsIndex. Both flags are true on the " +
             "same tick a player finishes initials entry (RunLifecycle.finishInitials sets " +
-            "initialsJustCompleted then calls enter(IDLE), which sets justReturnedToIdle in the " +
-            "same call). The justReturnedToIdle block replaces `sim` with a fresh DiveSim " +
+            "initialsJustCompleted then calls enter(IDLE) without resuming, which sets " +
+            "justReturnedToIdle in the same call). The justReturnedToIdle block replaces `sim` with a fresh DiveSim " +
             "(banked == 0) — reading sim.banked for the score AFTER that swap registers a zero " +
             "score, which Leaderboard.isWorthRecording silently discards. Every real score would " +
             "be lost, all day, with no log and no error."

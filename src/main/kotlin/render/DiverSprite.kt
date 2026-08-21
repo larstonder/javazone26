@@ -376,13 +376,21 @@ object DiverSprite
     /** Which cell of the sheet to draw this frame. */
     val currentFrame: Int get() = frameIndex(loopPhase)
 
-    /** Called on `RunLifecycle.justStarted`: every run opens on the loop's authored first frame. */
+    /**
+     * Called on `RunLifecycle.justStarted` AND on `RunLifecycle.justReturnedToIdle`: every run,
+     * and every fresh arrival at the attract screen, opens on the loop's authored first frame.
+     */
     fun restartLoop()
     {
         loopPhase = 0f
     }
 
-    /** Called once per fixed tick, from the same gate that ticks the simulation. */
+    /**
+     * Called once per fixed tick, from `RunLifecycle.spriteAnimates` — deliberately NOT the
+     * same gate that ticks the simulation (`simulationAdvances`): the sprite must also animate
+     * in IDLE, where the sim stays frozen. See [loopPhase]'s doc for why these are two gates
+     * and not a second, ungated clock.
+     */
     fun advanceLoop(dt: Float)
     {
         loopPhase = advancePhase(loopPhase, dt)

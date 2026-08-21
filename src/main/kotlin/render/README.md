@@ -50,13 +50,16 @@ best source in the repo.
 2. `sim.tick(fixedDeltaTime, readInput())` - **the only call to `DiveSim.tick` in the game.**
    Gating this one line freezes the whole simulation; there is no second path by which a paused
    run can lose time, air, depth or a pearl.
-3. `DiverSprite.advanceLoop(dt)` - inside the same gate, from the same `dt`.
-4. `DiveLighting.updateAim(sim, dt)` - the torch heading is integrated **once**, here. It used
-   to be integrated inside the beam draw, which broke the moment the diver's *body* had to be
-   drawn to the same heading: `DiveRenderer` runs before `DiveLighting` in `onRender`, so the
-   body would have used the previous frame's aim.
-5. `camera.update(dt, sim.depth)` then `CameraRig.apply(engine, camera.depth)` - **outside** the
-   gate, because a paused or attract frame still has to be drawn with a valid camera.
+3. `DiveLighting.updateAim(sim, dt)` - inside the same gate as `sim.tick`, right after it. The
+   torch heading is integrated **once**, here. It used to be integrated inside the beam draw,
+   which broke the moment the diver's *body* had to be drawn to the same heading: `DiveRenderer`
+   runs before `DiveLighting` in `onRender`, so the body would have used the previous frame's aim.
+4. `if (lifecycle.spriteAnimates) DiverSprite.advanceLoop(dt)` - its **own** gate, deliberately
+   NOT `simulationAdvances`: also true in `IDLE`, so the diver's kick animates on the attract
+   screen while the sim itself stays frozen (task 9 - a motionless diver behind a fresh attract
+   arrival reads as dead, not idle).
+5. `camera.update(dt, sim.depth)` then `CameraRig.apply(engine, camera.depth)` - **outside** both
+   gates above, because a paused or attract frame still has to be drawn with a valid camera.
 
 **Camera easing runs on the fixed tick, not the render clock.** `updateViewMatrix` interpolates
 every camera parameter from a snapshot taken at the top of each fixed step, so a render-clock

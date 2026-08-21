@@ -109,8 +109,8 @@ class RunLifecycle(
      * same pattern as [justStarted] and `DiveSim.diveEnded`.
      *
      * [justReturnedToIdle] is ALSO true on this exact tick — [finishInitials] sets this flag
-     * and then calls `enter(IDLE)`, which sets that one in the same call, since the state
-     * being left is ENTER_INITIALS rather than PAUSED. The DiveSim that scored the run is
+     * and then calls `enter(IDLE)` without `resuming` (it defaults to `false`), which sets
+     * that one in the same call. The DiveSim that scored the run is
      * only "still intact" for a caller that reads it before acting on [justReturnedToIdle];
      * EnPustTil's ordering of those two blocks in `updateGame` is load-bearing for exactly
      * this reason — see the comment there and `UpdateGameOrderingTest`.

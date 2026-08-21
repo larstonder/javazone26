@@ -1634,9 +1634,9 @@ class EnPustTil : PulseEngineGame()
 
         // THIS MUST RUN BEFORE THE justReturnedToIdle BLOCK BELOW — the two flags are not
         // mutually exclusive. RunLifecycle.finishInitials() sets initialsJustCompleted = true
-        // and then calls enter(IDLE), which sets justReturnedToIdle = true in the same call
-        // (the old state there is ENTER_INITIALS, not PAUSED, so the PAUSED exclusion does
-        // not apply) — so on the tick a player finishes their initials, BOTH flags are true
+        // and then calls enter(IDLE) WITHOUT resuming (resuming defaults to false), which sets
+        // justReturnedToIdle = true in the same call — so on the tick a player finishes their
+        // initials, BOTH flags are true
         // at once. `sim` is still the DiveSim that scored this run only as long as this read
         // happens first: reading it after the block below would read a freshly-constructed
         // sim with `banked == 0`, and Leaderboard.isWorthRecording(0) discards the score with

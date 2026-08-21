@@ -307,16 +307,36 @@ class RunLifecycleTest
     }
 
     @Test
+    fun `the sprite also animates during ENTER_INITIALS`() {
+        // The fourth and last state spriteAnimates has to get right: a player typing their
+        // initials must still see themselves kicking, not a diver frozen behind the entry
+        // screen. RunLifecycleTest previously covered IDLE, PAUSED and PLAYING/RUN_OVER here
+        // but never this state — an exhaustive `when` with no `else` still lets a WRONG
+        // per-branch answer compile, so only a test that actually reaches ENTER_INITIALS and
+        // asks catches that.
+        val lc = newLifecycle()
+        enterRunOverWithScore(lc, score = 5000)
+        lc.update(dt = DWELL + 0.01f, anyInputPressed = false, runOver = true, bankedScore = 5000)
+        assertEquals(RunLifecycleState.ENTER_INITIALS, lc.state)
+        assertTrue(lc.spriteAnimates, "a frozen diver behind the initials screen reads as dead, not idle")
+    }
+
+    @Test
     fun `spriteAnimates agrees with simulationAdvances everywhere except IDLE`() {
+        // Reads BOTH properties and compares them, rather than only asserting spriteAnimates
+        // is true — the earlier version of this test did the latter, which cannot fail from a
+        // simulationAdvances-side regression: it would have stayed green even if
+        // simulationAdvances silently disagreed with spriteAnimates in RUN_OVER, because
+        // nothing here ever called simulationAdvances for that state.
         val lc = newLifecycle()
         lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // IDLE -> PLAYING
         assertEquals(RunLifecycleState.PLAYING, lc.state)
-        assertTrue(lc.spriteAnimates)
+        assertEquals(lc.simulationAdvances, lc.spriteAnimates, "PLAYING must not disagree")
 
         lc.update(dt = 0f, anyInputPressed = false, runOver = false)
         lc.update(dt = 0f, anyInputPressed = false, runOver = true)   // -> RUN_OVER
         assertEquals(RunLifecycleState.RUN_OVER, lc.state)
-        assertTrue(lc.spriteAnimates)
+        assertEquals(lc.simulationAdvances, lc.spriteAnimates, "RUN_OVER must not disagree")
     }
 
     @Test
@@ -491,6 +511,13 @@ class RunLifecycleTest
 
         assertEquals(RunLifecycleState.IDLE, lc.state)
         assertTrue(lc.justReturnedToIdle)
+        // The Critical this task's own review caught (task-9-report.md) was exactly this
+        // co-firing: EnPustTil read `justReturnedToIdle` (rebuilding `sim`) before
+        // `initialsJustCompleted` (reading `sim.banked`), silently zeroing every leaderboard
+        // entry. Without this line, the test only proved the flag existed — not that it fires
+        // on the SAME tick as the score-persist signal, which is the entire premise the fix
+        // and UpdateGameOrderingTest depend on.
+        assertTrue(lc.initialsJustCompleted, "both flags must fire on the same tick, or the ordering fix has nothing to order")
     }
 
     @Test
