@@ -902,42 +902,64 @@ class DiveLightingTest
      * HOW FAR FORWARD, CHECKED AGAINST THE ART RATHER THAN AGAINST ITSELF.
      *
      * [DiveLighting.TORCH_FORWARD_FRACTION] is a judgement call, so asserting its value would
-     * assert nothing. What is NOT a judgement call is the pair of bounds the judgement was made
-     * inside, and both are read off the committed sheet here so a re-bake at a different pose or
-     * frame height cannot leave them stale:
+     * assert nothing. What is not a judgement call is the window the judgement was made inside, and
+     * both ends are read off the committed sheet and off [DiveLighting.DIVER_LIGHT_SIZE_METRES] —
+     * never typed — so a re-bake at a different pose, a resized diver, or a re-tuned emitter all
+     * move the bounds rather than leave them stale.
      *
-     *  - **Forward of the SHOULDERS.** Below that the emitter is back on the torso and the
-     *    original complaint returns. The shoulder line is the first row from the top where the
-     *    silhouette reaches 60% of its widest — the head and neck are 34-48 texels across against
-     *    a 91-texel torso, so the jump at the shoulders is unambiguous.
-     *  - **Its LEADING EDGE at or behind the CROWN.** The emitter is a quad that rasterises into
-     *    the scene, not an abstract point (see [DiveLighting.DIVER_LIGHT_SIZE_METRES]), so a disc
-     *    poking out past the top of his head reads as a lamp floating in front of him rather than
-     *    one he is wearing — and it would do so at every heading at once. That is why the bound is
-     *    on the edge and not on the centre.
+     * ## THIS TEST USED TO ASSERT THE OPPOSITE AND WAS RIGHT AT THE TIME
      *
-     * This is the test that fires if the diver is resized and the offset is left behind, because
-     * both sides are fractions of the same height. It says nothing about whether the result LOOKS
-     * right, which is not testable and was settled by capture instead.
+     * It required the emitter's LEADING edge to stay at or behind the crown — *"a disc poking out
+     * past the top of his head reads as a lamp floating in front of him rather than one he is
+     * wearing"* — which held the offset at 0.40 with a 1.2 m emitter. The emitter is 0.45 m now, and
+     * `DiveLighting.intensityFor` divides by the size, so that shrink RAISED the source's radiance
+     * by 2.67x to keep the delivered irradiance identical. The light map is multiplied onto
+     * `mainSurface`, so an emitter that overlaps the sprite now blows the sprite out. Captured as a
+     * matched pair (`EPT_DEPTH=60`, all three phase pins, same window position): at 0.40 the diver
+     * has a white patch across his mouth and chin and his head and shoulders are washed out, which
+     * is the "glowing from the chest" the offset exists to prevent, returned smaller and brighter.
+     *
+     * So the rule inverted — the emitter must CLEAR the head, not sit inside it — and what is left
+     * is a window rather than a ceiling:
+     *
+     *  - **Trailing edge at or beyond the CROWN.** The quad is off his face. This is the bound that
+     *    replaced the old one, and it is the one that couples the offset to the emitter's size: a
+     *    1.2 m emitter cannot clear the head from 0.55 and this fails, which is correct, because
+     *    that combination is the original complaint.
+     *  - **Gap above the crown under the HEAD'S OWN LENGTH** (crown to shoulder line). Proximity is
+     *    what makes the eye read the light as his; once the light is further from his head than his
+     *    head is long, it is an object floating near him. Both terms come from the sheet, so this
+     *    end is derived too rather than being a number chosen to admit the current value.
+     *
+     * The old lower bound — forward of the shoulders — is gone rather than dropped: the crown bound
+     * is far stronger (0.5198 against 0.3412) and subsumes it.
+     *
+     * It says nothing about whether the result LOOKS right, which is not testable and was settled
+     * by the capture above.
      */
     @Test
-    fun `the torch sits on the head and its emitter stays inside the silhouette`()
+    fun `the torch clears the mask and stays attached to his head`()
     {
         val crown = crownFractionFromSheet()
         val shoulder = shoulderFractionFromSheet()
+        val headLength = crown - shoulder
+        val halfEmitter = DiveLighting.DIVER_LIGHT_SIZE_METRES / Framing.DIVER_HEIGHT_METRES / 2f
+        val trailingEdge = DiveLighting.TORCH_FORWARD_FRACTION - halfEmitter
 
         assertTrue(
-            DiveLighting.TORCH_FORWARD_FRACTION > shoulder,
-            "the torch is ${DiveLighting.TORCH_FORWARD_FRACTION} of the way forward, behind the sheet's shoulder line at $shoulder — " +
-            "that is back on the torso, which is the 'glowing from the chest' the offset exists to fix"
+            trailingEdge >= crown,
+            "the emitter's trailing edge is at $trailingEdge of the body height against a crown at $crown, " +
+            "so the ${DiveLighting.DIVER_LIGHT_SIZE_METRES}m quad overlaps the sprite. The light map is " +
+            "MULTIPLIED onto mainSurface, so an emitter on his face lights it by its own radiance — and " +
+            "intensityFor divides by the size, so the smaller the emitter the worse that is. Move the " +
+            "torch forward, or grow the emitter (which drops its radiance) until it clears the crown"
         )
 
-        val leadingEdge = DiveLighting.TORCH_FORWARD_FRACTION +
-            DiveLighting.DIVER_LIGHT_SIZE_METRES / Framing.DIVER_HEIGHT_METRES / 2f
+        val gap = trailingEdge - crown
         assertTrue(
-            leadingEdge <= crown,
-            "the emitter's leading edge is at $leadingEdge of the body height against a crown at $crown — " +
-            "the quad would rasterise outside his silhouette and read as a lamp floating in front of him"
+            gap < headLength,
+            "the emitter sits $gap of the body height clear of the crown, further than the head is long " +
+            "($headLength) — the light has come off him and reads as something floating alongside"
         )
     }
 

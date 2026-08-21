@@ -194,11 +194,58 @@ object Look
     /** How far the beam is at FULL brightness before `1/d²` takes over, in metres. @see DiveLighting.TORCH_REACH_METRES */
     const val TORCH_REACH_METRES = 24f
 
-    /** The emitter quad's size — what the source LOOKS like, as opposed to how far it reaches. @see DiveLighting.DIVER_LIGHT_SIZE_METRES */
-    const val TORCH_SIZE_METRES = 1.2f
+    /**
+     * The emitter quad's size — what the source LOOKS like, as opposed to how far it reaches.
+     *
+     * **THIS IS THE ONLY DIAL THAT HIDES THE SOURCE, and it costs nothing.** GI draws a light's own
+     * body: the emitter is a quad rasterised into `gi_local_scene`, and a probe inside it hits on
+     * the first march step and gathers its full radiance, so you see the quad. At 1.2 m that was a
+     * disc floating in front of the diver's mask — the owner: *"it is currently drawn as a circle
+     * in front of the diver. I only want the actual lightbeam."* At 0.45 m it is a bright point at
+     * the mask and the cone is all that is left.
+     *
+     * The beam does not change, and that is structural rather than lucky:
+     * `DiveLighting.intensityFor` derives the intensity from an irradiance and DIVIDES by the
+     * size, so shrinking the quad raises its radiance by exactly the factor that keeps the
+     * delivered light identical. Captured as a matched pair at `EPT_DEPTH=60` with all three phase
+     * pins, same window position: the disc is gone and the whole-frame mean moves 30.12 -> 30.37
+     * out of 255.
+     *
+     * THE FLOOR IS 0.142 m on a 1080p booth panel — `scene.vert:86-88` enlarges any quad below
+     * `1500 / (lightTexRes.y * camScale)`, and shrinking past it stops shrinking the disc while
+     * still raising the radiance. 0.45 m keeps three times that margin.
+     *
+     * THE ONE THING THAT DOES *NOT* WORK, so nobody spends the afternoon on it again:
+     * `GlobalIlluminationSystem.sourceIntensity` is the uniform that literally scales a light's own
+     * body (`final.frag:35-42`, `light *= sourceIntensity` where a fragment is both occluder and
+     * light source; the engine default is 1). Setting it to 0 does remove the disc — and replaces
+     * it with a hard-edged BLACK one, because inside the emitter the fragment then gets only the
+     * ambient while every pixel around it in the beam keeps its gathered light. Captured, and the
+     * hole is worse than the disc. It is also global, so the same run turned every pearl's warm
+     * core into a grey ring.
+     *
+     * Nor does the other half of that branch help. `LightEmitter`'s §2 records the trick of capping
+     * an emitter's ALPHA at 0.75 — drawn and seeded (both thresholds are 0.5) but under
+     * `isOccluder`'s 0.8 — which is how the god rays escaped this same code path. It goes the wrong
+     * way here: skipping the branch leaves the gathered light UNSCALED, and inside a source that is
+     * the source's own radiance, so the disc gets brighter rather than dimmer.
+     *
+     * @see DiveLighting.DIVER_LIGHT_SIZE_METRES
+     * @see LightEmitter for the same three shader lines, read for the opposite purpose
+     */
+    const val TORCH_SIZE_METRES = 0.45f
 
-    /** How far along the diver's body the torch sits, as a fraction of his height. @see DiveLighting.TORCH_FORWARD_FRACTION */
-    const val TORCH_FORWARD_FRACTION = 0.40f
+    /**
+     * How far along the diver's body the torch sits, as a fraction of his height.
+     *
+     * **It is bounded against [TORCH_SIZE_METRES] and moves with it.** The emitter must clear the
+     * mask — a small emitter is a bright one ([DiveLighting.intensityFor] divides by the size), and
+     * one overlapping the sprite blows his face out — while staying nearer his head than his head
+     * is long, or the light stops reading as his. At 0.45 m that window is 0.5198 .. 0.6734.
+     *
+     * This was 0.40 with a 1.2 m emitter, on the opposite rule. @see DiveLighting.TORCH_FORWARD_FRACTION
+     */
+    const val TORCH_FORWARD_FRACTION = 0.55f
 
     // =============================================================================================
     // 6. THE PEARLS — what the game is about, and the anglerfish's lure copies them exactly.

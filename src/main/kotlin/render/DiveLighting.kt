@@ -519,29 +519,53 @@ object DiveLighting
      * hypothetical: it is exactly how [DIVER_LIGHT_SIZE_METRES] came to be half the body in
      * `fd036f7`. The offset is a place ON the diver, so it is written as one.
      *
-     * ## Why 0.40 specifically
+     * ## Where the anchors are
      *
      * Measured off the committed sheet rather than reasoned about. A cell is 384 texels tall for
      * [Framing.DIVER_HEIGHT_METRES] of world height, so one texel is 0.0234 m, and (rows where
      * alpha > 16, frame 0):
      *
-     *     snorkel tip / crown   row 2      0.495 of the height above centre
+     *     snorkel tip / crown   row 2      0.4948 of the height above centre
      *     mask                  rows 8-25  0.44
      *     chin                  row 40     0.40
-     *     shoulders             row 55     0.36
+     *     shoulders             row 61     0.3412
      *     HANDS                 rows 150-195   0.06 — i.e. essentially AT the centre
      *
      * So "the hands" is not available as an anchor: this diver swims with his arms at his sides,
-     * and his hands are at his hips. The head is the only leading end there is, and 0.40 puts the
-     * emitter's centre on the chin/mask — a mask light, which is what a free-diver would actually
-     * be wearing.
+     * and his hands are at his hips. The head is the only leading end there is.
      *
-     * 0.40 is also the largest round value that keeps the emitter WHOLLY INSIDE the silhouette:
-     * the quad is [DIVER_LIGHT_SIZE_METRES] across, i.e. 0.133 of the height, so its leading edge
-     * sits at 0.40 + 0.067 = 0.467 against a crown at 0.495. That is the property worth
-     * preserving if anyone re-tunes this — a disc that pokes out past the head reads as a lamp
-     * floating in front of him rather than as one he is wearing, and it would do so at every
-     * heading at once.
+     * ## THE BOUND ON THIS NUMBER INVERTED ON 2026-08-21, AND THE OLD ONE IS KEPT HERE BECAUSE IT
+     * READS AS THE OBVIOUS ANSWER
+     *
+     * It was 0.40, and this section argued for it: *"the largest round value that keeps the emitter
+     * WHOLLY INSIDE the silhouette... a disc that pokes out past the head reads as a lamp floating
+     * in front of him rather than as one he is wearing."* Every word of that was true of a **1.2 m**
+     * emitter. It is measurably backwards for the 0.45 m one [DIVER_LIGHT_SIZE_METRES] is now, and
+     * the reason is [intensityFor]: it divides by the emitter's size, so shrinking the quad by 2.67x
+     * RAISED its radiance by 2.67x to keep the delivered irradiance identical. A dim wide emitter can
+     * sit on the sprite. A bright small one cannot — the light map is multiplied onto `mainSurface`,
+     * so an emitter overlapping the face blows the face out.
+     *
+     * Captured as a matched pair at `EPT_DEPTH=60` with all three phase pins, 0.45 m emitter, same
+     * window position: at 0.40 the diver has a white patch over his mouth and chin and his head and
+     * shoulders are washed out — the "glowing from the chest" this offset was created to fix,
+     * returned in a smaller and brighter form. At 0.55 the source is a point just clear of the mask
+     * with the cone opening from it, which is the torch the owner asked for.
+     *
+     * So the emitter must now CLEAR the silhouette rather than stay inside it, and
+     * `DiveLightingTest.the torch clears the mask and stays attached to his head` asserts the pair
+     * of bounds that leaves — both re-derived from the sheet and from
+     * [DIVER_LIGHT_SIZE_METRES], so changing either the art or the emitter moves them:
+     *
+     *     trailing edge >= crown                     0.5250 >= 0.4948   the quad is off his face
+     *     gap above the crown < the head's length    0.0302 <  0.1536   the light is still his
+     *
+     * That is 0.5198 .. 0.6734 for a 0.45 m emitter, and 0.55 sits in the middle of it. **The two
+     * numbers are coupled and the test says so**: put the emitter back to 1.2 m and the lower bound
+     * moves to 0.5615, above this value, because a quad that wide cannot clear the head from here.
+     *
+     * The old lower bound — forward of the SHOULDERS — is gone rather than dropped: 0.5198 is past
+     * 0.3412 by a wide margin, so the crown bound subsumes it entirely.
      *
      * ## The hovering case is safe BY CONSTRUCTION, not by luck
      *
