@@ -396,4 +396,20 @@ class RunLifecycleTest
         assertEquals(RunLifecycleState.PLAYING, lc.state, "an abandoned pause must let the run continue")
         assertFalse(lc.justStarted, "and must not restart it")
     }
+
+    @Test
+    fun `a one-frame input pulse starts a run and does not latch`()
+    {
+        // EnPustTil now passes an EDGE (LifecycleInputEdges.commit) where it used to pass a
+        // level. RunLifecycle re-edges its input, so a 1-frame pulse must still fire - and
+        // must not leave justStarted set on the frame after.
+        val lc = newLifecycle()
+
+        lc.update(dt = 0.016f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertTrue(lc.justStarted)
+
+        lc.update(dt = 0.016f, anyInputPressed = false, runOver = false)
+        assertFalse(lc.justStarted, "the pulse must not latch")
+    }
 }

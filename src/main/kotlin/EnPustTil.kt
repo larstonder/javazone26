@@ -27,6 +27,7 @@ import render.DiveRenderer
 import render.DiverSprite
 import render.Hud
 import render.IridescenceRenderer
+import render.LifecycleInputEdges
 import render.LightEmitter
 import render.MoteSprite
 import render.Motes
@@ -502,6 +503,13 @@ class EnPustTil : PulseEngineGame()
     private lateinit var sim: DiveSim
     private val camera = DiveCamera()
     private val lifecycle = RunLifecycle()
+
+    /**
+     * Per-source lifecycle edges. See LifecycleInputEdges' class doc for the stuck-button
+     * lockout this replaced - the single OR that used to live here could be held true for two
+     * days by one jammed encoder button, with no sign of it on screen.
+     */
+    private val lifecycleEdges = LifecycleInputEdges()
 
     // Score persistence — registered as an engine Service in onCreate below, which
     // gives it onCreate (load from disk)/onDestroy (final save) hooks driven by the
@@ -1000,10 +1008,16 @@ class EnPustTil : PulseEngineGame()
         // see that method's doc), lifecycle input scans EVERY connected gamepad. Index 0 is
         // not guaranteed to be the cabinet's stick at a booth; see anyLifecycleActionPressed's
         // doc (render/GamepadScan.kt) for why "any button to start" must mean any gamepad.
-        val gamepadActionPressed = engine.input.gamepads.map {
-            it.isPressed(RESTART_BUTTON) || it.isPressed(RESTART_BUTTON_ALT)
+        // Every (pad, button) pair is its own source now, edged independently - see
+        // LifecycleInputEdges. This used to OR the LEVELS together and let RunLifecycle
+        // edge the result, which one stuck button could hold true forever.
+        lifecycleEdges.begin(engine.data.deltaTime)
+        engine.input.gamepads.forEach { pad ->
+            lifecycleEdges.offer(pad.id, RESTART_BUTTON.ordinal, pad.isPressed(RESTART_BUTTON))
+            lifecycleEdges.offer(pad.id, RESTART_BUTTON_ALT.ordinal, pad.isPressed(RESTART_BUTTON_ALT))
         }
-        val actionPressed = anyLifecycleActionPressed(engine.input.wasClicked(Key.SPACE), gamepadActionPressed)
+        lifecycleEdges.offerKeyboardEdge(engine.input.wasClicked(Key.SPACE))
+        val actionPressed = lifecycleEdges.commit()
 
         // Initials entry (ENTER_INITIALS only — harmless to compute unconditionally
         // otherwise, RunLifecycle simply ignores these outside that state). Reuses the
