@@ -1,3 +1,4 @@
+import booth.CallbackSites
 import render.BoothStatus
 import render.Framing
 import kotlin.test.Test
@@ -55,17 +56,17 @@ class AttractScreenTest
         //
         // Every literal inside BoothStatus.line is plain ASCII, so the only UNCONSTRAINED
         // input is lastFailureSite — a caller-supplied String, not a compile-time literal.
-        // Looping the real EnPustTil.SITE_* constants through here (rather than one
+        // Looping the real booth.CallbackSites constants through here (rather than one
         // hardcoded stand-in like "onFixedUpdate") is what would catch a future site
         // renamed to include an en dash or a smart quote: exactly defect 1 in this class's
         // own doc, and exactly the kind of change that compiles, passes every other test,
         // and vanishes from the screen with no warning.
         val sites = listOf(
-            EnPustTil.SITE_CREATE,
-            EnPustTil.SITE_FIXED_UPDATE,
-            EnPustTil.SITE_UPDATE,
-            EnPustTil.SITE_RENDER,
-            EnPustTil.SITE_DESTROY,
+            CallbackSites.CREATE,
+            CallbackSites.FIXED_UPDATE,
+            CallbackSites.UPDATE,
+            CallbackSites.RENDER,
+            CallbackSites.DESTROY,
             null
         )
         for (site in sites)

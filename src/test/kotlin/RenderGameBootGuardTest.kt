@@ -66,4 +66,52 @@ class RenderGameBootGuardTest
         assertTrue("drawBootFailedScreen" in guardBlock, "the guard no longer routes to drawBootFailedScreen")
         assertTrue("return" in guardBlock, "the guard no longer returns — it would fall through into the lateinit reads below it")
     }
+
+    @Test
+    fun `worldUnusable checks scoreRepository as well as sim, not just sim`()
+    {
+        // worldUnusable guards TWO lateinit fields. sim's half is exercised directly above
+        // (DiveRenderer.render hands `sim` to the GPU inside renderGame itself); scoreRepository
+        // has no equivalent direct read in renderGame — it is first read one function over, in
+        // drawLeaderboard (scoreRepository.topN(...)), reached from renderGame's `when` branch
+        // for IDLE/PAUSED. A regression that dropped scoreRepository from the OR — say, "sim is
+        // the only one that matters, DiveRenderer proves it" — would leave a booth that boots
+        // with sim built but scoreRepository's construction failed (a plausible split failure:
+        // they are two separate statements) drawing the WORLD, then throwing on
+        // scoreRepository.topN every frame the instant lifecycle.state is IDLE — the exact
+        // black-but-alive cabinet this guard exists to prevent, just for the other field.
+        val source = File("src/main/kotlin/EnPustTil.kt").readText()
+        val definition = stripComments(source.substringAfter("private val worldUnusable").substringBefore("\n\n"))
+
+        assertTrue("::sim.isInitialized" in definition, "worldUnusable no longer checks sim — re-read this test")
+        assertTrue(
+            "::scoreRepository.isInitialized" in definition,
+            "worldUnusable no longer checks scoreRepository — a createGame failure that leaves " +
+            "sim built but scoreRepository unconstructed would pass this guard, reach " +
+            "drawLeaderboard, and throw on scoreRepository.topN every IDLE-state frame"
+        )
+    }
+
+    @Test
+    fun `the worldUnusable guard would also catch a scoreRepository read added directly to renderGame`()
+    {
+        // Unlike sim, renderGame has no CURRENT direct scoreRepository token to check the
+        // ordering of (see the class doc: it is one function over, in drawLeaderboard) — so
+        // this cannot assert today's code the way the sim ordering test does. What it CAN
+        // assert is that IF one were ever added directly to renderGame's own body — a "quick
+        // debug line" above the guard, say — it would have to come after the guard to pass,
+        // which is exactly the property worth protecting even though nothing exercises it yet.
+        val code = stripComments(body)
+        val guardIndex = code.indexOf("if (worldUnusable)")
+        val scoreRepositoryIndex = Regex("""\bscoreRepository\b""").find(code)?.range?.first
+
+        assertTrue(guardIndex >= 0, "renderGame's `if (worldUnusable)` early return is missing")
+        if (scoreRepositoryIndex != null)
+            assertTrue(
+                guardIndex < scoreRepositoryIndex,
+                "a scoreRepository read at offset $scoreRepositoryIndex now comes before the " +
+                "worldUnusable guard at offset $guardIndex — scoreRepository is lateinit and unset " +
+                "in exactly the case this guard exists for"
+            )
+    }
 }

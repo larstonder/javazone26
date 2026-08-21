@@ -1,5 +1,6 @@
 import booth.BoothLog
 import booth.CallbackGuard
+import booth.CallbackSites
 import dive.DiveInput
 import dive.DiveSim
 import dive.Tuning
@@ -112,6 +113,15 @@ fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: 
  * the game cannot otherwise reach and produce measurements of nothing.
  */
 const val DEPTH_PIN_ENV = "EPT_DEPTH"
+
+/**
+ * A deliberate boot-failure rehearsal switch, in the same family as EPT_DEV/EPT_DEPTH/
+ * EPT_SCREENSHOT/EPT_EDITOR (see CLAUDE.md for all five). Named here, top-level beside
+ * [DEPTH_PIN_ENV] and for the identical reason ([EnPustTil]'s companion is private), rather
+ * than left as a bare literal at its one call site — see [EnPustTil.createGame] for where
+ * it is read and why exactly that point in the function.
+ */
+const val FAIL_BOOT_ENV = "EPT_FAIL_BOOT"
 
 /** @see parseDepthPin — top-level beside it, because [EnPustTil]'s companion is private. */
 fun parseDepthPin(raw: String?, maxDepth: Float): Float?
@@ -594,7 +604,7 @@ class EnPustTil : PulseEngineGame()
     // before that, which nothing renders in.
     private var opaqueWater: OpaqueWaterEffect? = null
 
-    override fun onCreate() = guard.run(SITE_CREATE, createBody)
+    override fun onCreate() = guard.run(CallbackSites.CREATE, createBody)
 
     /**
      * True if [createGame] threw ANYWHERE inside it — including late, fully recoverable
@@ -606,14 +616,14 @@ class EnPustTil : PulseEngineGame()
      * [worldUnusable] for that narrower, more severe condition, and [drawBootFailedScreen]
      * for the full-frame screen it alone routes to.
      */
-    private val bootFailed: Boolean get() = guard.failureCount(SITE_CREATE) > 0
+    private val bootFailed: Boolean get() = guard.failureCount(CallbackSites.CREATE) > 0
 
     /**
      * True only when `sim` or `scoreRepository` never got constructed at all — the one
      * `createGame` failure with no world and no HUD left to draw around it. A strict subset
      * of [bootFailed]: every `worldUnusable` frame is also a `bootFailed` one (the
      * construction lines are inside `createGame`, so failing them counts at
-     * [SITE_CREATE] too), but most `bootFailed` frames (an asset failed to load, the
+     * [CallbackSites.CREATE] too), but most `bootFailed` frames (an asset failed to load, the
      * lighting rig failed to set up) are NOT `worldUnusable` — the run is still playable,
      * just missing a texture or an effect. [renderGame] checks this, not [bootFailed], for
      * exactly that reason.
@@ -689,16 +699,16 @@ class EnPustTil : PulseEngineGame()
         depthPin = parseDepthPin(System.getenv(DEPTH_PIN_ENV), Tuning.MAX_DEPTH)
         depthPin?.let { Logger.warn { "[$DEPTH_PIN_ENV] the diver is PINNED at $it m — this is a capture rig, not a playable build" } }
 
-        // EPT_FAIL_BOOT: a deliberate boot-failure rehearsal switch, in the same family as
-        // EPT_DEV/EPT_DEPTH/EPT_SCREENSHOT/EPT_EDITOR. Placed here — after "hud" already
-        // exists (so drawBootFailedScreen has a real surface to draw on) and before `sim`/
-        // `scoreRepository` are constructed (so EnPustTil.sim/scoreRepositoryInitialized
-        // below is false, which is what actually routes renderGame to the full-frame
-        // screen) — it reproduces the exact unrecoverable case this task exists to make
-        // visible, on demand, without editing source. Unset at the booth: one getenv at
-        // startup, same cost as every other EPT_* flag here.
-        if (System.getenv("EPT_FAIL_BOOT") != null)
-            error("EPT_FAIL_BOOT")
+        // FAIL_BOOT_ENV (EPT_FAIL_BOOT): placed here — after "hud" already exists (so
+        // drawBootFailedScreen has a real surface to draw on) and before `sim`/
+        // `scoreRepository` are constructed (so `worldUnusable` below is true, which is what
+        // actually routes renderGame to the full-frame screen) — it reproduces the exact
+        // unrecoverable case this task exists to make visible, on demand, without editing
+        // source. See FAIL_BOOT_ENV's own doc for why it is a named constant rather than a
+        // literal, and CLAUDE.md for it alongside the other four EPT_* flags. Unset at the
+        // booth: one getenv at startup, same cost as every other EPT_* flag here.
+        if (System.getenv(FAIL_BOOT_ENV) != null)
+            error(FAIL_BOOT_ENV)
 
         sim = DiveSim(seed = dailySeed)
         applyDepthPin()
@@ -967,7 +977,7 @@ class EnPustTil : PulseEngineGame()
         }
     }
 
-    override fun onFixedUpdate() = guard.run(SITE_FIXED_UPDATE, fixedUpdateBody)
+    override fun onFixedUpdate() = guard.run(CallbackSites.FIXED_UPDATE, fixedUpdateBody)
 
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun fixedUpdateGame()
@@ -1024,7 +1034,7 @@ class EnPustTil : PulseEngineGame()
         CameraRig.apply(engine, camera.depth)
     }
 
-    override fun onUpdate() = guard.run(SITE_UPDATE, updateBody)
+    override fun onUpdate() = guard.run(CallbackSites.UPDATE, updateBody)
 
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun updateGame()
@@ -1188,7 +1198,7 @@ class EnPustTil : PulseEngineGame()
             scoreRepository.registerScore(engine, lifecycle.completedInitials, sim.banked)
     }
 
-    override fun onDestroy() = guard.run(SITE_DESTROY, destroyBody)
+    override fun onDestroy() = guard.run(CallbackSites.DESTROY, destroyBody)
 
     /**
      * The real body. See [guard] for why nothing here may throw past this class.
@@ -1207,7 +1217,7 @@ class EnPustTil : PulseEngineGame()
         Logger.info { "Én Pust Til shutting down cleanly" }
     }
 
-    override fun onRender() = guard.run(SITE_RENDER, renderBody)
+    override fun onRender() = guard.run(CallbackSites.RENDER, renderBody)
 
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun renderGame()
@@ -1516,7 +1526,15 @@ class EnPustTil : PulseEngineGame()
         // depending on how many people had played that morning. A dim, neutral grey reads as
         // "diagnostic text", distinct from both the warm leaderboard rows and the alarming
         // red of drawBootFailedScreen.
-        hud.setDrawColor(Color(0.6f, 0.6f, 0.65f))
+        //
+        // The FLOAT overload, not `Color(0.6f, 0.6f, 0.65f)` — `Color` is a plain class with
+        // four mutable float fields (decompiled: not a Kotlin value class), so constructing
+        // one heap-allocates, and this call runs every attract-screen frame for however many
+        // hours the cabinet idles between plays. CLAUDE.md's no-per-frame-allocation
+        // exemption is HUD TEXT FORMATTING (BoothStatus.line's StringBuilder) — it does not
+        // cover a colour object. Every other setDrawColor call in this file either reuses a
+        // singleton (Color.RED, Color.GREEN) or uses this same float overload.
+        hud.setDrawColor(0.6f, 0.6f, 0.65f, 1f)
         hud.drawText(
             BoothStatus.line(
                 seed = dailySeed,
@@ -1902,24 +1920,10 @@ class EnPustTil : PulseEngineGame()
         }
     }
 
-    // internal, not private: AttractScreenTest loops the real SITE_* values through
-    // BoothStatus.line's drawability check (see "the booth status line stays drawable for
-    // every real failure site" there) rather than hardcoding one literal — a renamed site
-    // (an en dash slipped into a call site name, say) would otherwise vanish from the
-    // screen with no test noticing. Kotlin's default Gradle test source set is compiled
-    // associated with main, so `internal` is visible there without exporting these publicly.
-    internal companion object
+    private companion object
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
-
-        // Site names for CallbackGuard. Constants rather than literals so the booth status line
-        // and the log agree, and so a typo cannot silently create a sixth counter.
-        const val SITE_CREATE = "onCreate"
-        const val SITE_FIXED_UPDATE = "onFixedUpdate"
-        const val SITE_UPDATE = "onUpdate"
-        const val SITE_RENDER = "onRender"
-        const val SITE_DESTROY = "onDestroy"
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90

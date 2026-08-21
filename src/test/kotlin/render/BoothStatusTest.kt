@@ -1,5 +1,6 @@
 package render
 
+import booth.CallbackSites
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -142,5 +143,45 @@ class BoothStatusTest
         )
 
         line.forEach { c -> assertTrue(c.code in 0x20..0x11F, "undrawable char U+%04X in: %s".format(c.code, line)) }
+    }
+
+    @Test
+    fun `every real failure site stays drawable, not just the placeholder literal above`()
+    {
+        // Every literal inside BoothStatus.line is plain ASCII, so lastFailureSite is the
+        // only UNCONSTRAINED input - a caller-supplied String, not a compile-time literal.
+        // CallbackSites now lives in booth/, alongside its only other consumer
+        // (CallbackGuard), which is what lets this pure render-package test loop the REAL
+        // site names (an internal declaration is visible module-wide, not just within its
+        // package) instead of trusting the one placeholder literal above. AttractScreenTest
+        // asserts the identical property from EnPustTil's side; kept in both places
+        // deliberately, per the Task 5 review - both are cheap, and this one lives beside
+        // the string it guards.
+        val sites = listOf(
+            CallbackSites.CREATE,
+            CallbackSites.FIXED_UPDATE,
+            CallbackSites.UPDATE,
+            CallbackSites.RENDER,
+            CallbackSites.DESTROY,
+            null
+        )
+        for (site in sites)
+        {
+            val line = BoothStatus.line(
+                seed = 20260903L,
+                unmappedPads = 9,
+                stuckSources = 9,
+                chatterSources = 9,
+                callbackFailures = 99,
+                lastFailureSite = site,
+                bootFailed = true
+            )
+            line.forEach { c ->
+                assertTrue(
+                    c.code in 0x20..0x11F,
+                    "undrawable char U+%04X in (lastFailureSite=$site): %s".format(c.code, line)
+                )
+            }
+        }
     }
 }
