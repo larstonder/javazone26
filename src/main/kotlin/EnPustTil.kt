@@ -386,6 +386,21 @@ object AttractLayout
     /** Total width of a leaderboard row, as a fraction of screen height. */
     fun rowWidth() = ROW_HALF_SPAN * 2f
 
+    // --- The booth status line: bottom-left, small, findable but ignorable --------------
+    // See render/BoothStatus.kt for what it says and why. Geometry lives here rather than
+    // as inline magic numbers at the draw site, same as everything else on this screen —
+    // this object's own doc says "WHERE things go is AttractLayout's problem".
+    const val STATUS_FONT = 0.014f
+
+    /**
+     * Where the line sits, as a fraction of screen height. NOT flush with the bottom edge
+     * (`1f`): `drawText`'s default `yOrigin` was not confirmed against a capture with a
+     * non-null failure site, whose descenders (`onFixedUpdate`, `onUpdate`) would be the
+     * first thing clipped by a hard bottom edge. The `* 1.5f` margin below buys half a
+     * font-height of slack rather than one exactly, so a descender has somewhere to go.
+     */
+    const val STATUS_Y = 1f - STATUS_FONT * 1.5f
+
     // The three column anchors, in pixels, given the screen centre and height. Returned
     // from here rather than computed at the draw site so the balance they exist to
     // guarantee is assertable (AttractScreenTest) rather than merely intended: the rank's
@@ -581,12 +596,88 @@ class EnPustTil : PulseEngineGame()
 
     override fun onCreate() = guard.run(SITE_CREATE, createBody)
 
-    /** True if [createGame] threw. The cabinet stays up and says so rather than dying silently. */
+    /**
+     * True if [createGame] threw ANYWHERE inside it — including late, fully recoverable
+     * asset-load failures (DiverSprite/RockFace/Backdrop/LightEmitter/MoteSprite/
+     * PearlNormalMap/DiveLighting.setup all have their own documented fallback and leave
+     * `sim`/`scoreRepository` set regardless). Feeds [drawBoothStatusLine]'s `bootFailed`
+     * segment on the ordinary, still-playable attract screen. Deliberately NOT what
+     * [renderGame] uses to decide whether the world itself is drawable — see
+     * [worldUnusable] for that narrower, more severe condition, and [drawBootFailedScreen]
+     * for the full-frame screen it alone routes to.
+     */
     private val bootFailed: Boolean get() = guard.failureCount(SITE_CREATE) > 0
+
+    /**
+     * True only when `sim` or `scoreRepository` never got constructed at all — the one
+     * `createGame` failure with no world and no HUD left to draw around it. A strict subset
+     * of [bootFailed]: every `worldUnusable` frame is also a `bootFailed` one (the
+     * construction lines are inside `createGame`, so failing them counts at
+     * [SITE_CREATE] too), but most `bootFailed` frames (an asset failed to load, the
+     * lighting rig failed to set up) are NOT `worldUnusable` — the run is still playable,
+     * just missing a texture or an effect. [renderGame] checks this, not [bootFailed], for
+     * exactly that reason.
+     */
+    private val worldUnusable: Boolean get() = !::sim.isInitialized || !::scoreRepository.isInitialized
 
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun createGame()
     {
+        // THE HUD SURFACE IS CREATED FIRST, BEFORE ANYTHING ELSE IN THIS FUNCTION THAT CAN
+        // THROW — moved here from much further down (it used to sit right before
+        // IridescenceRenderer.addTo(hudSurface), after asset loading and DiveLighting.setup)
+        // specifically so [renderGame]'s bootFailed branch always has a real, correctly
+        // scaled surface to draw the boot-failed message on.
+        //
+        // THE BUG THIS FIXES: engine.gfx.getSurfaceOrDefault("hud") — decompiled,
+        // `GraphicsImpl.getSurfaceOrDefault` is `surfaceMap[name] ?: mainSurface`, a SILENT
+        // fallback with no log and no warning. If a failure anywhere between the old
+        // creation point and the end of createGame (DiverSprite/RockFace/Backdrop/
+        // LightEmitter/MoteSprite/PearlNormalMap.load, DiveLighting.setup, ...) left "hud"
+        // never created, drawBootFailedScreen's `getSurfaceOrDefault("hud")` would silently
+        // hand back mainSurface — whose camera is engine.gfx.mainCamera, a WORLD camera in
+        // METRES scaled by pixels-per-metre (see the camera-null comment a few lines below,
+        // preserved where the rest of this surface's setup still lives). Screen-pixel
+        // coordinates fed through that camera land hundreds of world-metres off screen —
+        // exactly the "black, silent cabinet" this whole mechanism exists to end, and for
+        // precisely the failures most likely to occur (the asset-loading half of this
+        // function, all GL calls). Creating "hud" before any of that runs means it always
+        // exists by the time anything downstream could fail — this call depends on nothing
+        // but `engine`, so there is no cost to moving it first.
+        //
+        // Explicit rather than all-default (verified against the decompiled
+        // Graphics/GraphicsImpl interface in the engine jar, not assumed):
+        //   - backgroundColor: engine default IS already Color.BLANK (transparent) —
+        //     confirmed from Graphics.createSurface$default's bytecode. Named here so that
+        //     stays true on purpose rather than by accident.
+        //   - multisampling: engine default is Multisampling.NONE. MSAA16 smooths the
+        //     bubble-ring/depth-tape edges and outlined text at negligible cost for a
+        //     screen-space overlay this small (see the reference's SceneRenderSystem,
+        //     which uses MSAA16 for both of its overlay surfaces).
+        //   - zOrder: left null, the engine assigns an auto-decrementing counter
+        //     (`lastZOrder--`) in creation order. HUD_Z_ORDER pins it explicitly instead —
+        //     now doubly load-bearing, since this call no longer sits next to
+        //     DiveLighting.setup() at all, and an implicit zOrder would have made THIS move
+        //     silently change the HUD's layering relative to GI's own surfaces. Matches the
+        //     reference's SURFACE_MENU_UI (-90): smaller zOrder sorts later in GraphicsImpl's
+        //     composite pass (sorted by -zOrder ascending, confirmed in the decompiled
+        //     comparator), i.e. drawn ON TOP.
+        //   - camera: left null (default) deliberately — the engine default IS "create a
+        //     fresh orthographic camera" (GraphicsImpl.createSurface builds its own
+        //     DefaultCamera.createOrthographic when none is passed), which is exactly what a
+        //     screen-space HUD needs. It must NOT be handed the shared main camera: passing
+        //     it would multiply every HUD coordinate by pixels-per-metre and smear the whole
+        //     overlay off screen (this is the exact defect the getSurfaceOrDefault fallback
+        //     above would have reintroduced). The HUD is authored in screen pixels and stays
+        //     that way; what makes its diver-anchored elements track the world is the single
+        //     worldPosToScreenPos call in onRender, not a shared camera. Leave it null.
+        val hudSurface = engine.gfx.createSurface(
+            name = "hud",
+            backgroundColor = Color.BLANK,
+            multisampling = Multisampling.MSAA16,
+            zOrder = HUD_Z_ORDER
+        )
+
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
         // application.cfg (loaded by the engine before onCreate runs — see dailySeed's
         // doc) is the only source for a technician's day-two override. See
@@ -597,6 +688,17 @@ class EnPustTil : PulseEngineGame()
         // booth, where EPT_DEPTH is not set, so applyDepthPin below is a null check per run.
         depthPin = parseDepthPin(System.getenv(DEPTH_PIN_ENV), Tuning.MAX_DEPTH)
         depthPin?.let { Logger.warn { "[$DEPTH_PIN_ENV] the diver is PINNED at $it m — this is a capture rig, not a playable build" } }
+
+        // EPT_FAIL_BOOT: a deliberate boot-failure rehearsal switch, in the same family as
+        // EPT_DEV/EPT_DEPTH/EPT_SCREENSHOT/EPT_EDITOR. Placed here — after "hud" already
+        // exists (so drawBootFailedScreen has a real surface to draw on) and before `sim`/
+        // `scoreRepository` are constructed (so EnPustTil.sim/scoreRepositoryInitialized
+        // below is false, which is what actually routes renderGame to the full-frame
+        // screen) — it reproduces the exact unrecoverable case this task exists to make
+        // visible, on demand, without editing source. Unset at the booth: one getenv at
+        // startup, same cost as every other EPT_* flag here.
+        if (System.getenv("EPT_FAIL_BOOT") != null)
+            error("EPT_FAIL_BOOT")
 
         sim = DiveSim(seed = dailySeed)
         applyDepthPin()
@@ -774,51 +876,6 @@ class EnPustTil : PulseEngineGame()
         PearlNormalMap.load(engine)
 
         DiveLighting.setup(engine)
-
-        // The HUD is drawn to its OWN transparent surface, composited on top of mainSurface
-        // at the backbuffer stage, rather than onto mainSurface itself. GlobalIlluminationSystem
-        // (wired up by DiveLighting) adds a multiply post-processing effect that relights
-        // whatever mainSurface holds by the computed light map — that is exactly what makes
-        // the Abyss go dark, but it would ALSO multiply the HUD into near-invisibility, since
-        // BANKED/the clock/depth tape sit far from any lamp. Verified empirically: with the
-        // HUD on mainSurface, "BANKED 7" in the Abyss reads as RGB(11,8,1) — practically
-        // black. A separate surface outside GI's target ("main") keeps the HUD fully lit
-        // regardless of world darkness, which is what "the HUD remains readable over the
-        // darkened scene" requires.
-        // Explicit rather than all-default (verified against the decompiled
-        // Graphics/GraphicsImpl interface in the engine jar, not assumed):
-        //   - backgroundColor: engine default IS already Color.BLANK (transparent) —
-        //     confirmed from Graphics.createSurface$default's bytecode. Named here so that
-        //     stays true on purpose rather than by accident.
-        //   - multisampling: engine default is Multisampling.NONE. MSAA16 smooths the
-        //     bubble-ring/depth-tape edges and outlined text at negligible cost for a
-        //     screen-space overlay this small (see the reference's SceneRenderSystem,
-        //     which uses MSAA16 for both of its overlay surfaces).
-        //   - zOrder: left null, the engine assigns an auto-decrementing counter
-        //     (`lastZOrder--`) in creation order — so simply reordering DiveLighting.setup()
-        //     and this call would silently change the HUD's layering. HUD_Z_ORDER pins it
-        //     explicitly instead, matching the reference's SURFACE_MENU_UI (-90): smaller
-        //     zOrder sorts later in GraphicsImpl's composite pass (sorted by -zOrder
-        //     ascending, confirmed in the decompiled comparator), i.e. drawn ON TOP —
-        //     comfortably past anything GlobalIlluminationSystem creates, which derives its
-        //     own surfaces' zOrder relative to mainSurface's rather than through this
-        //     counter, so it can never collide with this value.
-        //   - camera: left null (default) deliberately — the engine default IS "create a
-        //     fresh orthographic camera" (GraphicsImpl.createSurface builds its own
-        //     DefaultCamera.createOrthographic when none is passed), which is exactly what a
-        //     screen-space HUD needs. It must NOT be handed the shared main camera, and this
-        //     is no longer a subtle point: engine.gfx.mainCamera is now a WORLD camera scaled
-        //     by pixels-per-metre (~20 at 1200 px tall, ~36 at 4K — see CameraRig), so passing
-        //     it would multiply every HUD coordinate by that factor and smear the whole
-        //     overlay off screen. The HUD is authored in screen pixels and stays that way;
-        //     what makes its diver-anchored elements track the world is the single
-        //     worldPosToScreenPos call in onRender, not a shared camera. Leave it null.
-        val hudSurface = engine.gfx.createSurface(
-            name = "hud",
-            backgroundColor = Color.BLANK,
-            multisampling = Multisampling.MSAA16,
-            zOrder = HUD_Z_ORDER
-        )
 
         // THE GAME'S OWN SHADER, on both surfaces — one program, two coordinate spaces.
         //
@@ -1155,15 +1212,23 @@ class EnPustTil : PulseEngineGame()
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun renderGame()
     {
-        // A failed onCreate leaves sim/scoreRepository lateinit-unset (see bootFailed's
-        // doc). Every draw below touches one or the other before anything reaches the
-        // screen — DiveRenderer.render hands `sim` straight to the GPU a few lines down —
-        // so a frame that fell through to there after a failed boot would throw EVERY
-        // TIME, be swallowed by CallbackGuard, and draw NOTHING: a black-but-alive cabinet,
+        // NOT `bootFailed` — that is "createGame threw SOMEWHERE", true even for a late,
+        // fully recoverable asset-load failure (DiverSprite/RockFace/.../DiveLighting.setup
+        // all degrade to a documented fallback and leave `sim`/`scoreRepository` set). The
+        // condition that actually matters here is narrower and checked directly:
+        // `worldUnusable` is true only when one of those two lateinit fields never got
+        // constructed at all, which is the ONE case with no world or HUD left to draw.
+        // Reading `sim`/`scoreRepository` any other way below — DiveRenderer.render hands
+        // `sim` straight to the GPU a few lines down — would throw EVERY frame from here on,
+        // be swallowed by CallbackGuard, and draw NOTHING: a black-but-alive cabinet,
         // indistinguishable on screen from a machine that is simply off. Checked FIRST,
-        // before any lateinit access, and returns rather than falling through — there is no
-        // world or HUD to draw without a DiveSim.
-        if (bootFailed)
+        // before any lateinit access, and returns rather than falling through.
+        //
+        // A late, recoverable createGame failure instead falls through to the ordinary
+        // drawIdleScreen path below, where drawBoothStatusLine passes the live `bootFailed`
+        // value into BoothStatus.line — so it is still named on screen, just on a cabinet
+        // that is still playable, which is the brief's original design for this line.
+        if (worldUnusable)
         {
             drawBootFailedScreen(engine.gfx.getSurfaceOrDefault("hud"))
             return
@@ -1428,16 +1493,30 @@ class EnPustTil : PulseEngineGame()
      * fault nobody at the booth can see is the exact problem this line exists for. See
      * [BoothStatus] for what each segment means and why.
      *
-     * Only ever reached with `bootFailed = false`: [renderGame] returns before this whole
-     * draw path is reached when it is true — see [drawBootFailedScreen], the one place
-     * `bootFailed = true` is ever passed.
+     * `bootFailed` here is [EnPustTil.bootFailed] — "createGame threw somewhere" — NOT the
+     * narrower [worldUnusable] that routes [renderGame] to [drawBootFailedScreen] instead of
+     * here. This is therefore the path a LATE, recoverable createGame failure is reported
+     * through: the run is fully playable (an asset fell back to a placeholder, say), but the
+     * fault still deserves the loudest wording this line has, because a technician needs to
+     * know one thing broke even if nothing visible did.
      */
     private fun drawBoothStatusLine(hud: Surface, w: Float, h: Float)
     {
         // A fraction of screen HEIGHT, not a pixel count and not width — engine.window.*
         // returns physical framebuffer pixels, and the booth display's aspect ratio is not
-        // known in advance (CLAUDE.md, platform constraints).
-        val fontSize = h * 0.014f
+        // known in advance (CLAUDE.md, platform constraints). Geometry lives in
+        // AttractLayout, not as inline numbers here — see that object's STATUS_FONT/STATUS_Y
+        // doc for the descender-clipping margin baked into STATUS_Y.
+        val fontSize = h * AttractLayout.STATUS_FONT
+
+        // Explicit colour, always — this used to be the only attract-screen text with no
+        // setDrawColor of its own, so it silently inherited whatever the PREVIOUS draw call
+        // left set: `cold` from drawLeaderboard's last row on a day with scores, or
+        // Color.WHITE from PRESS_START on an empty board. Same line, two different colours
+        // depending on how many people had played that morning. A dim, neutral grey reads as
+        // "diagnostic text", distinct from both the warm leaderboard rows and the alarming
+        // red of drawBootFailedScreen.
+        hud.setDrawColor(Color(0.6f, 0.6f, 0.65f))
         hud.drawText(
             BoothStatus.line(
                 seed = dailySeed,
@@ -1446,21 +1525,21 @@ class EnPustTil : PulseEngineGame()
                 chatterSources = lifecycleEdges.chatterCount,
                 callbackFailures = guard.totalFailures,
                 lastFailureSite = guard.lastFailureSite,
-                bootFailed = false
+                bootFailed = bootFailed
             ),
             x = fontSize,
-            y = h - fontSize,
+            y = h * AttractLayout.STATUS_Y,
             fontSize = fontSize
         )
     }
 
     /**
-     * The ENTIRE frame whenever [bootFailed] is true. There is no `DiveSim` to draw a world
-     * or a numeric HUD around — see [renderGame]'s early return, which is what routes here
-     * instead of falling through into code that would throw on `sim`/`scoreRepository`
-     * every frame. Deliberately the only thing on screen, not one line among many: a failed
-     * boot is the single case a technician cannot walk away from, and everything else this
-     * status line reports is a degraded-but-still-running booth.
+     * The ENTIRE frame whenever [worldUnusable] is true. There is no `DiveSim` to draw a
+     * world or a numeric HUD around — see [renderGame]'s early return, which is what routes
+     * here instead of falling through into code that would throw on `sim`/`scoreRepository`
+     * every frame. Deliberately the only thing on screen, not one line among many: this is
+     * the single case a technician cannot walk away from, and everything else this status
+     * line reports is a degraded-but-still-running booth.
      */
     private fun drawBootFailedScreen(hud: Surface)
     {
@@ -1475,8 +1554,17 @@ class EnPustTil : PulseEngineGame()
                 unmappedPads = unmappedGamepadCount(),
                 stuckSources = lifecycleEdges.stuckCount,
                 chatterSources = lifecycleEdges.chatterCount,
-                callbackFailures = guard.totalFailures,
-                lastFailureSite = guard.lastFailureSite,
+                // Suppressed, not passed through from `guard`: with `sim` unset,
+                // onFixedUpdate/onUpdate throw on EVERY subsequent frame too (both read
+                // `sim` the moment lifecycle logic touches it), so guard.totalFailures
+                // climbs at 60-120 Hz and guard.lastFailureSite reads "onUpdate" or
+                // "onFixedUpdate" — not "onCreate", where the fault actually happened. Left
+                // live, the FAULT segment would flicker a different, ever-growing digit
+                // count every frame and misattribute the site, right next to the one segment
+                // that already says everything an attendant needs ("BOOT FAILED"). 0/null
+                // omits it entirely — see BoothStatus.line's callbackFailures > 0 gate.
+                callbackFailures = 0,
+                lastFailureSite = null,
                 bootFailed = true
             ),
             x = w * 0.05f,
@@ -1732,14 +1820,25 @@ class EnPustTil : PulseEngineGame()
      * Joysticks GLFW can see that SDL has no gamepad mapping for — the exact state in which
      * the cabinet's encoder is invisible to `engine.input.gamepads` while working fine at
      * the OS level. Extracted out of [logGamepadDiagnostics] rather than duplicated so the
-     * number on the booth status line and the number in the log cannot drift apart — see
-     * that function's own comment on why it still walks the raw range itself as well, for
-     * per-joystick logging this count alone cannot provide.
+     * booth status line ([drawBoothStatusLine], [drawBootFailedScreen]), the log, AND the
+     * EPT_DEV overlay ([renderGamepadOverlay]) — three call sites now, not two — cannot
+     * report three different numbers for one machine. That function's own comment covers
+     * why it still walks the raw range itself as well, for per-joystick logging this count
+     * alone cannot provide.
+     *
+     * A plain indexed loop, not `(a..b).count { }` — this now runs on the RENDER path
+     * (drawBoothStatusLine, every attract-screen frame), where CLAUDE.md's no-per-frame-
+     * allocation rule applies and `.count { }` on a range allocates both the `IntRange` and
+     * its `IntIterator`. `render/LifecycleInputEdges.kt`'s `stuckCount`/`chatterCount` made
+     * the identical call for the identical reason — see their doc comments.
      */
-    private fun unmappedGamepadCount(): Int =
-        (GLFW.GLFW_JOYSTICK_1..GLFW.GLFW_JOYSTICK_LAST).count {
-            GLFW.glfwJoystickPresent(it) && !GLFW.glfwJoystickIsGamepad(it)
-        }
+    private fun unmappedGamepadCount(): Int
+    {
+        var count = 0
+        for (i in GLFW.GLFW_JOYSTICK_1..GLFW.GLFW_JOYSTICK_LAST)
+            if (GLFW.glfwJoystickPresent(i) && !GLFW.glfwJoystickIsGamepad(i)) count++
+        return count
+    }
 
     /**
      * Dev-only input diagnostic overlay (EPT_DEV). Turns "does the cabinet's stick/buttons
@@ -1758,14 +1857,16 @@ class EnPustTil : PulseEngineGame()
      */
     private fun renderGamepadOverlay(hud: Surface, w: Float, h: Float)
     {
+        // rawPresent still needs its own walk (this loop's only remaining job) — but
+        // rawUnmapped now comes from the shared unmappedGamepadCount() rather than a second
+        // local accumulator, so this overlay's number and the booth status line's number
+        // cannot read differently for the same physical encoder at the same moment, which
+        // is exactly the scenario a technician standing at the cabinet with EPT_DEV=1 would
+        // be comparing them for.
         var rawPresent = 0
-        var rawUnmapped = 0
         for (i in GLFW.GLFW_JOYSTICK_1..GLFW.GLFW_JOYSTICK_LAST)
-        {
-            if (!GLFW.glfwJoystickPresent(i)) continue
-            rawPresent++
-            if (!GLFW.glfwJoystickIsGamepad(i)) rawUnmapped++
-        }
+            if (GLFW.glfwJoystickPresent(i)) rawPresent++
+        val rawUnmapped = unmappedGamepadCount()
 
         val pads = engine.input.gamepads
         val fontSize = h * 0.016f
@@ -1801,7 +1902,13 @@ class EnPustTil : PulseEngineGame()
         }
     }
 
-    private companion object
+    // internal, not private: AttractScreenTest loops the real SITE_* values through
+    // BoothStatus.line's drawability check (see "the booth status line stays drawable for
+    // every real failure site" there) rather than hardcoding one literal — a renamed site
+    // (an en dash slipped into a call site name, say) would otherwise vanish from the
+    // screen with no test noticing. Kotlin's default Gradle test source set is compiled
+    // associated with main, so `internal` is visible there without exporting these publicly.
+    internal companion object
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f

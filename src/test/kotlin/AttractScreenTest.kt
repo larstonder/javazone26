@@ -52,21 +52,40 @@ class AttractScreenTest
         // never sees it. Its worst case includes a failed boot, the most severe thing the
         // line can say, on top of every counter maxed out — the exact case a vanished
         // string would be most dangerous for, since it is drawn as the ENTIRE frame.
-        val text = BoothStatus.line(
-            seed = 20260903L,
-            unmappedPads = 9,
-            stuckSources = 9,
-            chatterSources = 9,
-            callbackFailures = 99,
-            lastFailureSite = "onFixedUpdate",
-            bootFailed = true
+        //
+        // Every literal inside BoothStatus.line is plain ASCII, so the only UNCONSTRAINED
+        // input is lastFailureSite — a caller-supplied String, not a compile-time literal.
+        // Looping the real EnPustTil.SITE_* constants through here (rather than one
+        // hardcoded stand-in like "onFixedUpdate") is what would catch a future site
+        // renamed to include an en dash or a smart quote: exactly defect 1 in this class's
+        // own doc, and exactly the kind of change that compiles, passes every other test,
+        // and vanishes from the screen with no warning.
+        val sites = listOf(
+            EnPustTil.SITE_CREATE,
+            EnPustTil.SITE_FIXED_UPDATE,
+            EnPustTil.SITE_UPDATE,
+            EnPustTil.SITE_RENDER,
+            EnPustTil.SITE_DESTROY,
+            null
         )
-        val missing = DefaultFont.undrawableCodePointsIn(text)
-        assertTrue(
-            missing.isEmpty(),
-            "\"$text\" contains ${missing.map { "U+%04X".format(it) }}, which the engine's " +
-            "default font cannot draw — it will render as nothing at all, silently."
-        )
+        for (site in sites)
+        {
+            val text = BoothStatus.line(
+                seed = 20260903L,
+                unmappedPads = 9,
+                stuckSources = 9,
+                chatterSources = 9,
+                callbackFailures = 99,
+                lastFailureSite = site,
+                bootFailed = true
+            )
+            val missing = DefaultFont.undrawableCodePointsIn(text)
+            assertTrue(
+                missing.isEmpty(),
+                "\"$text\" (lastFailureSite=$site) contains ${missing.map { "U+%04X".format(it) }}, which " +
+                "the engine's default font cannot draw — it will render as nothing at all, silently."
+            )
+        }
     }
 
     @Test
@@ -245,6 +264,19 @@ class AttractScreenTest
     }
 
     @Test
+    fun `the booth status line clears the bottom of a full leaderboard`()
+    {
+        // Passes TODAY (board bottom is well above 0.98h), which is exactly why it needs an
+        // assertion rather than an eyeball: nobody notices a leaderboard grown by a future
+        // LEADERBOARD_SIZE change until the two collide on a real booth panel.
+        assertTrue(
+            AttractLayout.STATUS_Y - AttractLayout.STATUS_FONT > AttractLayout.bottomOfBoard(AttractLayout.LEADERBOARD_SIZE),
+            "the status line's top edge (${AttractLayout.STATUS_Y - AttractLayout.STATUS_FONT}h) overlaps a full " +
+            "leaderboard, whose last row ends at ${AttractLayout.bottomOfBoard(AttractLayout.LEADERBOARD_SIZE)}h"
+        )
+    }
+
+    @Test
     fun `every attract anchor is a fraction of the screen, not a pixel count`()
     {
         // engine.window.width/height are PHYSICAL framebuffer pixels (see render/Framing), so
@@ -259,7 +291,9 @@ class AttractScreenTest
             "HEADING_Y" to AttractLayout.HEADING_Y,
             "ROW_FONT" to AttractLayout.ROW_FONT,
             "ROW_HALF_SPAN" to AttractLayout.ROW_HALF_SPAN,
-            "DIVER_HALO_HALF_HEIGHT" to AttractLayout.DIVER_HALO_HALF_HEIGHT
+            "DIVER_HALO_HALF_HEIGHT" to AttractLayout.DIVER_HALO_HALF_HEIGHT,
+            "STATUS_FONT" to AttractLayout.STATUS_FONT,
+            "STATUS_Y" to AttractLayout.STATUS_Y
         ) + (0 until AttractLayout.LEADERBOARD_SIZE).associate { "rowY($it)" to AttractLayout.rowY(it) }
 
         for ((name, value) in anchors)
