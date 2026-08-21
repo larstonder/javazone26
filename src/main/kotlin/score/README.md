@@ -70,7 +70,7 @@ What each step actually defends against:
 | Crash **between the temp write and the rename** | Equivalent to the write never happening | The safe outcome: the previous complete board survives. Any `.tmp` left behind by this is swept on the next `onCreate` - see below. |
 | Crash **during the rename**, or the rename fails (e.g. an indexer/AV holds `scoreboard.json` open on Windows) | Fully-old or fully-new, never torn - and the failure is reported, not silent | A rename is a directory-entry swap, not a content write; `promoteAtomically`'s `onFailure` parameter is what makes the failure visible. |
 | True hardware power loss | **Not covered** | Nothing calls `fsync`/`force`. The guarantee is "no torn file", not "every acknowledged write has reached the platter". Honest limit of what `engine.data`'s API allows without reimplementing serialisation. |
-| A corrupt or hand-mangled `scoreboard.json` | Fresh empty board, no crash | `loadEntries` catches, then `sanitizeEntries` (`score/InitialsEntry.kt:115`) drops anything that is not three uppercase letters with a positive score. |
+| A corrupt or hand-mangled `scoreboard.json` | Fresh empty board, no crash | `loadEntries` catches, then `sanitizeEntries` (`score/InitialsEntry.kt:119`) drops anything that is not three uppercase letters with a positive score. |
 | A stale `scoreboard.<uuid>.tmp` left by a crash between write and promote | Deleted on the next `onCreate` | `ScoreRepository.sweepStaleTemps`, run from `loadInto` before entries are loaded - otherwise these accumulate forever across two days of watchdog restarts, in the same folder a technician copies to a USB stick. |
 
 **A score in the leaderboard on screen but missing from `scoreboard.json` after the run
@@ -107,7 +107,7 @@ booth machine needs the board somewhere else.
 ## Lifecycle hooks
 
 `ScoreRepository` extends the engine's `Service` and is registered with
-`engine.service.add(scoreRepository)` in `EnPustTil.kt:1254`. Verified call order (from
+`engine.service.add(scoreRepository)` in `EnPustTil.kt:1257`. Verified call order (from
 decompiling `ServiceManagerImpl`): `add()` queues the service; `init()` runs right after
 `PulseEngineGame.onCreate()` returns and calls `onCreate` on everything queued; `destroy()`
 runs during shutdown, just after `PulseEngineGame.onDestroy()`, and calls `onDestroy` on
@@ -124,7 +124,7 @@ every registered service.
 
 **If the cabinet is killed without `onDestroy` running** - `pkill -9`, power cut, a hung
 process force-quit - nothing that was already registered is lost. Every `registerScore`
-already ran its own synchronous save-and-promote before returning (`EnPustTil.kt:1632` is
+already ran its own synchronous save-and-promote before returning (`EnPustTil.kt:1648` is
 the only caller, fired on `RunLifecycle.initialsJustCompleted`). There is no window between
 "registered" and "on disk" any more - the two happen on the same call stack. A run that was
 still on screen was never registered in the first place. The `onDestroy` save exists for
@@ -172,9 +172,10 @@ makes the file unreadable, which degrades to an empty board rather than a crash,
 day's scores are then gone from the display.)
 
 **Every entry stores the seed it was earned under.** That is the whole day-two mechanism:
-`topN` (`:53`) filters to `todaySeed`, `registerScore` (`:61`) stamps `todaySeed`, and
-`todaySeed` comes from `application.cfg`'s `dailySeed` key (`EnPustTil.kt:541`, falling
-back to the compile-time `DAILY_SEED = 20260902L` at `EnPustTil.kt:1633`). Change the seed
+`ScoreRepository.topN` (`score/ScoreRepository.kt:69`) filters to `todaySeed`,
+`registerScore` (`score/ScoreRepository.kt:77`) stamps `todaySeed`, and
+`todaySeed` comes from `application.cfg`'s `dailySeed` key (`EnPustTil.kt:1043-1045`, falling
+back to the compile-time `DAILY_SEED = 20260902L` at `EnPustTil.kt:2408`). Change the seed
 for day two and you get a fresh water column *and* a fresh leaderboard, while day one's
 rows stay in the same file under the old seed - preserved, just no longer displayed.
 `resolveDailySeed` (the live resolution path - it checks for a numeric `dailySeed` key
@@ -184,36 +185,38 @@ than crashing the booth.
 
 ## Initials entry
 
-`InitialsEntry` is a pure state machine owned by `render/RunLifecycle.kt` (field at `:161`),
+`InitialsEntry` is a pure state machine owned by `render/RunLifecycle.kt` (field at `:212`),
 not driven in parallel from `EnPustTil` - so the lifecycle's existing edge-tracking and
 idle-timeout machinery covers initials entry too.
 
 - Three slots, all starting at `'A'`. Up/down cycles the letter in the current slot; the
   confirm button locks it and advances. After the third, `complete` is true.
-- **Character set: `A`-`Z` only, wrapping in both directions** (`cycleLetter`, `:89`). No
-  digits, no punctuation, no space. `isValidInitials` (`:104`) is the same rule, applied
-  defensively on load; `registerScore` (`:65`) applies it again on write -
+- **Character set: `A`-`Z` only, wrapping in both directions** (`cycleLetter`,
+  `score/InitialsEntry.kt:93`). No digits, no punctuation, no space. `isValidInitials`
+  (`score/InitialsEntry.kt:108`) is the same rule, applied defensively on load;
+  `registerScore` (`score/ScoreRepository.kt:85`) applies it again on write -
   `uppercase().filter { it in 'A'..'Z' }.take(3).padEnd(3, 'A')`.
-- **Input is LEVEL readings, and this class does its own edge detection** (`update`, `:59`).
-  The engine's `Gamepad` exposes only `isPressed`/`getAxis` - there is no `wasClicked` for a
-  controller button - so a held stick or a stuck arcade-encoder button reads true every
-  single frame. Tracking the previous frame here is what stops a stuck button blasting
-  through the alphabet at 60 letters a second. There is deliberately **no auto-repeat**
-  while held: simpler and fully deterministic.
-- If both up and down edge on the same frame, up wins, deterministically (`:73`).
+- **Input is LEVEL readings, and this class does its own edge detection** (`update`,
+  `score/InitialsEntry.kt:63`). The engine's `Gamepad` exposes only `isPressed`/`getAxis` -
+  there is no `wasClicked` for a controller button - so a held stick or a stuck
+  arcade-encoder button reads true every single frame. Tracking the previous frame here is
+  what stops a stuck button blasting through the alphabet at 60 letters a second. There is
+  deliberately **no auto-repeat** while held: simpler and fully deterministic.
+- If both up and down edge on the same frame, up wins, deterministically
+  (`score/InitialsEntry.kt:75`).
 
-Wiring: `readInitialsCycle` (`EnPustTil.kt:1491`) reads stick Y past `stickDeadzone` (a
+Wiring: `readInitialsCycle` (`EnPustTil.kt:2232`) reads stick Y past `stickDeadzone` (a
 booth-configurable field, resolved from application.cfg - see `parseDeadzone`) on *any*
 connected gamepad, or the UP/DOWN keys. Confirm reuses the same `actionPressed`
-signal as the restart button (`EnPustTil.kt:956` - gamepad `START` or `A`, or `SPACE`), so
-the cabinet needs no third physical input. On-screen help text is
-`ScreenText.INITIALS_HELP` (`EnPustTil.kt:202`).
+signal as the restart button (`EnPustTil.kt:1517-1530` - gamepad `START` or `A`, or
+`SPACE`), so the cabinet needs no third physical input. On-screen help text is
+`ScreenText.INITIALS_HELP` (`EnPustTil.kt:538`).
 
 **When entry is offered, and when it ends.** `RUN_OVER` moves into `ENTER_INITIALS` on its
 own after the dwell, with no press required, whenever `Leaderboard.isWorthRecording(banked)`
-- i.e. `score > 0` (`render/RunLifecycle.kt:271`). A 0-point run never sees the prompt, so
+- i.e. `score > 0` (`render/RunLifecycle.kt:328`). A 0-point run never sees the prompt, so
 it cannot block the queue with a data-entry screen. If nobody touches the controls for
-`INITIALS_IDLE_TIMEOUT_SECONDS` (15 s, `render/RunLifecycle.kt:334`) the entry
+`INITIALS_IDLE_TIMEOUT_SECONDS` (15 s, `render/RunLifecycle.kt:399`) the entry
 **auto-submits** whatever letters were set - "AAA" if untouched - rather than discarding
 it. A qualifying score that exists is worth more to the prize draw than a clean
 abandonment, and the cabinet must recover to IDLE on its own regardless.

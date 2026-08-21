@@ -29,20 +29,20 @@ best source in the repo.
 
 | # | Call | Why it is where it is |
 |---|---|---|
-| 1 | `parseDailySeed` / `parseDepthPin` (`EnPustTil.kt:541-545`) | `application.cfg` is only loaded into `engine.config` by the engine's `initEngine()`, which runs *after* this object is constructed and *before* `onCreate`. Reading it at field-init time silently sees an empty config. |
-| 2 | `mainSurface.setBackgroundColor(Color.BLANK)` (`:616`) | The world surface is **transparent where nothing is drawn**. That one line is what lets a sky exist behind it. |
-| 3 | `WaterRenderer.addTo(mainSurface)` then `IridescenceRenderer.addTo(mainSurface)` (`:663`, `:665`) | Batch renderers flush in the order they were **added**, not called, and every one writes depth - including for fragments at alpha 0. Reverse these two and each pearl punches a hole through the sea. `SurfaceRendererOrderTest` fails the build on both halves. |
-| 4 | `engine.config.fixedTickRate = 60f`, `camera.snapTo`, `CameraRig.snap` (`:666-679`) | **`snap`, not `apply`.** Frame 1 runs no fixed step, so the engine's interpolator reads only its un-refreshed snapshot - which is the identity camera. Measured at 2400x1800: frame 1 drawn with `viewMatrix = identity` while `scale` already read 30. |
-| 5 | `DiverSprite.load` / `RockFace.load` / `Backdrop.load` (`:694-701`) | File-backed assets. `AssetManager.load` only queues; the GL upload lands several frames later. |
-| 6 | `LightEmitter.load` / `MoteSprite.load` / `PearlNormalMap.load` (`:719-721`) | Generated textures. No file behind them, so all three must be **filled before they are queued**. |
-| 7 | `DiveLighting.setup(engine)` (`:723`) | Creates the empty scene, adds `EntityRendererImpl` + `GlobalIlluminationSystem`, sets GI's resolution and AO radius, and attaches `ColorGradingEffect` (UNCHARTED2) and `BloomEffect` to `mainSurface`. Must come after the world's renderers (step 3). |
-| 8 | `createSurface("hud", ..., zOrder = HUD_Z_ORDER)` (`:763`) | Its own surface, `camera = null` so the engine builds a fresh screen-space orthographic camera. `zOrder` pinned explicitly, because the engine otherwise auto-assigns one by creation order. |
-| 9 | `IridescenceRenderer.addTo(hudSurface)` (`:786`) | The second instance of the same program. One shader, two surfaces, two coordinate spaces. |
-| 10 | `createSurface(Sky.SURFACE_NAME, camera = engine.gfx.mainCamera, zOrder = main + Sky.Z_ORDER_OFFSET)` (`:812`) | Deliberately the **shared world camera**, the exact opposite of the HUD's `null`. This is a *read* of `mainCamera`; `MainCameraOwnershipTest` allows it and separately forbids writing a transform outside `CameraRig`. |
-| 11 | `OpaqueWaterEffect` on `mainSurface` (`:833`) | Repairs `main`'s alpha below the waterline. See `OpaqueWater.kt` - it survives the god rays' removal on purpose. |
-| 12 | The `EPT_*` pins and `EPT_SCREENSHOT` (`:842-857`) | One `getenv` each, inert at the booth. |
+| 1 | `createSurface("hud", ..., zOrder = HUD_Z_ORDER)` (`EnPustTil.kt:1027-1032`) | Created **first**, before anything else in `createGame` that can throw. `engine.gfx.getSurfaceOrDefault` falls back to `mainSurface` with no log if `"hud"` was never created (decompiled: `surfaceMap[name] ?: mainSurface`) - and `mainSurface`'s camera is a *world* camera in metres, so a boot-failure screen drawn through that fallback would land hundreds of world-metres off screen. Moving the HUD surface first means it always exists by the time anything downstream (asset loads, `DiveLighting.setup`) could fail. |
+| 2 | `parseDailySeed`/`resolveDailySeed` (`:1043-1045`) and `parseDepthPin` (`:1102`) | `application.cfg` is only loaded into `engine.config` by the engine's `initEngine()`, which runs *after* this object is constructed and *before* `onCreate`. Reading it at field-init time would silently see an empty config. |
+| 3 | `mainSurface.setBackgroundColor(Color.BLANK)` (`:1188`) | The world surface is **transparent where nothing is drawn**. That one line is what lets a sky exist behind it. |
+| 4 | `WaterRenderer.addTo(mainSurface)` then `IridescenceRenderer.addTo(mainSurface)` (`:1235`, `:1237`) | Batch renderers flush in the order they were **added**, not called, and every one writes depth - including for fragments at alpha 0. Reverse these two and each pearl punches a hole through the sea. `SurfaceRendererOrderTest` fails the build on both halves. |
+| 5 | `engine.config.fixedTickRate = 60f`, `camera.snapTo`, `CameraRig.snap` (`:1238-1251`) | **`snap`, not `apply`.** Frame 1 runs no fixed step, so the engine's interpolator reads only its un-refreshed snapshot - which is the identity camera. Measured at 2400x1800: frame 1 drawn with `viewMatrix = identity` while `scale` already read 30. |
+| 6 | `DiverSprite.load` / `RockFace.load` / `Backdrop.load` (`:1266-1273`) | File-backed assets. `AssetManager.load` only queues; the GL upload lands several frames later. |
+| 7 | `LightEmitter.load` / `MoteSprite.load` / `PearlNormalMap.load` (`:1291-1293`) | Generated textures. No file behind them, so all three must be **filled before they are queued**. |
+| 8 | `DiveLighting.setup(engine)` (`:1295`) | Creates the empty scene, adds `EntityRendererImpl` + `GlobalIlluminationSystem`, sets GI's resolution and AO radius, and attaches `ColorGradingEffect` (UNCHARTED2) and `BloomEffect` to `mainSurface`. Must come after the world's renderers (step 4). |
+| 9 | `IridescenceRenderer.addTo(hudSurface)` (`:1313`) | The second instance of the same program. One shader, two surfaces, two coordinate spaces. |
+| 10 | `createSurface(Sky.SURFACE_NAME, camera = engine.gfx.mainCamera, zOrder = main + Sky.Z_ORDER_OFFSET)` (`:1339-1344`) | Deliberately the **shared world camera**, the exact opposite of the HUD's `null` (step 1). This is a *read* of `mainCamera`; `MainCameraOwnershipTest` allows it and separately forbids writing a transform outside `CameraRig`. |
+| 11 | `OpaqueWaterEffect` on `mainSurface` (`:1360`) | Repairs `main`'s alpha below the waterline. See `OpaqueWater.kt` - it survives the god rays' removal on purpose. |
+| 12 | The `EPT_*` pins and `EPT_SCREENSHOT` (`:1369-1384`) | One `getenv` each, inert at the booth. |
 
-### `onFixedUpdate` - 60 Hz, `EnPustTil.kt:860`
+### `onFixedUpdate` - 60 Hz, `EnPustTil.kt:1387`
 
 1. `if (lifecycle.simulationAdvances)` - the gate. `RunLifecycle.simulationAdvances` is an
    exhaustive `when` with no `else`, so a sixth state is a compile error there rather than a
@@ -66,7 +66,7 @@ every camera parameter from a snapshot taken at the top of each fixed step, so a
 write pairs values that were never consecutive fixed states and the interpolator judders.
 Nothing is lost: `DiveCamera`'s easing is `1 - e^(-k*dt)` and already frame-rate independent.
 
-### `onUpdate` - render clock, `EnPustTil.kt:914`
+### `onUpdate` - render clock, `EnPustTil.kt:1449`
 
 1. `DiveLighting.updateAmbient(sim)` - ambient is a function of depth only, no camera
    dependence, so timing does not matter.
@@ -83,7 +83,7 @@ Nothing is lost: `DiveCamera`'s easing is `1 - e^(-k*dt)` and already frame-rate
    `DiveLighting.resetAim`, `DiverSprite.restartLoop`; `initialsJustCompleted` ->
    `scoreRepository.registerScore`.
 
-### `onRender` - `EnPustTil.kt:1081`
+### `onRender` - `EnPustTil.kt:1691`
 
 ```
 val worldCamera = engine.gfx.mainCamera            // read once, handed to everything
@@ -181,7 +181,7 @@ a screen size as a fraction of **height**, never width and never a pixel count.
 `max(H / VISIBLE_DEPTH_METRES, W / VISIBLE_WIDTH_METRES)` - the *larger* of a height fit and a
 width fit. The design aspect where they are equal is 1.6419, below 16:9, so a 16:9 panel is in
 the width-bound regime and shows 55.42 m of depth instead of 60. That is a deliberate gameplay
-trade, made to keep exactly one cliff sprite at each end of the frame; `Framing.kt:37-89` has the
+trade, made to keep exactly one cliff sprite at each end of the frame; `Framing.kt:30-89` has the
 whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min` is the engine
 `Camera` entity's contain fit, which is what `CameraRig` exists to avoid.
 
@@ -352,12 +352,12 @@ Every one is read once at startup and is unset at the booth, so each costs one `
 
 | Variable | Read at | Effect |
 |---|---|---|
-| `EPT_DEV` | `EnPustTil.kt:518` | Forces `logLevel = DEBUG` (works even against a built release `.exe`), adds `MetricViewer` (F3), draws the gamepad diagnostic overlay, and runs `CameraInvariants` once a second. |
-| `EPT_DEPTH` | `EnPustTil.kt:545` | Pins the diver at a depth via `DiveSim.debugSetDepth`, turning the attract screen into a deep-water capture rig. Coerced into `0..MAX_DEPTH`; a typo is inert. It moves the diver, it does not change the rules. |
-| `EPT_EDITOR` | `EnPustTil.kt:600` | Registers and starts the engine's `SceneEditor`. Note it drives `mainCamera` through its own `Camera2DController` and therefore fights `CameraRig` every fixed tick - loudly (you cannot pan), never at the booth. |
-| `EPT_WAVE_PHASE` | `EnPustTil.kt:842` | Pins `WaterSurface`'s render-clock phase for reproducible captures. |
-| `EPT_MOTE_PHASE` | `EnPustTil.kt:847` (`Motes.PIN_ENV`) | Pins the mote field's phase, same reason. |
-| `EPT_SCREENSHOT` | `EnPustTil.kt:849` | Attaches `ScreenshotEffect` to `main`, `"hud"` and `"sky"`. Filenames derive via `outputPath.replace(".png", "-$index.png")`, so a value with no `.png` in it writes a file with no extension. Read the warning above first. |
+| `EPT_DEV` | `EnPustTil.kt:933` | Forces `logLevel = DEBUG` (works even against a built release `.exe`), adds `MetricViewer` (F3), draws the gamepad diagnostic overlay, and runs `CameraInvariants` once a second. |
+| `EPT_DEPTH` | `EnPustTil.kt:1102` | Pins the diver at a depth via `DiveSim.debugSetDepth`, turning the attract screen into a deep-water capture rig. Coerced into `0..MAX_DEPTH`; a typo is inert. It moves the diver, it does not change the rules. |
+| `EPT_EDITOR` | `EnPustTil.kt:1172` | Registers and starts the engine's `SceneEditor`. Note it drives `mainCamera` through its own `Camera2DController` and therefore fights `CameraRig` every fixed tick - loudly (you cannot pan), never at the booth. |
+| `EPT_WAVE_PHASE` | `EnPustTil.kt:1369` | Pins `WaterSurface`'s render-clock phase for reproducible captures. |
+| `EPT_MOTE_PHASE` | `EnPustTil.kt:1374` (`Motes.PIN_ENV`) | Pins the mote field's phase, same reason. |
+| `EPT_SCREENSHOT` | `EnPustTil.kt:1376` | Attaches `ScreenshotEffect` to `main`, `"hud"` and `"sky"`. Filenames derive via `outputPath.replace(".png", "-$index.png")`, so a value with no `.png` in it writes a file with no extension. Read the warning above first. |
 
 (`EPT_SHAFT_PHASE` pinned the god rays and went with them on 2026-08-17.)
 

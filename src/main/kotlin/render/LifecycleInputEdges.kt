@@ -367,8 +367,9 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
          * INITIALS screen), never something that benefits from rapid repeats — which is
          * not a property a general-purpose debounce could assume, and is worth writing
          * down rather than leaving implicit. Competitive button-mashing tops out around
-         * 77-125 ms between presses, so 80 ms sits below the human floor with margin
-         * rather than merely below "any" mash rate.
+         * 77-125 ms between presses, so 80 ms sits ABOVE the fastest human floor and still
+         * clear of ordinary rapid presses — it is the game-specific argument above, not a
+         * margin below that floor, that makes 80 ms the right value here.
          *
          * The test suite's timing moves to stay clear of this constant, not the other way
          * around: `a press produces exactly one edge`'s "a fresh press fires again" case

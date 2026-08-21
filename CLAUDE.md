@@ -57,7 +57,7 @@ The JVM window has **no bundle identifier**, so the computer-use MCP filters it 
 
 ## Architecture
 
-Three packages plus `EnPustTil.kt` at the source root, and the boundaries between them are the important part.
+Four packages plus `EnPustTil.kt` at the source root, and the boundaries between them are the important part.
 
 **`dive/` — the simulation.** Pure Kotlin, zero engine imports, ticked at a fixed 60 Hz. `DiveSim` holds all run state and its `tick(dt, DiveInput)` is the whole game. `Tuning` holds every tunable constant and no logic. `Zone` is the depth bands (value, mass, air burn). `Buoyancy` is the movement model — an empty diver is *neutrally buoyant and hovers*; carried mass is what makes you sink and what makes you sluggish, which is the design's central mechanic (§4), not a rendering detail.
 
@@ -115,6 +115,8 @@ It is `max`, not `min`. `min` is the engine `Camera` entity's contain fit, which
 **Solid rectangles go through `render/Draw.kt`.** `fillRect(x, y, w, h)` for a top-left rect, `fillRectCentred(x, y, w, h, angle)` for anything whose position means a *middle* — every object in the world, and the HUD's bubbles and depth-tape markers. The centred form exists because the art is normal-mapped sprite sheets, and a normal-mapped sprite is the **same world rect submitted to two surfaces** (albedo on `main`, normal on `gi_normal_map`); `drawTexture`, `NormalMapRenderer.drawNormalMap` and `GiSceneRenderer.drawLight` all take the identical `(x, y, w, h, angle)` + centre-origin tuple, so that second draw must be a copied argument list and never a second derivation. `DiveRenderer.drawDiver` is the one place that does it, and the second call's arguments are literally copied from the first. Do **not** reach for the engine's `NormalMapped` interface: `NormalMapped.kt:32` hands the renderer the whole asset, which for a `SpriteSheet` stretches all 42 cells across the quad with no way to name a frame.
 
 **`score/` — persistence.** `ScoreRepository` is registered as an engine `Service` so it gets `onCreate` (load) / `onDestroy` (final synchronous save) from the engine lifecycle. Writes go to a temp file then `promoteAtomically` (`AtomicFileSwap`), with periodic timestamped backups. `InitialsEntry` is the three-letter arcade entry; `Leaderboard` ranks and decides what's worth recording.
+
+**`booth/` — surviving two unattended days.** Three files, each solving a way the cabinet could go dark with nobody watching. `BoothLog` exists because `LogTarget` has no FILE entry (verified: it is a two-value enum, STDOUT and CONSOLE) and the release binary is a windowed GUI executable with no attached console, so STDOUT reaches nobody — `BoothLog.install` tees `System.out`/`System.err` into a file beside the scoreboard instead. `CallbackGuard` exists because the engine's own handler on an uncaught throwable opens **Notepad**, full-screen, in front of a queue (`writeAndOpenCrashReport` → `FileUtilsKt.openFile` on a `.txt` crash report, disassembled from the jar) — catching per callback keeps the cabinet alive through a bad frame instead. `CallbackSites` is the five callback-name constants `CallbackGuard` is keyed by; it lives beside `CallbackGuard` rather than in `EnPustTil`'s companion object so that companion can stay `private`. See `src/main/kotlin/booth/README.md`.
 
 **Presentation state must never leak into `dive/`.** `DiveSim` simulates one run and nothing else; attract mode, dwell timers and initials entry live in `RunLifecycle`.
 

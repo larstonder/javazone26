@@ -21,7 +21,7 @@ package render
  *     button and a chattering one call for different physical fixes (power-cycle the
  *     cabinet vs. reseat a connector), and folding both into one number would tell an
  *     attendant something is wrong without telling them which repair to attempt.
- *  4. **A failed boot.** `EnPustTil.bootFailed` is `guard.failureCount(SITE_CREATE) > 0`; if
+ *  4. **A failed boot.** `EnPustTil.bootFailed` is `guard.failureCount(CallbackSites.CREATE) > 0`; if
  *     `createGame` threw, `sim`/`scoreRepository` are left `lateinit`-unset, so every later
  *     frame throws and is swallowed by `CallbackGuard` — a black-but-alive cabinet,
  *     indistinguishable on screen from a machine that is simply off. This is the MOST

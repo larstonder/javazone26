@@ -6,7 +6,7 @@ REM  START THE CABINET WITH THIS, NOT WITH en-pust-til.exe DIRECTLY.
 REM  Put a shortcut to this file in shell:startup so the cabinet comes back on
 REM  its own after a power cut.
 REM
-REM  Why it exists: render/CallbackGuard stops OUR code from ending the process,
+REM  Why it exists: booth/CallbackGuard stops OUR code from ending the process,
 REM  but nothing in the JVM catches a GL driver fault, an unrecoverable OOM, or
 REM  an attendee finding the power switch. Without this, the booth is dead from
 REM  that moment until a human notices - which, in a hall, is a long time.

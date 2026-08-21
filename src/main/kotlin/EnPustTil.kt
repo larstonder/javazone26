@@ -1676,7 +1676,7 @@ class EnPustTil : PulseEngineGame()
      *
      * The actual score-saving guarantee on a clean shutdown comes from
      * [ScoreRepository.onDestroy] — it is registered as a [no.njoh.pulseengine.core
-     * .service.Service] (see [onCreate]) and the engine calls every service's
+     * .service.Service] (see [createGame]) and the engine calls every service's
      * `onDestroy` automatically (verified by decompiling `ServiceManagerImpl`, right
      * after this method returns — see [ScoreRepository]'s class doc for the exact
      * order). This method exists to satisfy that explicit requirement in its own right
