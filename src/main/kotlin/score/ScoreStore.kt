@@ -21,7 +21,14 @@ interface ScoreStore
     fun exists(name: String): Boolean
     fun load(name: String): ScoreboardData?
     fun saveAsync(data: ScoreboardData, name: String, onWritten: () -> Unit)
-    fun saveSync(data: ScoreboardData, name: String)
+
+    /**
+     * @return whether the write actually succeeded — the one signal the async path
+     *   structurally cannot deliver (see [EngineScoreStore]'s class doc). The caller MUST
+     *   check this: a discarded return here is exactly the defect that made a failed
+     *   promotion silent before this task.
+     */
+    fun saveSync(data: ScoreboardData, name: String): Boolean
     fun fileFor(name: String): File
     fun listNames(): List<String>
 }
@@ -29,12 +36,15 @@ interface ScoreStore
 /**
  * The real one, wrapping `engine.data`.
  *
- * VERIFIED, NOT ASSUMED: `javap -c` against the actual `DataImpl.class` inside
- * `pulse-engine-0.13.0.jar` (the jar this build compiles against), cross-checked against
- * `no/njoh/pulseengine/core/data/DataImpl.kt` in the `pulse-engine-0.13.0-QUADFIX`
- * *sources* jar in `~/.m2` — the two agree line-for-line on every point below, so the
- * source is quoted here rather than bytecode offsets. See task-8-report.md for the raw
- * `javap` output this was checked against.
+ * VERIFIED, NOT ASSUMED, and against the jar this build actually resolves: `javap -c`
+ * against the real `DataImpl.class` inside `pulse-engine-0.13.0.jar` — the exact
+ * coordinate `build.gradle.kts` pulls, not the `0.13.0-QUADFIX` one that happened to
+ * also be sitting in `~/.m2`. (First pass through this file cross-checked against
+ * QUADFIX's *sources* jar instead of the resolved jar's own bytecode — same coordinate
+ * family, but a different artifact, and they only happened to agree. Re-verified point
+ * by point directly against `pulse-engine-0.13.0.jar`'s bytecode below, including the
+ * companion object's static initialiser for the mapper construction.) See
+ * task-8-report.md for the raw `javap` output this was checked against.
  *
  * ```kotlin
  * override fun <T> saveObject(data: T, filePath: String, format: FileFormat): Boolean =
@@ -58,21 +68,22 @@ interface ScoreStore
  *
  * - `saveObject`/`loadObject` never throw: both wrap their whole body in `runCatching`,
  *   log at ERROR on failure, and return `false` / `null` respectively. The existing code
- *   comment's claim of "verified-safe null-on-failure" for `loadObject` is CONFIRMED.
+ *   comment's claim of "verified-safe null-on-failure" for `loadObject` is CONFIRMED. The
+ *   exact string, straight from the constant pool: `"Failed to save file: $filePath -
+ *   reason: ${it.message}"` — that is the `grep` target a technician wants, and
+ *   `score/README.md`'s troubleshooting section now names it.
  * - `saveObjectAsync` launches on `Dispatchers.IO`, coroutines' genuine shared
  *   multi-threaded elastic pool. The brief's premise that two overlapping
  *   `saveObjectAsync` calls can run concurrently on different threads is CONFIRMED.
- * - THE SHARP EDGE, not documented anywhere before this: `saveObjectAsync`'s completion
- *   callback (what [onWritten] wraps below) fires ONLY IF the internal `saveObject` call
+ * - `saveObjectAsync`'s completion callback fires ONLY IF the internal `saveObject` call
  *   returned `true` — `.takeIf { it }?.let { onComplete.invoke(data) }` skips it entirely
- *   on failure. The coroutine still completes normally (no exception escapes; `saveObject`
- *   already caught it), so a write failure at THIS layer cannot reach [ScoreRepository]'s
- *   own `onSaveFailure` — the only trace of it is `DataImpl`'s own `Logger.error` call,
- *   which is real (quoted above) and, since `booth.BoothLog` tees `System.out`/
- *   `System.err` and the booth's `logLevel = WARN` passes ERROR through, DOES still reach
- *   the booth's log file. It just does not go through this repository's own
- *   failure-reporting path. Documented here as a residual gap rather than worked around:
- *   `saveObjectAsync` exposes no error callback to work around it WITH, only a success one.
+ *   on failure, and the coroutine still completes normally (no exception escapes;
+ *   `saveObject` already caught it). **This is why [saveAsync] below is no longer used
+ *   for the live score file** — [ScoreRepository] now saves synchronously via [saveSync]
+ *   instead, specifically to get the `Boolean` this callback cannot deliver on failure.
+ *   [saveAsync] is kept only for the backup roll, which is deliberately off the
+ *   score-loss critical path (see `ScoreRepository.maybeRollBackup`'s doc) and where a
+ *   silently-skipped callback costs nothing worse than one missing backup file.
  */
 class EngineScoreStore(private val engine: PulseEngine) : ScoreStore
 {
@@ -85,10 +96,8 @@ class EngineScoreStore(private val engine: PulseEngine) : ScoreStore
         engine.data.saveObjectAsync(data, name) { onWritten() }
     }
 
-    override fun saveSync(data: ScoreboardData, name: String)
-    {
+    override fun saveSync(data: ScoreboardData, name: String): Boolean =
         engine.data.saveObject(data, name)
-    }
 
     override fun fileFor(name: String) = File(engine.config.saveDirectory, name)
 

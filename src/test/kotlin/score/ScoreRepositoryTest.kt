@@ -1,6 +1,10 @@
 package score
 
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import java.io.File
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -23,9 +27,29 @@ class ScoreRepositoryTest
         override fun fileFor(name: String) = File(dir, name)
         override fun listNames(): List<String> = dir.listFiles()?.map { it.name } ?: emptyList()
 
-        // jacksonObjectMapper is already on the classpath via the engine, and DataImpl uses
-        // the same library - so the fake exercises real serialisation rather than mocking it away.
-        private val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+        /**
+         * MUST match `DataImpl`'s own mapper construction, not merely use "the same
+         * library" - those are different claims, and the first cut of this file asserted
+         * the weaker one without measuring it. `DataImpl`'s companion object builds its
+         * `jsonMapper` as `ObjectMapper().registerModule(KotlinModule.Builder().build())
+         * .enableDefaultTyping().configure(FAIL_ON_UNKNOWN_PROPERTIES, false)
+         * .configure(FAIL_ON_INVALID_SUBTYPE, false)` — verified by disassembling
+         * `DataImpl.class`'s static initialiser in the exact `pulse-engine-0.13.0.jar`
+         * this build resolves (see task-8-report.md for the bytecode). `enableDefaultTyping()`
+         * is the part that matters: it changes the WIRE FORMAT, wrapping every `List` as a
+         * `[className, elements]` pair (`score/README.md`'s "On-disk format" section shows
+         * a real file). A bare `jacksonObjectMapper()` - what this fake used before this
+         * was measured - cannot read a file written by the real engine at all: it throws
+         * `MismatchedInputException`, which [load] below already catches and turns into
+         * `null`, so the failure was invisible - it just looked like an empty board. See
+         * `an engine-written scoreboard round-trips through this store's mapper` below,
+         * which is what caught it.
+         */
+        private val mapper = ObjectMapper()
+            .registerModule(KotlinModule.Builder().build())
+            .enableDefaultTyping()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(DeserializationFeature.FAIL_ON_INVALID_SUBTYPE, false)
 
         override fun load(name: String): ScoreboardData?
         {
@@ -37,17 +61,20 @@ class ScoreRepositoryTest
             return runCatching { mapper.readValue(f.readText(), ScoreboardData::class.java) }.getOrNull()
         }
 
-        override fun saveSync(data: ScoreboardData, name: String)
+        override fun saveSync(data: ScoreboardData, name: String): Boolean
         {
             writes += name
             File(dir, name).writeText(mapper.writeValueAsString(data))
+            return true
         }
 
         override fun saveAsync(data: ScoreboardData, name: String, onWritten: () -> Unit)
         {
             // Synchronous here on purpose: the ORDER of write-then-promote is what is under
-            // test, not the threading. The threading defect (a shared temp filename across
-            // two IO-pool writers) is covered by `two overlapping saves ...` below.
+            // test, not the threading. registerScore itself no longer goes through this
+            // path at all (a code review switched the live-file save to synchronous - see
+            // ScoreRepository.saveAndPromote's doc) - this remains exercised only via
+            // maybeRollBackup's backup roll.
             saveSync(data, name)
             onWritten()
         }
@@ -74,7 +101,19 @@ class ScoreRepositoryTest
             if (name == ScoreRepository.LIVE_FILE) blocked else File(blocked.parentFile, name)
     }
 
-    private fun tempDir(): File = File.createTempFile("scorerepo", "").let { it.delete(); it.mkdirs(); it }
+    // Every test in this class creates at least one temp directory via tempDir() and none
+    // of them cleaned up after themselves - nine leaked per run. Tracked here and swept
+    // in tearDown, the same shape AtomicFileSwapTest already uses for its one shared dir.
+    private val createdDirs = mutableListOf<File>()
+
+    private fun tempDir(): File =
+        File.createTempFile("scorerepo", "").let { it.delete(); it.mkdirs(); it }.also { createdDirs += it }
+
+    @AfterTest
+    fun tearDown()
+    {
+        createdDirs.forEach { it.deleteRecursively() }
+    }
 
     private fun repo(store: ScoreStore, seed: Long = 1L) = ScoreRepository(todaySeed = seed, store = store)
 
@@ -103,10 +142,14 @@ class ScoreRepositoryTest
     @Test
     fun `two overlapping saves do not share a temp filename`()
     {
-        // THE RACE: saveObjectAsync runs on Dispatchers.IO, a MULTI-threaded pool, and both
-        // save paths used the one constant "scoreboard.json.tmp". Writer A's promote could
-        // rename a file writer B was midway through rewriting - exactly the torn
-        // scoreboard.json promoteAtomically exists to prevent.
+        // ORIGINALLY THE RACE: saveObjectAsync ran on Dispatchers.IO, a MULTI-threaded
+        // pool, and both save paths used the one constant "scoreboard.json.tmp". Writer A's
+        // promote could rename a file writer B was midway through rewriting - exactly the
+        // torn scoreboard.json promoteAtomically exists to prevent. A later review switched
+        // the live-file save to synchronous (ScoreRepository.saveAndPromote), which removes
+        // the concurrency this raced on - but freshTempName() stays belt-and-braces (see its
+        // doc), and this test still pins that two sequential registerScore calls never
+        // reuse a temp name, regardless of how the save happens to be scheduled.
         val store = FakeStore(tempDir())
         val r = repo(store)
 
@@ -123,12 +166,46 @@ class ScoreRepositoryTest
         // On Windows an indexer or AV holding scoreboard.json open makes Files.move throw
         // AccessDeniedException. That used to lose the score with no trace anywhere - and
         // with no log at the booth at all, before booth/BoothLog.kt.
+        //
+        // Exactly two reports, pinned: promoteAtomically's own onFailure callback (the
+        // exception itself, "Could not promote...") AND ScoreRepository.saveAndPromote's
+        // own check of the returned Boolean ("SCORE NOT SAVED..."). Asserting only
+        // isNotEmpty() would still pass with either half deleted - both are load-bearing,
+        // since a technician greps the booth log for one specific string
+        // ("SCORE NOT SAVED") and the exception detail is what explains why.
         val reported = mutableListOf<String>()
         val r = ScoreRepository(todaySeed = 1L, store = UnpromotableStore(tempDir()), onSaveFailure = { reported += it })
 
         r.registerScore(initials = "LTO", score = 500)
 
-        assertTrue(reported.isNotEmpty(), "a lost score must be reported")
+        assertEquals(2, reported.size, "expected the promote failure AND the not-saved report: $reported")
+    }
+
+    @Test
+    fun `an engine-written scoreboard round-trips through this store's mapper`()
+    {
+        // A REAL file, byte for byte, from a dev machine's ~/EnPustTil/scoreboard.json -
+        // the same file score/README.md's "On-disk format" section quotes. DataImpl's
+        // mapper has enableDefaultTyping() switched on (verified against the resolved
+        // pulse-engine-0.13.0.jar's bytecode - see task-8-report.md), which wraps every
+        // List as a ["className", elements] pair. Before FakeStore's mapper was corrected
+        // to match, this file failed to parse at all (MismatchedInputException, caught by
+        // load() and turned into null) and silently read back as an empty board - the
+        // exact failure this test exists to catch.
+        val store = FakeStore(tempDir())
+        store.fileFor(ScoreRepository.LIVE_FILE).writeText(
+            """{"entries":["java.util.ArrayList",[""" +
+                """{"initials":"AAA","score":1989,"seed":20260902,"timestampMs":1785935323251},""" +
+                """{"initials":"AEE","score":229,"seed":20260902,"timestampMs":1786459993180}""" +
+                """]]}"""
+        )
+
+        val r = repo(store, seed = 20260902L)
+        r.onCreateForTest()
+
+        val top = r.topN(10)
+        assertEquals(2, top.size, "the real engine-written file must round-trip, not silently read as empty")
+        assertEquals(listOf("AAA", "AEE"), top.map { it.initials })
     }
 
     @Test

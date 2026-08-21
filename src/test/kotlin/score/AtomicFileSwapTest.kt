@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
  */
 class AtomicFileSwapTest
 {
-    private lateinit var dir: java.io.File
+    private lateinit var dir: File
 
     @BeforeTest
     fun setUp()
@@ -86,12 +86,15 @@ class AtomicFileSwapTest
     fun `a promotion that cannot happen reports why`()
     {
         val reported = mutableListOf<Exception>()
-        val temp = File.createTempFile("swap", ".tmp").apply { writeText("payload") }
+        val temp = dir.resolve("swap.tmp").apply { writeText("payload") }
         // A directory where the live file should be: Files.move cannot replace it. Confirmed
         // on this filesystem (APFS, macOS) by running this test — it fails for the expected
-        // reason (a non-empty directory refusing replacement), not vacuously; the same holds
-        // on NTFS per the java.nio.file.Files.move documentation.
-        val live = File.createTempFile("swaplive", "").apply { delete(); mkdirs(); File(this, "child").writeText("x") }
+        // reason (java.nio.file.FileSystemException: "Is a directory", landing in the
+        // generic catch below rather than AtomicMoveNotSupportedException), not vacuously;
+        // the same holds on NTFS per the java.nio.file.Files.move documentation. Built
+        // inside `dir` (not a second File.createTempFile pair) so tearDown's
+        // deleteRecursively sweeps it along with everything else this class creates.
+        val live = dir.resolve("swaplive").apply { mkdirs(); resolve("child").writeText("x") }
 
         val ok = promoteAtomically(temp, live, onFailure = { reported += it })
 

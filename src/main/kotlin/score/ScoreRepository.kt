@@ -22,12 +22,13 @@ import kotlin.random.Random
  * consent flow to build here.
  *
  * PERSISTENCE SHAPE: JSON via [ScoreStore] (a seam over `engine.data`, at
- * `engine.config.saveDirectory/scoreboard.json`). Every registered score triggers an
- * async save (never blocks the render thread) plus, at most once every
- * [BACKUP_INTERVAL_MS], a rolling timestamped backup (`scoreboard-backup-<epoch>.json`)
- * — two days of booth scores in one un-backed-up file is a single point of failure. A
- * final, SYNCHRONOUS save happens in [onDestroy] so a clean shutdown cannot lose the
- * tail of scores registered since the last periodic save.
+ * `engine.config.saveDirectory/scoreboard.json`). Every registered score triggers a
+ * SYNCHRONOUS save-and-promote on the calling thread — see [saveAndPromote] for why this
+ * supersedes an earlier async design — plus, at most once every [BACKUP_INTERVAL_MS], a
+ * rolling timestamped backup (`scoreboard-backup-<epoch>.json`, still async — see
+ * [maybeRollBackup]) — two days of booth scores in one un-backed-up file is a single
+ * point of failure. [onDestroy] runs the same synchronous save-and-promote, so a clean
+ * shutdown cannot lose the tail of scores registered since the last one.
  *
  * THE SEAM: [store] is normally built from the engine in [onCreate] — see
  * [EngineScoreStore] for what was verified (by decompiling `DataImpl`) about its
@@ -39,10 +40,10 @@ import kotlin.random.Random
  * DURABILITY: see [promoteAtomically] for exactly what guarantee the write path
  * achieves (a real atomic swap on filesystems that support it — POSIX and NTFS both do
  * — never a torn `scoreboard.json`, but not an `fsync` guarantee against true power
- * loss). A failed promotion is reported through [onSaveFailure] rather than swallowed —
- * see [saveAsync]. Reads go through [sanitizeEntries] on top of [ScoreStore.load]'s own
- * verified null-on-failure behaviour, so a corrupt or missing file starts a fresh board
- * rather than crashing or blocking a run.
+ * loss). A failed write OR a failed promotion is reported through [onSaveFailure] rather
+ * than swallowed — see [saveAndPromote]. Reads go through [sanitizeEntries] on top of
+ * [ScoreStore.load]'s own verified null-on-failure behaviour, so a corrupt or missing
+ * file starts a fresh board rather than crashing or blocking a run.
  */
 class ScoreRepository(
     private val todaySeed: Long,
@@ -77,52 +78,80 @@ class ScoreRepository(
     {
         if (!Leaderboard.isWorthRecording(score)) return
 
+        val s = store ?: return onSaveFailure(
+            "SCORE NOT SAVED - no store available (registerScore called before onCreate?)"
+        )
+
         val clean = initials.uppercase().filter { it in 'A'..'Z' }.take(3).padEnd(3, 'A')
         entries.add(ScoreEntry(clean, score, seed, System.currentTimeMillis()))
 
-        val s = store ?: return
-        saveAsync(s)
+        saveAndPromote(s)
         maybeRollBackup(s)
     }
 
     /**
-     * Async save, promoted atomically once the write finishes — see [promoteAtomically].
-     * [ScoreStore.saveAsync] runs the write on `Dispatchers.IO` (verified by decompiling
-     * `DataImpl` — see [EngineScoreStore]'s class doc), so this never blocks the render
-     * thread, and the completion callback — which does the promotion — runs on that same
-     * background thread rather than the game thread.
+     * Save-then-promote, SYNCHRONOUS on the calling thread — see [promoteAtomically] for
+     * the atomic-rename guarantee. This is the shape `onDestroy` always used; the first
+     * cut of this task instead used `ScoreStore.saveAsync` for the live file, and a code
+     * review overturned that:
      *
-     * A defensive snapshot ([List], not the live [entries]) is what gets serialised:
-     * without it, a score registered while a previous save is still in flight on the IO
-     * thread could mutate [entries] out from under Jackson's serialiser mid-write.
+     * `saveObjectAsync`'s completion callback fires ONLY IF the underlying write
+     * succeeded (verified — see [EngineScoreStore]'s class doc: `saveObject(…).takeIf {
+     * it }?.let { onComplete(data) }`), so a write failure on that path could never reach
+     * [onSaveFailure] at all — the exact silence this task exists to close, just moved
+     * one layer down. [ScoreStore.saveSync] returns the `Boolean` the async path cannot
+     * deliver, which is the whole reason to prefer it here.
+     *
+     * The cost this used to avoid — blocking the render thread — does not apply: this
+     * fires once per completed RUN, at `RunLifecycle.initialsJustCompleted`, when
+     * gameplay has already ended and the screen is a static leaderboard, and the live
+     * file is a few KB even after two days. `onDestroy`'s doc already makes exactly this
+     * trade for the shutdown save; this is the same trade, applied to the common case
+     * instead of only the rare one.
+     *
+     * A defensive snapshot ([List], not the live [entries]) is still what gets
+     * serialised — no longer for thread-safety against an in-flight async write, since
+     * there no longer is one on this path, but because [entries] could otherwise be
+     * mutated by a *second* `registerScore` reentering mid-serialisation if this were
+     * ever called from somewhere non-reentrant-safe. Cheap insurance, kept.
      */
-    private fun saveAsync(s: ScoreStore)
+    private fun saveAndPromote(s: ScoreStore)
     {
         val snapshot = ScoreboardData(entries.toList())
         val temp = freshTempName()
-        s.saveAsync(snapshot, temp) {
-            val promoted = promoteAtomically(
-                temp = s.fileFor(temp),
-                live = s.fileFor(LIVE_FILE),
-                onFailure = { e -> onSaveFailure("Could not promote $temp to $LIVE_FILE: $e") }
-            )
-            // A lost score is a real failure at a booth whose prizes are drawn from this
-            // board. It used to be discarded here with no log at all — and until
-            // booth/BoothLog.kt existed, a log would have gone nowhere anyway.
-            if (!promoted) onSaveFailure("SCORE NOT SAVED - $LIVE_FILE was not updated from $temp")
+
+        if (!s.saveSync(snapshot, temp))
+        {
+            // ScoreStore.saveSync's own implementation already logs the reason (see
+            // EngineScoreStore's class doc for the exact string DataImpl.saveObject
+            // logs at ERROR) — this is the second, ScoreRepository-level report through
+            // onSaveFailure, the same channel a failed promotion below uses.
+            onSaveFailure("SCORE NOT SAVED - could not write $temp")
+            return
         }
+
+        val promoted = promoteAtomically(
+            temp = s.fileFor(temp),
+            live = s.fileFor(LIVE_FILE),
+            onFailure = { e -> onSaveFailure("Could not promote $temp to $LIVE_FILE: $e") }
+        )
+        // A lost score is a real failure at a booth whose prizes are drawn from this
+        // board. It used to be discarded here with no log at all — and until
+        // booth/BoothLog.kt existed, a log would have gone nowhere anyway.
+        if (!promoted) onSaveFailure("SCORE NOT SAVED - $LIVE_FILE was not updated from $temp")
     }
 
     /**
      * A FRESH temp name per write, not a shared constant.
      *
-     * `saveObjectAsync` runs on `Dispatchers.IO`, a MULTI-threaded pool (verified — see
-     * [EngineScoreStore]'s class doc), and both save paths used to write to the single
-     * constant "scoreboard.json.tmp". Two overlapping writes could then have writer A's
-     * promote rename a file writer B was midway through rewriting — producing exactly the
-     * torn scoreboard.json that [promoteAtomically] exists to prevent. Runs are ~90 s
-     * apart at a booth so this was unlikely in practice; it is also free to remove, and
-     * the class doc claims the guarantee unconditionally.
+     * Now that [saveAndPromote] is synchronous on the calling thread (see its doc for
+     * why), the concurrent-write race this originally closed cannot happen on the live
+     * file's path any more — a genuinely sequential caller cannot collide with itself.
+     * Kept anyway as belt-and-braces: [maybeRollBackup] still saves through
+     * [ScoreStore.saveAsync] (deliberately — see its doc), the constant "scoreboard.json
+     * .tmp" this replaced is otherwise a standing invitation for the next call site added
+     * to this class to reintroduce the exact defect this task fixed, and it costs
+     * nothing to keep unique.
      */
     private fun freshTempName(): String = "scoreboard.${java.util.UUID.randomUUID()}.tmp"
 
@@ -143,30 +172,18 @@ class ScoreRepository(
     }
 
     /**
-     * Synchronous and blocking, deliberately: this runs during a clean shutdown (see
-     * class doc for the verified call order — [PulseEngine]'s own `PulseEngineGame
-     * .onDestroy()` runs first, then this), and there is no guarantee the process
-     * survives long enough for an async write to finish. A few milliseconds of blocking
-     * at shutdown is an acceptable trade the render thread never has to make during
-     * actual gameplay, where every other save on this class is async.
+     * Runs the same [saveAndPromote] every `registerScore` uses — see its doc for why
+     * that is synchronous now, which makes this hook no longer a special case. Still
+     * called separately from [onDestroy] rather than relying on the last `registerScore`
+     * alone: this runs during a clean shutdown (see class doc for the verified call
+     * order — [PulseEngine]'s own `PulseEngineGame.onDestroy()` runs first, then this),
+     * so it is what guarantees the tail of scores registered since the last save is on
+     * disk even if something else about shutdown is unusual.
      */
     override fun onDestroy(engine: PulseEngine)
     {
-        store?.let { finalSave(it) }
+        store?.let { saveAndPromote(it) }
         Logger.info { "ScoreRepository saved ${entries.size} score(s) on shutdown" }
-    }
-
-    private fun finalSave(s: ScoreStore)
-    {
-        val snapshot = ScoreboardData(entries.toList())
-        val temp = freshTempName()
-        s.saveSync(snapshot, temp)
-        val promoted = promoteAtomically(
-            temp = s.fileFor(temp),
-            live = s.fileFor(LIVE_FILE),
-            onFailure = { e -> onSaveFailure("Could not promote $temp to $LIVE_FILE on shutdown: $e") }
-        )
-        if (!promoted) onSaveFailure("SCORE NOT SAVED ON SHUTDOWN - $LIVE_FILE was not updated from $temp")
     }
 
     /**
@@ -271,7 +288,7 @@ class ScoreRepository(
      * clearly-named way for tests to drive the two engine lifecycle hooks without a
      * booted PulseEngine. */
     internal fun onCreateForTest() { store?.let { loadInto(it) } }
-    internal fun onDestroyForTest() { store?.let { finalSave(it) } }
+    internal fun onDestroyForTest() { store?.let { saveAndPromote(it) } }
 
     companion object
     {

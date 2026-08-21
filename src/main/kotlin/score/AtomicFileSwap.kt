@@ -57,8 +57,23 @@ fun promoteAtomically(temp: File, live: File, onFailure: (Exception) -> Unit = {
     }
     catch (e: AtomicMoveNotSupportedException)
     {
-        Files.move(temp.toPath(), live.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        true
+        // The fallback move needs its OWN catch, not just the outer one: sibling `catch`
+        // clauses do not catch each other, so without this a failure here would escape
+        // promoteAtomically entirely — past ScoreRepository's onSaveFailure, and past
+        // CallbackGuard too, since ScoreRepository.onDestroy runs from
+        // ServiceManagerImpl.destroy(), outside the guard's reach. A code review caught
+        // this: the function's own doc now promises "the exception is not silently
+        // discarded", and this branch was the one place that promise did not hold.
+        try
+        {
+            Files.move(temp.toPath(), live.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            true
+        }
+        catch (e2: Exception)
+        {
+            onFailure(e2)
+            false
+        }
     }
     catch (e: Exception)
     {

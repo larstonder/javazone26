@@ -7,16 +7,20 @@
 The target is a **two-day unattended arcade cabinet** at the Capra booth, in front of a
 queue, with nobody watching the machine. Daily prizes are drawn from this leaderboard, so
 a lost score is a real failure with a person attached to it. Every decision below -
-temp-file-then-rename, timestamped backups, a defensive filter on load, a synchronous save
-at shutdown, auto-submitting abandoned initials - is that one requirement, spelled out.
+temp-file-then-rename, unique temp names, reported (not swallowed) failures, a stale-temp
+sweep, timestamped backups, a defensive filter on load, a synchronous save on every
+registration and again at shutdown, auto-submitting abandoned initials - is that one
+requirement, spelled out.
 
 The second constraint is queue throughput. Design spec section 12: **three-letter initials, never
 a form field**. That is also why no name and no e-mail is ever collected - there is no
 personal data here and therefore no consent flow to build.
 
-Four of the five files import nothing from `no.njoh.pulseengine`. Only `ScoreRepository`
-touches the engine or a file, which is what lets the ranking, the validation and the
-initials state machine be unit-tested without a GL context.
+Only `ScoreStore.kt`'s `EngineScoreStore` touches `no.njoh.pulseengine` or a file directly.
+That seam is what lets `ScoreRepository` itself - not just the ranking, the validation and
+the initials state machine around it - be unit-tested without a GL context.
+`ScoreRepositoryTest` constructs a real temp-directory `ScoreStore` and drives
+`registerScore` for real, atomic promote included.
 
 ## Files
 
@@ -25,8 +29,9 @@ initials state machine be unit-tested without a GL context.
 | `ScoreEntry.kt` | The record: `initials`, `score`, `seed`, `timestampMs`. Four fields, no logic. |
 | `Leaderboard.kt` | Pure ranking and selection - `rank`, `topN`, `isWorthRecording`. |
 | `InitialsEntry.kt` | The three-letter entry state machine, plus `isValidInitials` and `sanitizeEntries` (the load-time filter, which lives here because it is the same shape rule). |
-| `AtomicFileSwap.kt` | `promoteAtomically(temp, live)` - one function, one `Files.move`. |
-| `ScoreRepository.kt` | The only engine-aware class: an engine `Service` that loads on create, saves on every registration, rolls backups, saves synchronously on destroy, and registers the `winner` raffle command. |
+| `AtomicFileSwap.kt` | `promoteAtomically(temp, live, onFailure)` - one function, one `Files.move`, with a failure channel so a caller can report rather than silently lose a promotion. |
+| `ScoreStore.kt` | The seam: `ScoreStore` (`exists`/`load`/`saveAsync`/`saveSync`/`fileFor`/`listNames`) and `EngineScoreStore`, the only class in this package that touches `engine.data` directly. Its class doc carries the decompiled evidence for every claim this file makes about `DataImpl`'s failure behaviour. |
+| `ScoreRepository.kt` | An engine `Service` that loads (and sweeps stale temp files) on create, saves synchronously on every registration and on destroy, rolls backups asynchronously, and registers the `winner` raffle command. |
 
 ## The write path
 
@@ -35,36 +40,59 @@ by decompiling `DataImpl`: Jackson to a byte array, then `FilesKt.writeBytes(fil
 which truncates and overwrites in place. There is no temp file inside the engine. So this
 package builds one on top:
 
-1. `ScoreRepository.saveAsync` (`score/ScoreRepository.kt:83`) serialises a **snapshot**
-   (`entries.toList()`, not the live list) to `scoreboard.json.tmp`. The snapshot matters:
-   `saveObjectAsync` runs on `Dispatchers.IO`, so without it a score registered mid-write
-   could mutate the list out from under Jackson.
-2. The completion callback calls `promoteAtomically` (`score/AtomicFileSwap.kt:43`), which
-   is `Files.move(ATOMIC_MOVE, REPLACE_EXISTING)` with a caught fallback to a plain replace
-   if the filesystem cannot do it atomically.
+1. `ScoreRepository.saveAndPromote` (`score/ScoreRepository.kt`) serialises a **snapshot**
+   (`entries.toList()`, not the live list) to a freshly-named `scoreboard.<uuid>.tmp` via
+   `ScoreStore.saveSync` - **synchronously, on the calling thread**, not async. That is a
+   deliberate reversal of the first version of this write path: `saveObjectAsync`'s
+   completion callback only fires when the write succeeds (verified against `DataImpl`'s
+   bytecode - see `ScoreStore.kt`'s class doc), so a write *failure* on that path could
+   never reach this class's own failure reporting at all. `saveSync` returns the `Boolean`
+   the async path could not deliver, and this fires once per completed run - gameplay is
+   already over and the screen is a static leaderboard - so the render-thread cost async
+   saving elsewhere in this project exists to avoid does not apply here.
+2. If the write itself failed, `onSaveFailure` reports it immediately and nothing is
+   promoted. Otherwise `promoteAtomically` (`score/AtomicFileSwap.kt`) runs - `Files.move
+   (ATOMIC_MOVE, REPLACE_EXISTING)` with a caught fallback to a plain replace if the
+   filesystem cannot do it atomically - and **a failed promotion is reported through the
+   same `onSaveFailure` channel** rather than swallowed, which is what a `catch (e:
+   Exception) { false }` with no log and no rethrow used to do.
 
 What each step actually defends against:
 
 | Failure | Outcome | Why |
 |---|---|---|
+| The temp write itself fails (disk full, permission denied, …) | Reported via `onSaveFailure`, live file untouched | `saveSync`'s `Boolean` is checked before anything is promoted. |
 | Crash or power cut **during the temp write** | Live file untouched | `scoreboard.json` is never opened for writing. The half-written `.tmp` is simply overwritten next time and never promoted. |
-| Crash **between the temp write and the rename** | Equivalent to the write never happening | The safe outcome: the previous complete board survives. |
-| Crash **during the rename** | Fully-old or fully-new, never torn | A rename is a directory-entry swap, not a content write. |
+| Crash **between the temp write and the rename** | Equivalent to the write never happening | The safe outcome: the previous complete board survives. Any `.tmp` left behind by this is swept on the next `onCreate` - see below. |
+| Crash **during the rename**, or the rename fails (e.g. an indexer/AV holds `scoreboard.json` open on Windows) | Fully-old or fully-new, never torn - and the failure is reported, not silent | A rename is a directory-entry swap, not a content write; `promoteAtomically`'s `onFailure` parameter is what makes the failure visible. |
 | True hardware power loss | **Not covered** | Nothing calls `fsync`/`force`. The guarantee is "no torn file", not "every acknowledged write has reached the platter". Honest limit of what `engine.data`'s API allows without reimplementing serialisation. |
-| A corrupt or hand-mangled `scoreboard.json` | Fresh empty board, no crash | `loadEntries` (`:123`) catches, then `sanitizeEntries` (`score/InitialsEntry.kt:115`) drops anything that is not three uppercase letters with a positive score. |
+| A corrupt or hand-mangled `scoreboard.json` | Fresh empty board, no crash | `loadEntries` catches, then `sanitizeEntries` (`score/InitialsEntry.kt:115`) drops anything that is not three uppercase letters with a positive score. |
+| A stale `scoreboard.<uuid>.tmp` left by a crash between write and promote | Deleted on the next `onCreate` | `ScoreRepository.sweepStaleTemps`, run from `loadInto` before entries are loaded - otherwise these accumulate forever across two days of watchdog restarts, in the same folder a technician copies to a USB stick. |
 
-**Backups.** `maybeRollBackup` (`:92`) writes `scoreboard-backup-<epochMs>.json` at most
-once every `BACKUP_INTERVAL_MS` (30 minutes, `:203`). Each is a uniquely named file, never
-overwritten and never read back by the game, so an interrupted backup write can only ever
-damage that one file - which is why it deliberately skips the temp+promote dance. Note
-that the timer only advances when a score is registered: a cabinet nobody plays for an hour
-writes no backups, and the first backup of a session cannot happen until 30 minutes after
-process start (`lastBackupTimeMs` is initialised at construction, `:43`).
+**A score in the leaderboard on screen but missing from `scoreboard.json` after the run
+ended means the save failed.** `grep` the booth log (`booth/BoothLog.kt` tees
+`System.out`/`System.err`, so `Logger.error` calls land there) for either of two strings:
+`Failed to save file:` (the engine's own `DataImpl.saveObject` log line - the exact string,
+from the constant pool - meaning the temp write itself failed) or `SCORE NOT SAVED` (this
+package's own report, from `ScoreRepository.onSaveFailure`, meaning either the write or the
+promotion failed). Both fire at `ERROR`, which clears the booth's `logLevel = WARN` gate.
 
-**Where on disk.** `scoreFile` (`:197`) is `File(engine.config.saveDirectory, name)`.
-`saveDirectory` defaults to `File(System.getProperty("user.home"), gameName).absolutePath`
-(from `ConfigurationImpl`'s constructor, re-derived whenever `gameName` changes), and
-`gameName = EnPustTil` in `application.cfg`. So:
+**Backups.** `maybeRollBackup` writes `scoreboard-backup-<epochMs>.json` at most once every
+`BACKUP_INTERVAL_MS` (30 minutes). This is the one write in the package still asynchronous
+(`ScoreStore.saveAsync`) - deliberately: it is off the score-loss critical path, so a
+callback that silently never fires on failure costs at most one missing backup file, never
+a lost score. Each backup is a uniquely named file, never overwritten and never read back
+by the game, so an interrupted backup write can only ever damage that one file - which is
+why it deliberately skips the temp+promote dance. Note that the timer only advances when a
+score is registered: a cabinet nobody plays for an hour writes no backups, and the first
+backup of a session cannot happen until 30 minutes after process start (`lastBackupTimeMs`
+is initialised at construction).
+
+**Where on disk.** `EngineScoreStore.fileFor` (`score/ScoreStore.kt`) is
+`File(engine.config.saveDirectory, name)`. `saveDirectory` defaults to
+`File(System.getProperty("user.home"), gameName).absolutePath` (from `ConfigurationImpl`'s
+constructor, re-derived whenever `gameName` changes), and `gameName = EnPustTil` in
+`application.cfg`. So:
 
 - Windows booth: `C:\Users\<user>\EnPustTil\scoreboard.json`
 - macOS/Linux dev: `~/EnPustTil/scoreboard.json`
@@ -75,38 +103,46 @@ booth machine needs the board somewhere else.
 ## Lifecycle hooks
 
 `ScoreRepository` extends the engine's `Service` and is registered with
-`engine.service.add(scoreRepository)` in `EnPustTil.kt:685`. Verified call order (from
+`engine.service.add(scoreRepository)` in `EnPustTil.kt:1254`. Verified call order (from
 decompiling `ServiceManagerImpl`): `add()` queues the service; `init()` runs right after
 `PulseEngineGame.onCreate()` returns and calls `onCreate` on everything queued; `destroy()`
 runs during shutdown, just after `PulseEngineGame.onDestroy()`, and calls `onDestroy` on
 every registered service.
 
-- `onCreate` (`:45`) loads the board and registers the `winner` command.
-- `onDestroy` (`:115`) does a **synchronous** save. Deliberate: there is no guarantee the
-  process survives long enough for an async write to finish, and a few milliseconds of
-  blocking at shutdown is a cost the render thread never pays during play.
+- `onCreate` loads the board (via `loadInto`, which sweeps stale `.tmp` files first - see
+  the write-path table above) and registers the `winner` command.
+- `onDestroy` runs the same synchronous save-and-promote every `registerScore` uses (see
+  the write path above for why that switched from async to synchronous). Deliberate on
+  both call sites now, not just here: there is no guarantee the process survives long
+  enough for an async write to finish, and the cost - a few milliseconds of blocking, once
+  per completed run, on a screen that is already a static leaderboard - is nothing like the
+  render-thread cost that rule exists to protect during actual gameplay.
 
 **If the cabinet is killed without `onDestroy` running** - `pkill -9`, power cut, a hung
 process force-quit - nothing that was already registered is lost. Every `registerScore`
-already triggered its own async save plus promotion (`EnPustTil.kt:1063` is the only
-caller, fired on `RunLifecycle.initialsJustCompleted`). The only window is the few
-milliseconds between a registration and its promotion; a run that was still on screen was
-never registered in the first place. The `onDestroy` save is belt and braces, not the
-mechanism.
+already ran its own synchronous save-and-promote before returning (`EnPustTil.kt:1632` is
+the only caller, fired on `RunLifecycle.initialsJustCompleted`). There is no window between
+"registered" and "on disk" any more - the two happen on the same call stack. A run that was
+still on screen was never registered in the first place. The `onDestroy` save exists for
+belt-and-braces, not because there is a race it alone closes.
 
 This is why `RunLifecycle`'s exit path calls `engine.window.close()` and never
-`exitProcess` (`EnPustTil.kt:1020-1024`): closing the window ends the game loop, which runs
-`destroy()`, which runs this hook. `exitProcess` would skip all of it.
+`exitProcess`: closing the window ends the game loop, which runs `destroy()`, which runs
+this hook. `exitProcess` would skip all of it.
 
 ## On-disk format
 
-JSON through `engine.data`'s Jackson mapper, wrapped in `ScoreboardData` (`:208`) - a
-concrete class rather than a bare `List<ScoreEntry>`, because the engine's reified
-`loadObject<T>` resolves to a raw `Class` at the call site and a top-level generic list
-would lose its element type. A wrapper class's *field* generics survive Jackson's
-reflective introspection.
+JSON through `engine.data`'s Jackson mapper, wrapped in `ScoreboardData`
+(`score/ScoreRepository.kt`) - a concrete class rather than a bare `List<ScoreEntry>`,
+because the engine's reified `loadObject<T>` resolves to a raw `Class` at the call site
+and a top-level generic list would lose its element type. A wrapper class's *field*
+generics survive Jackson's reflective introspection.
 
-The engine's mapper has default typing enabled, so the list is written as a two-element
+The engine's mapper has default typing enabled - `ObjectMapper().registerModule
+(KotlinModule.Builder().build()).enableDefaultTyping().configure(FAIL_ON_UNKNOWN_PROPERTIES,
+false).configure(FAIL_ON_INVALID_SUBTYPE, false)`, verified by disassembling
+`DataImpl.class`'s companion-object static initialiser inside the exact
+`pulse-engine-0.13.0.jar` this build resolves - so the list is written as a two-element
 `[className, elements]` pair. Real file, from `~/EnPustTil/scoreboard.json`:
 
 ```json
@@ -115,6 +151,16 @@ The engine's mapper has default typing enabled, so the list is written as a two-
   {"initials":"AEE","score":229,"seed":20260902,"timestampMs":1786459993180}
 ]]}
 ```
+
+**This is a measured claim, not an assumed one, and it was wrong once already.**
+`ScoreRepositoryTest`'s fake `ScoreStore` originally used a bare `jacksonObjectMapper()` -
+same library as the engine, but not the same mapper configuration - which cannot parse
+this file at all: it throws `MismatchedInputException`, which the load path already
+catches and turns into `null`, so the mismatch was invisible and every test read back an
+empty board instead of failing. `an engine-written scoreboard round-trips through this
+store's mapper` (`ScoreRepositoryTest`) now pastes this exact file as a literal and
+asserts it loads to two entries - the property this package actually depends on (day two
+must be able to read day one's file) is now the one under test, not merely the schema.
 
 (The real file is one line; the concrete class name in slot 0 varies with whatever list
 implementation Jackson saw. **If you hand-edit this file, keep that wrapper** - dropping it
@@ -169,8 +215,10 @@ abandonment, and the cabinet must recover to IDLE on its own regardless.
 ## Booth operations
 
 **Where the board lives:** `C:\Users\<user>\EnPustTil\` on the booth machine
-(`~/EnPustTil/` on a dev Mac). That directory holds `scoreboard.json`, a transient
-`scoreboard.json.tmp`, and the `scoreboard-backup-<epochMs>.json` backups.
+(`~/EnPustTil/` on a dev Mac). That directory holds `scoreboard.json`, transient
+`scoreboard.<uuid>.tmp` files (uniquely named per write, not a single shared
+`scoreboard.json.tmp` any more - swept automatically on the next launch if one is ever
+left behind by a crash), and the `scoreboard-backup-<epochMs>.json` backups.
 
 **Back it up:** copy the whole `EnPustTil` folder to a USB stick at the end of each day.
 Do it after a clean shutdown (see below) so the last save has landed. The game never reads
@@ -185,7 +233,7 @@ the run being entered right now.
 give it a different number, then restart. Fresh column, fresh board. Day one's rows stay in
 `scoreboard.json` and can be recovered later by pointing `topN` at the old seed.
 
-**Draw the raffle winner:** the `winner` command (`:174`) is registered unconditionally, not
+**Draw the raffle winner:** the `winner` command (`score/ScoreRepository.kt:264`) is registered unconditionally, not
 behind `EPT_DEV`. It takes every entry for today's seed, gives each `10 + (3 * score/best)`
 tickets - so 10 to 13, weighted toward big scores but with every qualifying entry in real
 contention - and picks one. **Caveat, verified against the jar: there is currently no way
@@ -213,12 +261,23 @@ which is the safe failure but is also silent. To recover, stop the game, rename 
 |---|---|
 | `LeaderboardTest` | Rank order, the earlier-timestamp tie-break, `topN` truncation and the `n <= 0` boundary, and `isWorthRecording` at 0 / positive / negative. |
 | `InitialsEntryTest` | Cycling, A-Z wrap in both directions, edge-triggering (60 held frames cycle once), slot advance, no-op after completion, `reset` clearing prior edge state, plus `isValidInitials` and `sanitizeEntries`. |
-| `AtomicFileSwapTest` | `promoteAtomically` against a **real** temp directory, not a mock - promotion, replacing an existing live file, a missing temp reported as failure with the live file untouched, and a 10 KB payload landing whole. |
+| `AtomicFileSwapTest` | `promoteAtomically` against a **real** temp directory, not a mock - promotion, replacing an existing live file, a missing temp reported as failure with the live file untouched, a 10 KB payload landing whole, and a promotion that cannot happen at all (a non-empty directory where the live file should be) reporting why through `onFailure`. |
+| `ScoreRepositoryTest` | `registerScore` through to the live file (not just the temp file), no temp file left behind after a success, two sequential saves never sharing a temp name, a failed promotion reported through `onSaveFailure` (exactly two messages, pinned), a corrupt `scoreboard.json` starting a fresh board, a stale `.tmp` swept on load, a zero-score run never touching disk, the shutdown save promoting the tail of scores, yesterday's scores staying on disk but off today's filtered board, and - the one that actually matters most - a **real, byte-for-byte engine-written `scoreboard.json`** round-tripping through the store's mapper. |
 
-Two gaps worth knowing about. There is **no `ScoreRepositoryTest`**: load, save, backup
-rolling and the `winner` draw are exercised only by running the game (the round-trip was
-verified by hand across two separate processes - see
-`.superpowers/sdd/2026-08-04-en-pust-til-gameloop/score-persistence-report.md` section 5). And the
-one mutation that survived the original mutation run was dropping `REPLACE_EXISTING` from
-the `ATOMIC_MOVE` call: on APFS, `ATOMIC_MOVE` already implies replace-on-exists, so no test
-on a Mac can distinguish it. It is kept for NTFS, which is the booth's actual filesystem.
+The seam is `ScoreStore` (`score/ScoreStore.kt`): the real one wraps `engine.data`, the
+test's `FakeStore` is a real temp directory with no engine at all, so every write path
+above - including the atomic promote - is exercised for real rather than mocked away.
+
+**One thing worth remembering if you touch `FakeStore`'s mapper again:** matching the
+engine's Jackson *module* is not the same claim as matching its *configuration*. The
+engine's mapper has `enableDefaultTyping()` switched on, which changes the wire format
+(see "On-disk format" above); a mapper built without it silently fails to read a
+real engine-written file and, because the load path already catches and nulls out any
+read failure, that mismatch does not show up as a test failure on its own - it shows up as
+every entry quietly vanishing. `an engine-written scoreboard round-trips through this
+store's mapper` pastes a real file as a literal specifically so this can regress loudly.
+
+One mutation from the original `AtomicFileSwapTest` mutation run still survives: dropping
+`REPLACE_EXISTING` from the `ATOMIC_MOVE` call. On APFS, `ATOMIC_MOVE` already implies
+replace-on-exists, so no test on a Mac can distinguish it. It is kept for NTFS, which is
+the booth's actual filesystem.
