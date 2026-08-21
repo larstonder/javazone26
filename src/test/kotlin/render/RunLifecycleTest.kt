@@ -422,4 +422,55 @@ class RunLifecycleTest
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         assertTrue(lc.justStarted, "a second pulse must produce a second start")
     }
+
+    @Test
+    fun `returning to attract mode is announced exactly once`()
+    {
+        // EnPustTil rebuilds DiveSim on this flag. Without it the attract screen keeps the
+        // last player's final frame - a motionless diver at whatever depth the clock caught
+        // him, which after a 120 m timeout is a near-black abyss with a leaderboard in it.
+        val lc = newLifecycle()
+        enterRunOver(lc)
+
+        // Not worth recording, so RUN_OVER times out straight back to IDLE.
+        lc.update(dt = IDLE_TIMEOUT + 0.1f, anyInputPressed = false, runOver = true)
+
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertTrue(lc.justReturnedToIdle, "the return to attract must be announced")
+
+        lc.update(dt = 0.016f, anyInputPressed = false, runOver = false)
+        assertFalse(lc.justReturnedToIdle, "and must be a one-tick event, not a latched mode")
+    }
+
+    @Test
+    fun `finishing initials also announces the return to attract mode`()
+    {
+        // The other way back to IDLE. Both must rebuild the sim, or a player who entered
+        // initials leaves their corpse on the attract screen for the next person in the queue.
+        val lc = newLifecycle()
+        enterRunOver(lc)
+        lc.update(dt = DWELL + 0.1f, anyInputPressed = false, runOver = true, bankedScore = 5000)
+        assertEquals(RunLifecycleState.ENTER_INITIALS, lc.state)
+
+        lc.update(dt = INITIALS_IDLE_TIMEOUT + 0.1f, anyInputPressed = false, runOver = true, bankedScore = 5000)
+
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertTrue(lc.justReturnedToIdle)
+    }
+
+    @Test
+    fun `resuming a run paused from attract mode does not announce a return`()
+    {
+        // PAUSED -> IDLE is a resume, not a fresh attract screen. Rebuilding the sim there
+        // would be harmless but the flag must mean one thing only.
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state)
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertFalse(lc.justReturnedToIdle, "a resume is not a return to attract mode")
+    }
 }

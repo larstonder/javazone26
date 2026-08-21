@@ -1404,12 +1404,6 @@ class EnPustTil : PulseEngineGame()
         {
             sim.tick(engine.data.fixedDeltaTime, readInput())
 
-            // The diver's animation phase, advanced INSIDE the simulation gate and from the same
-            // dt — so a pause freezes the loop with everything else, by construction rather than
-            // by a second copy of the condition. See DiverSprite.loopPhase for the full argument
-            // and for what is deliberately given up (a still diver on the attract screen).
-            DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
-
             // The diver's aim, integrated here for the same reason and in the same gate. It used
             // to be integrated inside DiveLighting's beam DRAW, from onRender's delta time — which
             // stopped working the moment the diver's BODY had to be drawn to the same heading:
@@ -1418,6 +1412,14 @@ class EnPustTil : PulseEngineGame()
             // fixed tick, strictly before both reads. See DiveLighting.updateAim.
             DiveLighting.updateAim(sim, engine.data.fixedDeltaTime)
         }
+
+        // The sprite loop advances in IDLE too, but DiveSim does NOT tick: an attract-mode
+        // diver that ran the simulation would burn air and "drown" on the attract screen.
+        // What is wanted is a diver kicking in place at the surface, which is the animation
+        // without the simulation. Everywhere else this coincides with simulationAdvances, so
+        // a paused or RUN_OVER/ENTER_INITIALS frame still freezes/animates exactly as before.
+        if (lifecycle.simulationAdvances || lifecycle.state == RunLifecycleState.IDLE)
+            DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
 
         // CAMERA EASING RUNS ON THE FIXED TICK, NOT THE RENDER CLOCK. It used to be the other
         // way round, and CLAUDE.md used to describe that as deliberate presentation-side
@@ -1622,6 +1624,21 @@ class EnPustTil : PulseEngineGame()
             // is a one-tick flag cleared at the top of the next `lifecycle.update`, i.e. on the
             // render clock, and a frame that happens to run no fixed step would miss it.
             DiverSprite.restartLoop()
+        }
+
+        if (lifecycle.justReturnedToIdle)
+        {
+            // A fresh diver at the surface, not the last player's corpse at 120 m. Same
+            // construction and camera-snap order as justStarted above — see that block's
+            // comments for why the pin is applied BEFORE the snap, and why this snaps
+            // rather than eases (a teleport read as a smear across the water otherwise).
+            sim = DiveSim(seed = dailySeed)
+            applyDepthPin()
+            camera.snapTo(sim.depth)
+            CameraRig.snap(engine, camera.depth)
+            DiveLighting.resetAim()
+            DiverSprite.restartLoop()
+            activePadId = null   // Task 6: the next run picks its own pad
         }
 
         // The tick initials entry finishes (confirmed or auto-submitted on timeout —

@@ -86,6 +86,22 @@ class RunLifecycle(
         private set
 
     /**
+     * True for exactly one tick on each arrival at [RunLifecycleState.IDLE] from a finished
+     * run - the RUN_OVER timeout and the end of initials entry alike, but NOT a resume out
+     * of PAUSED, which returns to an attract screen that was never left.
+     *
+     * EnPustTil rebuilds [dive.DiveSim] on this. Without it the attract screen kept the
+     * previous run's final frame: `sim` was reconstructed only on [justStarted], and
+     * `simulationAdvances` is false in IDLE, so the diver simply stopped wherever the clock
+     * caught him. After a 120 m timeout that left the queue-forming display a near-black
+     * abyss with a leaderboard floating in it, until the next person pressed start.
+     *
+     * A one-tick event rather than a latched flag, for the same reason [justStarted] is.
+     */
+    var justReturnedToIdle: Boolean = false
+        private set
+
+    /**
      * One-tick event: true for exactly the [update] call that finishes initials entry —
      * either the player confirmed the third letter, or entry timed out and was
      * auto-submitted (see the ENTER_INITIALS state doc). The caller reads
@@ -229,6 +245,7 @@ class RunLifecycle(
     ): RunLifecycleState
     {
         justStarted = false
+        justReturnedToIdle = false
         initialsJustCompleted = false
         exitRequested = false
         timeInState += dt
@@ -317,6 +334,11 @@ class RunLifecycle(
 
     private fun enter(newState: RunLifecycleState, started: Boolean = false)
     {
+        // Set here rather than at the three call sites so a fourth route back to IDLE added
+        // later cannot forget it. The PAUSED resume goes through enter(resumeState) too, so
+        // it is excluded explicitly: that returns to an attract screen that was never left.
+        // Must read `state` (the OLD state) before it is overwritten below.
+        justReturnedToIdle = newState == RunLifecycleState.IDLE && state != RunLifecycleState.PAUSED
         state = newState
         timeInState = 0f
         justStarted = started
