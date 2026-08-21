@@ -11,7 +11,7 @@ package booth
  * `CallbackGuard` is these five names' only real consumer (`EnPustTil` just supplies the
  * literal strings back to it), and putting them in the package that owns the concept means
  * `EnPustTil`'s companion object can stay `private` — no widening its other, unrelated
- * constants (`DAILY_SEED`, `STICK_DEADZONE`, `HUD_Z_ORDER`) just to make these five visible
+ * constants (`DAILY_SEED`, `DEFAULT_STICK_DEADZONE`, `HUD_Z_ORDER`) just to make these five visible
  * to a test in a different package. `internal`, not `private`: `render.BoothStatusTest` and
  * the root-package `AttractScreenTest` both loop every real site name through
  * `BoothStatus.line`'s drawability check, so a future rename (an en dash slipped into a call

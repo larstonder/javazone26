@@ -150,8 +150,9 @@ idle-timeout machinery covers initials entry too.
   while held: simpler and fully deterministic.
 - If both up and down edge on the same frame, up wins, deterministically (`:73`).
 
-Wiring: `readInitialsCycle` (`EnPustTil.kt:1491`) reads stick Y past `STICK_DEADZONE` on
-*any* connected gamepad, or the UP/DOWN keys. Confirm reuses the same `actionPressed`
+Wiring: `readInitialsCycle` (`EnPustTil.kt:1491`) reads stick Y past `stickDeadzone` (a
+booth-configurable field, resolved from application.cfg - see `parseDeadzone`) on *any*
+connected gamepad, or the UP/DOWN keys. Confirm reuses the same `actionPressed`
 signal as the restart button (`EnPustTil.kt:956` - gamepad `START` or `A`, or `SPACE`), so
 the cabinet needs no third physical input. On-screen help text is
 `ScreenText.INITIALS_HELP` (`EnPustTil.kt:202`).

@@ -80,6 +80,43 @@ const val GAME_NAME = "EnPustTil"
 fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
 
 /**
+ * Parses a `GamepadButton` name read from application.cfg (kickButton / bleedButton /
+ * restartButton / restartButtonAlt).
+ *
+ * WHY THIS IS A CONFIG KEY AT ALL. The booth hardware is a generic USB arcade encoder that
+ * has never been enumerated on Windows, and its button codes are a guess. Before this, a
+ * wrong guess meant rebuilding the game on a machine with the Kotlin toolchain, at the
+ * venue, on setup day. application.cfg ships inside the .exe and opens in Notepad.
+ *
+ * Falls back to [fallback] for every failure a text-file edit can produce - key absent,
+ * empty, misspelled, a button name from a different controller vocabulary - for exactly
+ * the reason [parseDailySeed] does: a typo must never crash the booth machine, and must
+ * never leave kick unbound in front of a queue. Pure and engine-free apart from the enum
+ * itself, so it is unit testable without standing up a PulseEngine.
+ *
+ * `LAST` is a real entry (verified from the jar) and is accepted here like any other name
+ * — it is not special-cased out. It is a GLFW alias for `DPAD_LEFT` (the two share the same
+ * underlying code, same as `GLFW_GAMEPAD_BUTTON_LAST`), so setting a key to `LAST` would
+ * bind it to whatever DPAD_LEFT reads: a working, if confusingly-named, choice. Excluding
+ * it would need a special case for a value nobody at a booth is realistically going to
+ * type, so application.cfg's documented list simply does not mention it — the parser stays
+ * generic over every enum entry rather than growing a carve-out for one alias.
+ */
+fun parseGamepadButton(raw: String?, fallback: GamepadButton): GamepadButton
+{
+    val name = raw?.trim()?.uppercase() ?: return fallback
+    return GamepadButton.entries.firstOrNull { it.name == name } ?: fallback
+}
+
+/**
+ * Parses the `stickDeadzone` override. Clamped to 0..0.9: 1.0 or above makes the stick
+ * permanently dead (the diver could never be steered), and a negative value makes a
+ * resting stick read as full deflection (the diver swims on its own, forever, on the
+ * attract screen). Both are worse than any legitimate value.
+ */
+fun parseDeadzone(raw: Float?, fallback: Float): Float = (raw ?: fallback).coerceIn(0f, 0.9f)
+
+/**
  * Parses `EPT_DEPTH` — the DEV-ONLY depth pin that puts the diver at a fixed depth so the
  * attract screen becomes a deep-water test rig.
  *
@@ -555,6 +592,17 @@ class EnPustTil : PulseEngineGame()
     // a technician wrote in the file.
     private var dailySeed = DAILY_SEED
 
+    // Resolved from application.cfg in createGame, beside dailySeed and for the same
+    // reason — see parseGamepadButton's doc for why the button map has to be editable
+    // without a compiler. Held as `var`s initialised to the compiled defaults so a config
+    // with no keys at all (day one, before anyone has touched the file) behaves exactly
+    // as the old hardcoded constants did.
+    private var kickButton = DEFAULT_KICK_BUTTON
+    private var bleedButton = DEFAULT_BLEED_BUTTON
+    private var restartButton = DEFAULT_RESTART_BUTTON
+    private var restartButtonAlt = DEFAULT_RESTART_BUTTON_ALT
+    private var stickDeadzone = DEFAULT_STICK_DEADZONE
+
     /**
      * The dev-only depth pin, or null at the booth. Resolved in [onCreate] from
      * [DEPTH_PIN_ENV] — see [parseDepthPin] for what it is for and why it exists.
@@ -713,6 +761,15 @@ class EnPustTil : PulseEngineGame()
         // doc) is the only source for a technician's day-two override. See
         // application.cfg for the exact commented-out line to uncomment/edit on-site.
         dailySeed = parseDailySeed(engine.config.getString("dailySeed"), DAILY_SEED)
+
+        // Beside dailySeed, and for the same reason: application.cfg is the only thing a
+        // technician can edit at the booth without a toolchain.
+        kickButton = parseGamepadButton(engine.config.getString("kickButton"), DEFAULT_KICK_BUTTON)
+        bleedButton = parseGamepadButton(engine.config.getString("bleedButton"), DEFAULT_BLEED_BUTTON)
+        restartButton = parseGamepadButton(engine.config.getString("restartButton"), DEFAULT_RESTART_BUTTON)
+        restartButtonAlt = parseGamepadButton(engine.config.getString("restartButtonAlt"), DEFAULT_RESTART_BUTTON_ALT)
+        stickDeadzone = parseDeadzone(engine.config.getFloat("stickDeadzone"), DEFAULT_STICK_DEADZONE)
+        Logger.info { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt deadzone=$stickDeadzone" }
 
         // Read ONCE, here, beside the other capture pins — see parseDepthPin. Null at the
         // booth, where EPT_DEPTH is not set, so applyDepthPin below is a null check per run.
@@ -1105,8 +1162,23 @@ class EnPustTil : PulseEngineGame()
         // edge the result, which one stuck button could hold true forever.
         lifecycleEdges.begin(engine.data.deltaTime)
         engine.input.gamepads.forEach { pad ->
-            lifecycleEdges.offer(pad.id, RESTART_BUTTON.ordinal, pad.isPressed(RESTART_BUTTON))
-            lifecycleEdges.offer(pad.id, RESTART_BUTTON_ALT.ordinal, pad.isPressed(RESTART_BUTTON_ALT))
+            lifecycleEdges.offer(pad.id, restartButton.ordinal, pad.isPressed(restartButton))
+            // restartButton/restartButtonAlt are BOTH config now (Task 7), and a
+            // technician who finds START unmapped could reasonably set both keys to the
+            // same button. Without this guard that would offer the identical (padId,
+            // ordinal) source to LifecycleInputEdges twice in one frame — harmless for the
+            // edge itself (wasPressed[i] is already true after the first call, so the
+            // second call's risingTransition is false, and no duplicate edge fires), but
+            // NOT harmless for its time bookkeeping: `offer` advances heldSeconds and
+            // secondsSinceEdge by dt on every call for an already-seen source, so two
+            // calls in one frame advance both by 2*dt — silently halving how many real
+            // seconds it takes to trip LifecycleInputEdges.STUCK_SECONDS, and halving how
+            // many frames a chattering source needs to look "settled"
+            // (CHATTER_SETTLE_SECONDS), defeating the exact detector that class exists
+            // for. See LifecycleInputEdgesTest's duplicate-offer test for the measured
+            // effect.
+            if (restartButtonAlt != restartButton)
+                lifecycleEdges.offer(pad.id, restartButtonAlt.ordinal, pad.isPressed(restartButtonAlt))
         }
         lifecycleEdges.offerKeyboardEdge(engine.input.wasClicked(Key.SPACE))
         val actionPressed = lifecycleEdges.commit()
@@ -1767,8 +1839,8 @@ class EnPustTil : PulseEngineGame()
         return DiveInput(
             horizontal = if (padX != 0f) padX else keyX,
             vertical   = if (padY != 0f) padY else keyY,
-            kick       = (pad?.isPressed(KICK_BUTTON) ?: false) || engine.input.isPressed(Key.Z),
-            bleed      = (pad?.isPressed(BLEED_BUTTON) ?: false) || engine.input.isPressed(Key.X)
+            kick       = (pad?.isPressed(kickButton) ?: false) || engine.input.isPressed(Key.Z),
+            bleed      = (pad?.isPressed(bleedButton) ?: false) || engine.input.isPressed(Key.X)
         )
     }
 
@@ -1780,8 +1852,8 @@ class EnPustTil : PulseEngineGame()
      */
     private fun readInitialsCycle(): Pair<Boolean, Boolean>
     {
-        val padUp = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) < -STICK_DEADZONE }
-        val padDown = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) > STICK_DEADZONE }
+        val padUp = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) < -stickDeadzone }
+        val padDown = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) > stickDeadzone }
         val up = padUp || engine.input.isPressed(Key.UP)
         val down = padDown || engine.input.isPressed(Key.DOWN)
         return up to down
@@ -1794,7 +1866,7 @@ class EnPustTil : PulseEngineGame()
         else -> 0f
     }
 
-    private fun Float.deadzone() = if (kotlin.math.abs(this) < STICK_DEADZONE) 0f else this
+    private fun Float.deadzone() = if (kotlin.math.abs(this) < stickDeadzone) 0f else this
 
     /**
      * Finding 4 (highest-risk unknown in the project): the engine only lists a device in
@@ -1954,18 +2026,19 @@ class EnPustTil : PulseEngineGame()
     private companion object
     {
         const val DAILY_SEED = 20260902L
-        const val STICK_DEADZONE = 0.2f
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90
 
-        // Booth hardware is a joystick plus two arcade buttons on a USB encoder,
-        // which enumerates as a gamepad with a standard button layout. Remap here
-        // if the encoder wiring puts the buttons on different codes.
-        val KICK_BUTTON = GamepadButton.A
-        val BLEED_BUTTON = GamepadButton.B
+        // COMPILED DEFAULTS ONLY. The values actually used are the fields on the class,
+        // resolved from application.cfg in onCreate - see parseGamepadButton for why the
+        // booth needs to remap these without a compiler. Keep these as the best guess at
+        // the cabinet's encoder so a config with no keys behaves exactly as before.
+        val DEFAULT_KICK_BUTTON = GamepadButton.A
+        val DEFAULT_BLEED_BUTTON = GamepadButton.B
+        const val DEFAULT_STICK_DEADZONE = 0.2f
 
-        // Restart/start gets its OWN button (START), separate from KICK_BUTTON, so
+        // Restart/start gets its OWN button (START), separate from DEFAULT_KICK_BUTTON, so
         // holding A to kick toward the surface at 0:00 can never itself restart the run
         // (see RunLifecycle's class doc for the incident this fixes). A is kept as a
         // secondary in case the encoder wiring leaves START unmapped — it is safe to
@@ -1973,7 +2046,13 @@ class EnPustTil : PulseEngineGame()
         // of which physical button produced it, so a held A during actual play has no
         // effect (PLAYING ignores input entirely) and a held A after the run ends cannot
         // repeatedly restart (no NEW edge without a release-then-press).
-        val RESTART_BUTTON = GamepadButton.START
-        val RESTART_BUTTON_ALT = GamepadButton.A
+        //
+        // restartButton/restartButtonAlt are now config (Task 7), which opens a hazard
+        // these compiled defaults do not hit but a booth technician's edit could: setting
+        // BOTH keys to the same button would offer the identical (padId, ordinal) source
+        // to LifecycleInputEdges twice in one frame. See the guard beside the offer calls
+        // in updateGame for why that is skipped rather than merely tolerated.
+        val DEFAULT_RESTART_BUTTON = GamepadButton.START
+        val DEFAULT_RESTART_BUTTON_ALT = GamepadButton.A
     }
 }

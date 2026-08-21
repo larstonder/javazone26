@@ -327,6 +327,52 @@ class LifecycleInputEdgesTest
         assertEquals(0, unplugged.chatterCount, "an unplugged pad must not keep reporting itself chattering")
     }
 
+    /**
+     * THE HAZARD Task 7 (booth-configurable button map) introduced: `EnPustTil.restartButton`
+     * and `restartButtonAlt` are both read from application.cfg now, and a technician who
+     * finds START unmapped at the booth could reasonably set BOTH keys to the same physical
+     * button. If `EnPustTil`'s wiring then called [LifecycleInputEdges.offer] once per
+     * configured button unconditionally, the two calls would carry the IDENTICAL (padId,
+     * ordinal) source key, and the second call would observe state the first one wrote in
+     * the SAME frame - which is why that wiring guards against it (`if (restartButtonAlt
+     * != restartButton)` beside the offer calls in `updateGame`).
+     *
+     * This test is what justifies the guard: [offer] advances `heldSeconds` by `dt` on
+     * every call for an already-seen source, so offering the same source TWICE in one
+     * frame advances it by `2*dt` instead of `dt`. After the SAME number of elapsed
+     * frames, a source offered once per frame correctly reads as not-yet-stuck, while an
+     * identically-held source offered TWICE per frame has already crossed [STUCK] -
+     * silently halving how long a real hold takes to trip stuck detection (and, by the
+     * same mechanism, halving how long a chattering source takes to look "settled").
+     *
+     * Note what is NOT corrupted: `wasPressed[i]` is already `true` after the first
+     * call, so the second call's `risingTransition` is false and no duplicate EDGE fires
+     * - a duplicate offer is harmless for [commit]'s return value. It is only the time
+     * bookkeeping ([isStuck], [chatterCount]) that a duplicate offer breaks, and that is
+     * still worth preventing at the call site rather than relying on this class to
+     * defend against a caller offering the same source twice.
+     */
+    @Test
+    fun `offering the same source twice in one frame doubles its held-time accumulation`()
+    {
+        val framesElapsed = 70 // chosen so single*dt < STUCK <= double*dt, see below
+
+        val single = newEdges() // STUCK = 2f
+        single.begin(0f); single.offer(0, START, false); single.commit()
+        repeat(framesElapsed) { single.begin(0.016f); single.offer(0, START, true); single.commit() }
+        assertFalse(single.isStuck(0, START), "70 * 0.016s = 1.12s, well under the 2s stuck threshold")
+
+        val doubled = newEdges()
+        doubled.begin(0f); doubled.offer(0, START, false); doubled.commit()
+        repeat(framesElapsed) {
+            doubled.begin(0.016f)
+            doubled.offer(0, START, true)
+            doubled.offer(0, START, true) // the exact hazard: same source, same frame
+            doubled.commit()
+        }
+        assertTrue(doubled.isStuck(0, START), "double-offered, the same 70 frames accumulate as 2.24s - past STUCK")
+    }
+
     private companion object
     {
         // Plain ordinals rather than GamepadButton values, so this test never needs the
