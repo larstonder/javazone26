@@ -54,7 +54,11 @@ class InitialsEntry
      *   up, or the keyboard UP key held) — see [render.EnPustTil]'s reader for the
      *   combined gamepad/keyboard source.
      * @param cycleDown level reading of "cycle the current letter backward".
-     * @param confirmPressed level reading of the advance button.
+     * @param confirmPressed the advance button. `render.EnPustTil` now passes an
+     *   already-edged one-frame pulse here (`render.LifecycleInputEdges.commit()`, the
+     *   same signal reused as [render.RunLifecycle]'s `anyInputPressed`/`confirmPressed`)
+     *   rather than a raw level; this class re-edges whatever it is given regardless, so
+     *   both shapes are safe.
      */
     fun update(cycleUp: Boolean, cycleDown: Boolean, confirmPressed: Boolean)
     {

@@ -506,8 +506,8 @@ class EnPustTil : PulseEngineGame()
 
     /**
      * Per-source lifecycle edges. See LifecycleInputEdges' class doc for the stuck-button
-     * lockout this replaced - the single OR that used to live here could be held true for two
-     * days by one jammed encoder button, with no sign of it on screen.
+     * lockout this replaced — the single OR that used to live here could be held true for
+     * two days by one jammed encoder button, with no sign of it on screen.
      */
     private val lifecycleEdges = LifecycleInputEdges()
 
@@ -990,14 +990,17 @@ class EnPustTil : PulseEngineGame()
         // reasons — see `Motes.advance`. It is the third consumer of the precedent above.
         Motes.advance(engine.data.deltaTime)
 
-        // Start/restart is a LEVEL reading here — deliberately. The engine's Gamepad only
-        // exposes isPressed/getAxis (confirmed against the engine jar: no gamepad
-        // wasClicked), so there is no engine-provided edge detection for a controller
-        // button. RunLifecycle does its own previous-frame edge-tracking internally (see
-        // its class doc) specifically so a held or stuck button cannot fire this every
-        // frame — feeding it a level reading is exactly what it is built to consume.
-        // Key.SPACE's wasClicked is already an edge; OR-ing it in here is harmless since
-        // RunLifecycle re-edges the combined signal anyway.
+        // Start/restart reads gamepad LEVELS here — the engine's Gamepad only exposes
+        // isPressed/getAxis (confirmed against the engine jar: no gamepad wasClicked), so
+        // there is no engine-provided edge detection for a controller button. The edge is
+        // taken per (pad, button) SOURCE, in LifecycleInputEdges, and never over the
+        // collapsed signal: this block used to OR every source into one boolean and let
+        // RunLifecycle edge that, which one stuck encoder button could hold true for two
+        // days — no edge, no start, from any pad or from SPACE, with the attract screen
+        // looking healthy throughout. RunLifecycle still re-edges what it is handed (see
+        // its class doc); that is now a redundant second guard rather than the only one.
+        // Key.SPACE's wasClicked is already an edge and goes in as its OWN source — OR-ing
+        // it into the pad levels is exactly what used to mask it behind a jammed button.
         //
         // Movement/kick/bleed are deliberately excluded — a stray keypress or bumped
         // arcade button must never destroy a leaderboard attempt mid-run, nor spuriously
@@ -1008,7 +1011,7 @@ class EnPustTil : PulseEngineGame()
         // see that method's doc), lifecycle input scans EVERY connected gamepad. Index 0 is
         // not guaranteed to be the cabinet's stick at a booth; see anyLifecycleActionPressed's
         // doc (render/GamepadScan.kt) for why "any button to start" must mean any gamepad.
-        // Every (pad, button) pair is its own source now, edged independently - see
+        // Every (pad, button) pair is its own source now, edged independently — see
         // LifecycleInputEdges. This used to OR the LEVELS together and let RunLifecycle
         // edge the result, which one stuck button could hold true forever.
         lifecycleEdges.begin(engine.data.deltaTime)

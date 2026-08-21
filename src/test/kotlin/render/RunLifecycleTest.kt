@@ -398,18 +398,28 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `a one-frame input pulse starts a run and does not latch`()
+    fun `two one-frame input pulses each start a run, back to back`()
     {
-        // EnPustTil now passes an EDGE (LifecycleInputEdges.commit) where it used to pass a
-        // level. RunLifecycle re-edges its input, so a 1-frame pulse must still fire - and
-        // must not leave justStarted set on the frame after.
+        // EnPustTil now passes an EDGE (LifecycleInputEdges.commit()) where it used to
+        // pass a level. An earlier version of this test only checked that a SINGLE pulse
+        // fires and does not latch `justStarted` on the very next frame — but that second
+        // assertion cannot fail regardless: `justStarted = false` is the first statement
+        // of update(), and PLAYING already ignores input entirely (see `PLAYING ignores
+        // input entirely...` above), so nothing about edge-vs-level was actually being
+        // exercised. The property genuinely at risk is a SECOND pulse, after a full run
+        // and past the dwell, still working — the pulse equivalent of `releasing and
+        // pressing again after the dwell restarts exactly once`, which used a held-then-
+        // released LEVEL shape EnPustTil no longer produces. This fails if
+        // `wasInputPressed` is ever left latched true across a PLAYING -> RUN_OVER
+        // transition.
         val lc = newLifecycle()
+        enterRunOver(lc) // pulse: IDLE -> PLAYING -> RUN_OVER, input released throughout
 
-        lc.update(dt = 0.016f, anyInputPressed = true, runOver = false)
+        lc.update(dt = DWELL, anyInputPressed = false, runOver = true) // clear the dwell, still no input
+        assertEquals(RunLifecycleState.RUN_OVER, lc.state)
+
+        lc.update(dt = 0.016f, anyInputPressed = true, runOver = true) // a SECOND 1-frame pulse
         assertEquals(RunLifecycleState.PLAYING, lc.state)
-        assertTrue(lc.justStarted)
-
-        lc.update(dt = 0.016f, anyInputPressed = false, runOver = false)
-        assertFalse(lc.justStarted, "the pulse must not latch")
+        assertTrue(lc.justStarted, "a second pulse must produce a second start")
     }
 }

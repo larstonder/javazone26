@@ -49,15 +49,23 @@ enum class RunLifecycleState { IDLE, PLAYING, PAUSED, RUN_OVER, ENTER_INITIALS }
  *              a walked-away player can never block the next person in the queue from
  *              playing.
  *
- * EDGE-TRIGGERING: [update]'s `anyInputPressed` parameter (and, in ENTER_INITIALS,
- * `cycleUp`/`cycleDown`/`confirmPressed`) are per-frame LEVEL readings (e.g.
- * `Gamepad.isPressed`, which the engine gives no edge-detected alternative for — see
- * EnPustTil's companion doc). This class — and the [InitialsEntry] it owns — track the
- * previous frame themselves and only treat a false-to-true transition as "pressed": a
- * button held down across many frames fires exactly once, not once per frame. This is
- * deliberate and load-bearing: a stuck or noisy button on the booth's USB encoder must
- * not be able to auto-restart the game forever, or blast through every letter of the
- * alphabet in one frame (see the incident this class was written to fix).
+ * EDGE-TRIGGERING: this class — and the [InitialsEntry] it owns — track the previous
+ * frame themselves and only treat a false-to-true transition as "pressed": a button held
+ * down across many frames fires exactly once, not once per frame. This is deliberate and
+ * load-bearing: a stuck or noisy button on the booth's USB encoder must not be able to
+ * auto-restart the game forever, or blast through every letter of the alphabet in one
+ * frame (see the incident this class was written to fix).
+ *
+ * [update]'s `cycleUp`/`cycleDown`/`pausePressed`/`exitHeld` parameters are raw per-frame
+ * LEVEL readings (e.g. `Gamepad.isPressed`, which the engine gives no edge-detected
+ * alternative for — see EnPustTil's companion doc) and depend entirely on this class's
+ * own edging above. `anyInputPressed` and `confirmPressed` are NOT levels from
+ * EnPustTil's caller any more: both now carry `LifecycleInputEdges.commit()`'s result,
+ * already a one-frame pulse taken per (pad, button) source — see that class's doc for why
+ * a single collapsed level could be latched true for two days by one stuck button. This
+ * class re-edges them regardless — a pulse re-edged is still a pulse for exactly one
+ * frame — so the redundancy is harmless, and other callers remain free to pass a raw
+ * level as before.
  */
 class RunLifecycle(
     private val dwellSeconds: Float = DWELL_SECONDS,
@@ -185,14 +193,19 @@ class RunLifecycle(
      *
      * @param dt frame delta time in seconds, used for the dwell and idle timers.
      * @param anyInputPressed whether a restart/start-eligible button reads pressed THIS
-     *   frame — a level reading, not pre-edge-detected; see class doc.
+     *   frame. EnPustTil now hands this an already-edged one-frame pulse
+     *   (`LifecycleInputEdges.commit()`); this class re-edges it regardless, so both a raw
+     *   level and a pre-edged pulse are safe here — see class doc.
      * @param runOver the underlying sim's `runOver` flag; only consulted while PLAYING.
      * @param bankedScore the sim's banked total; only consulted at/after a RUN_OVER
      *   transition, to decide whether to offer initials entry. Defaults to 0 (never
      *   worth recording) so callers that don't care about initials entry — e.g. existing
      *   tests — get the pre-ENTER_INITIALS behaviour unchanged.
-     * @param cycleUp / @param cycleDown / @param confirmPressed initials-entry input,
-     *   level readings — see [InitialsEntry.update]. Only consulted in ENTER_INITIALS.
+     * @param cycleUp / @param cycleDown initials-entry input, level readings — see
+     *   [InitialsEntry.update]. @param confirmPressed is EnPustTil's SAME edge-detected
+     *   pulse as [anyInputPressed] ("the button that started your run also advances your
+     *   initials" — see EnPustTil's companion doc), not a separate level. Only consulted
+     *   in ENTER_INITIALS.
      * @param pausePressed whether the pause/back input (Esc) reads pressed THIS frame — a
      *   level reading, edge-detected here exactly like [anyInputPressed], so a key held
      *   down toggles once and not sixty times a second. Consulted in IDLE and PLAYING (to
