@@ -330,9 +330,15 @@ object DiverSprite
      *
      * ## It is driven from the FIXED TICK, not the render clock
      *
-     * [advanceLoop] is called from `EnPustTil.onFixedUpdate`, inside the same
-     * `RunLifecycle.simulationAdvances` block as the single `DiveSim.tick` call. Three reasons,
-     * and the second is the load-bearing one:
+     * [advanceLoop] is called from `EnPustTil.onFixedUpdate`, gated on
+     * `RunLifecycle.spriteAnimates` — NOT the same gate as the single `DiveSim.tick` call,
+     * which uses `RunLifecycle.simulationAdvances`. The two gates agree everywhere except
+     * IDLE: `spriteAnimates` is true there so the attract-mode diver keeps kicking, while
+     * `simulationAdvances` stays false so `DiveSim` never ticks (an attract-mode diver that
+     * ran the simulation would burn air and "drown" on an unattended cabinet). This split
+     * used to not exist — the loop held frame 0 in IDLE, see below — but both properties are
+     * still fixed-tick reads for the same three reasons, and the second is the load-bearing
+     * one:
      *
      *  - **The pause is airtight by construction rather than by a second copy of the condition.**
      *    A pause that stops the clock but leaves the diver swimming behind the scrim contradicts
@@ -340,7 +346,7 @@ object DiverSprite
      *    stopped clock and a full ring of bubbles, because "the run is being held, not ended").
      *    Gating this from `onRender` instead would mean writing that condition out a second time,
      *    where it could drift from the one the simulation uses.
-     *  - **The phase becomes a pure function of the number of simulation ticks.** Two runs that
+     *  - **The phase becomes a pure function of the number of fixed ticks.** Two runs that
      *    have advanced the same number of fixed steps show the same frame, whatever the refresh
      *    rate did in between — which is what makes a screenshot reproducible. This project's
      *    capture harness has already paid, twice, for state pinned on one clock and consumed on
@@ -350,13 +356,20 @@ object DiverSprite
      *    phase itself is elapsed SECONDS, so the choice of clock changes only how finely it is
      *    sampled, never how fast the loop plays.
      *
-     * IDLE (attract mode) therefore holds frame 0 rather than treading water on an unattended
-     * cabinet — the same reason `simulationAdvances` is false there. That is a deliberate loss:
-     * a moving diver would make the attract screen livelier. It is not worth a second, ungated
-     * animation clock that could keep running through a pause.
+     * **IDLE (attract mode) animates.** An earlier version of this file held frame 0 there —
+     * "not worth a second, ungated animation clock" — but that trade was reversed once
+     * `RunLifecycle.justReturnedToIdle` existed: without it, the attract screen showed
+     * whichever frame the previous player's run happened to end on, motionless, which after a
+     * 120 m timeout read as a near-dead diver hanging in a near-black abyss with a leaderboard
+     * floating in it (task-9,
+     * `.superpowers/sdd/2026-08-21-booth-survival/task-9-brief.md`). `spriteAnimates` is still
+     * one gate, not a second ungated clock — it is `simulationAdvances` with IDLE folded back
+     * in, both exhaustive `when`s in `RunLifecycle` so a sixth state cannot silently pick a
+     * default.
      *
-     * Reset to 0 on `RunLifecycle.justStarted` (see [restartLoop]) so every run opens on the same
-     * authored frame instead of wherever the previous player left it.
+     * Reset to 0 on `RunLifecycle.justStarted` AND on `RunLifecycle.justReturnedToIdle` (see
+     * [restartLoop]) so every run, and every fresh arrival at the attract screen, opens on the
+     * same authored frame instead of wherever the previous player left it.
      */
     private var loopPhase = 0f
 

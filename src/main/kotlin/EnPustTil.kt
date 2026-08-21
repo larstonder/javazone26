@@ -807,8 +807,11 @@ object PauseLayout
  * leaderboard, dwell before restart, initials entry for a qualifying score, idle
  * timeout) lives in [RunLifecycle] — a pure, engine-free, unit-tested class. This file
  * only reacts to it: gates whether [sim] gets ticked, decides which HUD screen to draw,
- * constructs a fresh [DiveSim] on [RunLifecycle.justStarted], and persists a completed
- * initials entry via [scoreRepository] on [RunLifecycle.initialsJustCompleted].
+ * constructs a fresh [DiveSim] on [RunLifecycle.justStarted] and again on
+ * [RunLifecycle.justReturnedToIdle], and persists a completed initials entry via
+ * [scoreRepository] on [RunLifecycle.initialsJustCompleted] — which must run BEFORE the
+ * justReturnedToIdle rebuild in `updateGame`, since both flags are true on the same tick
+ * when a player finishes initials entry (see the comments at those two blocks).
  */
 class EnPustTil : PulseEngineGame()
 {
@@ -1416,9 +1419,12 @@ class EnPustTil : PulseEngineGame()
         // The sprite loop advances in IDLE too, but DiveSim does NOT tick: an attract-mode
         // diver that ran the simulation would burn air and "drown" on the attract screen.
         // What is wanted is a diver kicking in place at the surface, which is the animation
-        // without the simulation. Everywhere else this coincides with simulationAdvances, so
-        // a paused or RUN_OVER/ENTER_INITIALS frame still freezes/animates exactly as before.
-        if (lifecycle.simulationAdvances || lifecycle.state == RunLifecycleState.IDLE)
+        // without the simulation. Asked of RunLifecycle.spriteAnimates rather than spelled
+        // out as `simulationAdvances || state == IDLE` here, for the same reason the gate
+        // above reads `lifecycle.simulationAdvances` rather than `state != IDLE`: the rule
+        // lives in the pure, exhaustive `when` next to the states it talks about, so a sixth
+        // state is a compile error there instead of silently getting "sprite frozen" here.
+        if (lifecycle.spriteAnimates)
             DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
 
         // CAMERA EASING RUNS ON THE FIXED TICK, NOT THE RENDER CLOCK. It used to be the other
@@ -1626,27 +1632,41 @@ class EnPustTil : PulseEngineGame()
             DiverSprite.restartLoop()
         }
 
+        // THIS MUST RUN BEFORE THE justReturnedToIdle BLOCK BELOW — the two flags are not
+        // mutually exclusive. RunLifecycle.finishInitials() sets initialsJustCompleted = true
+        // and then calls enter(IDLE), which sets justReturnedToIdle = true in the same call
+        // (the old state there is ENTER_INITIALS, not PAUSED, so the PAUSED exclusion does
+        // not apply) — so on the tick a player finishes their initials, BOTH flags are true
+        // at once. `sim` is still the DiveSim that scored this run only as long as this read
+        // happens first: reading it after the block below would read a freshly-constructed
+        // sim with `banked == 0`, and Leaderboard.isWorthRecording(0) discards the score with
+        // no log and no error — every real score silently lost, all day. (This is exactly
+        // what shipped in the first cut of this feature; the review that caught it is task-9
+        // in .superpowers/sdd/2026-08-21-booth-survival/, and UpdateGameOrderingTest pins the
+        // ordering so it cannot regress silently again.)
+        if (lifecycle.initialsJustCompleted)
+            scoreRepository.registerScore(lifecycle.completedInitials, sim.banked)
+
         if (lifecycle.justReturnedToIdle)
         {
             // A fresh diver at the surface, not the last player's corpse at 120 m. Same
             // construction and camera-snap order as justStarted above — see that block's
             // comments for why the pin is applied BEFORE the snap, and why this snaps
             // rather than eases (a teleport read as a smear across the water otherwise).
+            //
+            // MUST RUN AFTER THE initialsJustCompleted BLOCK ABOVE. Finishing initials sets
+            // both flags on the same tick (see the comment above), and this block destroys
+            // `sim` — reordering it back above the score read would zero every score before
+            // it is ever persisted. See UpdateGameOrderingTest.
             sim = DiveSim(seed = dailySeed)
             applyDepthPin()
             camera.snapTo(sim.depth)
             CameraRig.snap(engine, camera.depth)
             DiveLighting.resetAim()
             DiverSprite.restartLoop()
-            activePadId = null   // Task 6: the next run picks its own pad
+            // Task 6: the next run picks its own pad.
+            activePadId = null
         }
-
-        // The tick initials entry finishes (confirmed or auto-submitted on timeout —
-        // see RunLifecycle's ENTER_INITIALS doc), persist the score. `sim` is still the
-        // DiveSim that scored this run: a completed entry moves to IDLE, not PLAYING, so
-        // no new DiveSim has been constructed yet this frame (justStarted is false here).
-        if (lifecycle.initialsJustCompleted)
-            scoreRepository.registerScore(lifecycle.completedInitials, sim.banked)
     }
 
     override fun onDestroy() = guard.run(CallbackSites.DESTROY, destroyBody)

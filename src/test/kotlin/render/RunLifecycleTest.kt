@@ -285,6 +285,41 @@ class RunLifecycleTest
     }
 
     @Test
+    fun `the sprite keeps animating in IDLE even though the simulation does not`() {
+        // spriteAnimates is deliberately NOT the same property as simulationAdvances: DiveSim
+        // must stay frozen on an unattended cabinet (it would burn air and "drown" the
+        // attract-mode diver otherwise), but the sprite should still kick in place at the
+        // surface rather than hold a motionless frame — see DiverSprite.loopPhase's doc.
+        val lc = newLifecycle()
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertFalse(lc.simulationAdvances, "IDLE must not tick DiveSim")
+        assertTrue(lc.spriteAnimates, "IDLE must still animate the sprite")
+    }
+
+    @Test
+    fun `a paused run does not animate the sprite either`() {
+        // Unlike IDLE, PAUSED keeps the diver still: the pause screen's promise is that the
+        // run is being HELD, not ended, and a diver swimming behind the scrim would
+        // contradict that on sight.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        assertFalse(lc.spriteAnimates, "a paused run must freeze the sprite along with the sim")
+    }
+
+    @Test
+    fun `spriteAnimates agrees with simulationAdvances everywhere except IDLE`() {
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // IDLE -> PLAYING
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertTrue(lc.spriteAnimates)
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = true)   // -> RUN_OVER
+        assertEquals(RunLifecycleState.RUN_OVER, lc.state)
+        assertTrue(lc.spriteAnimates)
+    }
+
+    @Test
     fun `resuming returns to the run rather than restarting it`() {
         // A resume that set justStarted would have EnPustTil build a fresh DiveSim and throw
         // away the dive — the single worst thing a pause screen could do to a player.

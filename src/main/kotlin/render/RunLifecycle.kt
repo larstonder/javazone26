@@ -105,10 +105,15 @@ class RunLifecycle(
      * One-tick event: true for exactly the [update] call that finishes initials entry —
      * either the player confirmed the third letter, or entry timed out and was
      * auto-submitted (see the ENTER_INITIALS state doc). The caller reads
-     * [completedInitials] THIS SAME TICK — the sim that scored the run is still intact,
-     * since a completed entry moves to IDLE, not PLAYING, so no new `DiveSim` has been
-     * constructed yet — and persists the score. Cleared the next tick, same pattern as
-     * [justStarted] and `DiveSim.diveEnded`.
+     * [completedInitials] THIS SAME TICK and persists the score. Cleared the next tick,
+     * same pattern as [justStarted] and `DiveSim.diveEnded`.
+     *
+     * [justReturnedToIdle] is ALSO true on this exact tick — [finishInitials] sets this flag
+     * and then calls `enter(IDLE)`, which sets that one in the same call, since the state
+     * being left is ENTER_INITIALS rather than PAUSED. The DiveSim that scored the run is
+     * only "still intact" for a caller that reads it before acting on [justReturnedToIdle];
+     * EnPustTil's ordering of those two blocks in `updateGame` is load-bearing for exactly
+     * this reason — see the comment there and `UpdateGameOrderingTest`.
      */
     var initialsJustCompleted: Boolean = false
         private set
@@ -173,6 +178,28 @@ class RunLifecycle(
     {
         RunLifecycleState.IDLE, RunLifecycleState.PAUSED -> false
         RunLifecycleState.PLAYING, RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
+    }
+
+    /**
+     * Whether [render.DiverSprite]'s animation loop should advance this frame — NOT the same
+     * condition as [simulationAdvances]. `DiveSim` must stay frozen in IDLE (an attract-mode
+     * diver that ran the simulation would burn air and "drown" on an unattended cabinet), but
+     * the sprite should still kick in place at the surface rather than hold frame 0 — a
+     * motionless diver is indistinguishable from a frozen one, and `AttractLayout` was
+     * measured against a surface shot with a diver that reads as alive. So this is
+     * [simulationAdvances] with IDLE added back in, PAUSED excluded (a stopped clock and a
+     * still diver is what the pause screen's "the run is being held, not ended" promises).
+     *
+     * Exposed here rather than spelled out at the call site as `simulationAdvances ||
+     * state == IDLE` for the same reason `simulationAdvances` itself is a property and not a
+     * comparison: that inline form is an exhaustive rule hiding in an `||`, and a sixth state
+     * added later would silently inherit "sprite frozen" instead of failing to compile. An
+     * exhaustive `when` on purpose, with no `else`.
+     */
+    val spriteAnimates: Boolean get() = when (state)
+    {
+        RunLifecycleState.PAUSED -> false
+        RunLifecycleState.IDLE, RunLifecycleState.PLAYING, RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
     }
 
     /**
@@ -291,7 +318,7 @@ class RunLifecycle(
                     // PAUSE_IDLE_TIMEOUT_SECONDS for why the timeout resumes rather than
                     // abandoning. `started` stays false, so the caller does NOT build a
                     // fresh DiveSim: the run is picked up exactly where it was left.
-                    enter(resumeState)
+                    enter(resumeState, resuming = true)
                 }
             }
 
@@ -332,13 +359,16 @@ class RunLifecycle(
         enter(RunLifecycleState.PAUSED)
     }
 
-    private fun enter(newState: RunLifecycleState, started: Boolean = false)
+    private fun enter(newState: RunLifecycleState, started: Boolean = false, resuming: Boolean = false)
     {
         // Set here rather than at the three call sites so a fourth route back to IDLE added
-        // later cannot forget it. The PAUSED resume goes through enter(resumeState) too, so
-        // it is excluded explicitly: that returns to an attract screen that was never left.
-        // Must read `state` (the OLD state) before it is overwritten below.
-        justReturnedToIdle = newState == RunLifecycleState.IDLE && state != RunLifecycleState.PAUSED
+        // later cannot forget it. The PAUSED resume passes `resuming = true` and is excluded
+        // explicitly: that returns to an attract screen that was never left. Keyed on the
+        // CALLER'S intent rather than on the old state being PAUSED — a state comparison
+        // would also swallow a future "abandon run, return to attract" route added to the
+        // pause screen, which goes PAUSED -> IDLE through this same funnel but IS a genuine
+        // return to a fresh attract screen, not a resume.
+        justReturnedToIdle = newState == RunLifecycleState.IDLE && !resuming
         state = newState
         timeInState = 0f
         justStarted = started

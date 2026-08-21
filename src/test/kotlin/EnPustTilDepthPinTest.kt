@@ -80,9 +80,11 @@ class EnPustTilDepthPinTest
     @Test
     fun `every sim construction applies the pin`()
     {
-        // THE REGRESSION THIS EXISTS FOR. There are two `DiveSim(` sites in EnPustTil — onCreate
-        // and the justStarted branch — and a pin applied at only one of them produces a rig that
-        // works on the attract screen and silently stops working the moment anyone presses start.
+        // THE REGRESSION THIS EXISTS FOR. There are three `DiveSim(` sites in EnPustTil — onCreate,
+        // the justStarted branch, and the justReturnedToIdle branch added by task 9 (see
+        // `.superpowers/sdd/2026-08-21-booth-survival/task-9-report.md`) — and a pin applied at
+        // only some of them produces a rig that works on the attract screen and silently stops
+        // working the moment anyone presses start, or the moment a run times out back to it.
         // That is the kind of fault that is discovered halfway through a measurement session.
         val source = File("src/main/kotlin/EnPustTil.kt").readText()
         val constructions = Regex("""sim = DiveSim\(""").findAll(source).toList()
@@ -104,14 +106,35 @@ class EnPustTilDepthPinTest
         // snapTo TELEPORTS the camera to sim.depth. Applied after it, the pin would leave the
         // camera at the surface easing 140 m down through the first second of the run — which
         // does not look like a bug, it looks like a slow start, so nothing would flag it.
+        //
+        // This used to narrow to only the `justStarted` block (substringAfter/substringBefore
+        // around its own `resetAim()` call), which left the `justReturnedToIdle` block added by
+        // task 9 completely unguarded by this test — correct today only because it happens to
+        // copy the same order, not because anything enforced it. Widened to check EVERY
+        // `sim = DiveSim(` site the same way `every sim construction applies the pin` does:
+        // for each one, look at the text up to the NEXT construction (or end of file) and
+        // require applyDepthPin() to precede camera.snapTo( within that window.
         val source = File("src/main/kotlin/EnPustTil.kt").readText()
-        val justStarted = source.substringAfter("if (lifecycle.justStarted)").substringBefore("DiveLighting.resetAim()")
+        val constructions = Regex("""sim = DiveSim\(""").findAll(source).map { it.range.first }.toList()
+        assertTrue(constructions.isNotEmpty(), "no DiveSim construction found — re-read this test")
 
-        val pin = justStarted.indexOf("applyDepthPin()")
-        val snap = justStarted.indexOf("camera.snapTo(")
-        assertTrue(pin >= 0, "the restart path no longer applies the depth pin")
-        assertTrue(snap >= 0, "the restart path no longer snaps the camera — re-read this test")
-        assertTrue(pin < snap, "the depth pin is applied after camera.snapTo, so a pinned run opens with the camera 140 m adrift")
+        constructions.forEachIndexed { i, start ->
+            val end = constructions.getOrElse(i + 1) { source.length }
+            val window = source.substring(start, end)
+
+            val pin = window.indexOf("applyDepthPin()")
+            val snap = window.indexOf("camera.snapTo(")
+            // Not every construction site snaps the camera on the same statement (onCreate's
+            // does, much further down, inside createGame's broader setup) — only assert the
+            // ordering where this window actually contains both.
+            if (pin >= 0 && snap >= 0)
+                assertTrue(
+                    pin < snap,
+                    "at DiveSim construction offset $start, the depth pin is applied after " +
+                    "camera.snapTo — a pinned run/attract-mode diver would open with the camera " +
+                    "140 m adrift"
+                )
+        }
     }
 
     @Test
