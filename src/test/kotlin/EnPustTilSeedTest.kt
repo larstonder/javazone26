@@ -73,4 +73,58 @@ class EnPustTilSeedTest
         // not by accident, and this is the test that would catch the check being reordered.
         assertEquals(1L, resolveDailySeed(rawInt = 1, rawString = "2", fallback = 3L))
     }
+
+    // ---- dailySeedConfigWarning: making BOTH typo shapes visible, not just the decimal one ----
+
+    @Test
+    fun `dailySeedConfigWarning is null when the key is absent entirely`()
+    {
+        assertEquals(null, dailySeedConfigWarning(rawString = null, rawFloat = null))
+    }
+
+    @Test
+    fun `dailySeedConfigWarning fires for a letter-for-digit typo - the more likely typo, and the one an earlier version missed`()
+    {
+        // "2O260903" (letter O for digit 0) stores as a String, not a Float - a version of
+        // this warning that only checked the Float/decimal-point shape said nothing here.
+        val warning = dailySeedConfigWarning(rawString = "2O260903", rawFloat = null)
+        assertEquals(true, warning != null && warning.contains("2O260903"))
+    }
+
+    @Test
+    fun `dailySeedConfigWarning fires for a stray decimal point`()
+    {
+        val warning = dailySeedConfigWarning(rawString = null, rawFloat = 2026.0903f)
+        assertEquals(true, warning != null && warning.contains("2026.0903"))
+    }
+
+    @Test
+    fun `dailySeedConfigWarning is null for a String that actually parses - the caller never gets here in that case, but the function must not warn regardless`()
+    {
+        assertEquals(null, dailySeedConfigWarning(rawString = "20260903", rawFloat = null))
+    }
+
+    // ---- configFileHealthWarning: a cheap general symptom-check for a partial load ----
+
+    @Test
+    fun `configFileHealthWarning is null when gameName reads back correctly`()
+    {
+        assertEquals(null, configFileHealthWarning(GAME_NAME))
+    }
+
+    @Test
+    fun `configFileHealthWarning fires when gameName is missing`()
+    {
+        // The shape a silently-aborted load produces: gameName's hash bucket was one of
+        // the entries the loader never reached before the throw.
+        val warning = configFileHealthWarning(null)
+        assertEquals(true, warning != null && warning.contains(GAME_NAME))
+    }
+
+    @Test
+    fun `configFileHealthWarning fires when gameName reads back as something else entirely`()
+    {
+        val warning = configFileHealthWarning("NotEnPustTil")
+        assertEquals(true, warning != null && warning.contains("NotEnPustTil"))
+    }
 }

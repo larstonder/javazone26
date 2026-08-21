@@ -31,13 +31,15 @@ package render
  *     ignorable line among many.
  *  5. **A mistyped, or too-large, `dailySeed`.** `EnPustTil.resolveDailySeed` falls back
  *     to the compiled default (or whatever seed was already active) for a typo or a stray
- *     decimal point, by design — a typo must never crash the booth machine — and above
- *     ten digits the WHOLE of application.cfg silently fails to load, reverting every
- *     other key too (see `resolveDailySeed`'s doc and CLAUDE.md's day-two paragraph for
- *     why). Either way, day two would quietly run day one's column and append to day
- *     one's leaderboard with nothing else on screen to say so. Showing the ACTIVE seed
- *     makes the day-two switch verifiable without a log: the number either changed or it
- *     did not.
+ *     decimal point, by design — a typo must never crash the booth machine. A value ABOVE
+ *     `2147483647` (`Int.MAX_VALUE` — verified to be the exact boundary, not "ten digits")
+ *     is a SEPARATE, worse failure: it throws silently while application.cfg is being
+ *     parsed and drops an unpredictable SUBSET of the file's other keys too (which subset
+ *     is hash-order dependent, not the whole file — see `resolveDailySeed`'s doc and
+ *     CLAUDE.md's day-two paragraph for the mechanism and the measurement). Either way,
+ *     day two would quietly run day one's column and append to day one's leaderboard with
+ *     nothing else on screen to say so. Showing the ACTIVE seed makes the day-two switch
+ *     verifiable without a log: the number either changed or it did not.
  *
  * All of these reach the booth log file (see `booth/BoothLog.kt`), but nobody reads a log
  * with a queue waiting.

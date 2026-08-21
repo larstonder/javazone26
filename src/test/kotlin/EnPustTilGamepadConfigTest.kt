@@ -91,7 +91,7 @@ class EnPustTilGamepadConfigTest
     @Test
     fun `gamepadButtonConfigWarning is null when the key was never touched`()
     {
-        assertEquals(null, gamepadButtonConfigWarning("kickButton", raw = null, resolved = GamepadButton.A, default = GamepadButton.A))
+        assertEquals(null, gamepadButtonConfigWarning("kickButton", rawString = null, rawInt = null, rawFloat = null, resolved = GamepadButton.A, default = GamepadButton.A))
     }
 
     @Test
@@ -99,13 +99,13 @@ class EnPustTilGamepadConfigTest
     {
         // Not a fallback at all - CROSS was recognised and returned as itself, so
         // `resolved != default` short-circuits the warning before the name comparison.
-        assertEquals(null, gamepadButtonConfigWarning("kickButton", raw = "CROSS", resolved = GamepadButton.CROSS, default = GamepadButton.A))
+        assertEquals(null, gamepadButtonConfigWarning("kickButton", rawString = "CROSS", rawInt = null, rawFloat = null, resolved = GamepadButton.CROSS, default = GamepadButton.A))
     }
 
     @Test
     fun `gamepadButtonConfigWarning is null when the technician deliberately wrote the default's own name back`()
     {
-        assertEquals(null, gamepadButtonConfigWarning("kickButton", raw = "  a  ", resolved = GamepadButton.A, default = GamepadButton.A))
+        assertEquals(null, gamepadButtonConfigWarning("kickButton", rawString = "  a  ", rawInt = null, rawFloat = null, resolved = GamepadButton.A, default = GamepadButton.A))
     }
 
     @Test
@@ -113,8 +113,26 @@ class EnPustTilGamepadConfigTest
     {
         // restartbutton = STRAT: falls back to START (the default), but the raw text was
         // never "START" - this is the case that used to produce no signal anywhere.
-        val warning = gamepadButtonConfigWarning("restartButton", raw = "STRAT", resolved = GamepadButton.START, default = GamepadButton.START)
+        val warning = gamepadButtonConfigWarning("restartButton", rawString = "STRAT", rawInt = null, rawFloat = null, resolved = GamepadButton.START, default = GamepadButton.START)
         assertEquals(true, warning != null && warning.contains("STRAT"))
+    }
+
+    @Test
+    fun `gamepadButtonConfigWarning fires for a digit typo that coerces to Int - the case a String-only check misses`()
+    {
+        // kickButton = 0: an earlier version of this function took only a String raw value
+        // and saw getString("kickButton") == null (it coerced to Integer instead), which
+        // is indistinguishable from the key being entirely absent - silent. GamepadButton
+        // has no purely-numeric name, so rawInt present is unconditionally a typo.
+        val warning = gamepadButtonConfigWarning("kickButton", rawString = null, rawInt = 0, rawFloat = null, resolved = GamepadButton.A, default = GamepadButton.A)
+        assertEquals(true, warning != null && warning.contains("0"))
+    }
+
+    @Test
+    fun `gamepadButtonConfigWarning fires for a decimal typo that coerces to Float`()
+    {
+        val warning = gamepadButtonConfigWarning("bleedButton", rawString = null, rawInt = null, rawFloat = 1.5f, resolved = GamepadButton.B, default = GamepadButton.B)
+        assertEquals(true, warning != null && warning.contains("1.5"))
     }
 
     @Test

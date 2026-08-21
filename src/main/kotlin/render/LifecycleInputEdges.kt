@@ -176,10 +176,35 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
      * defect" note for the version of that test this replaced.
      *
      * A second offer in the same frame still updates the LEVEL — `wasPressed[i]` is OR'd
-     * with [pressed] rather than ignored — so a caller offering two aliases of one
-     * physical button (one read as pressed, one not, on the same frame — should not
-     * happen with `Gamepad.isPressed` on the same button but costs nothing to tolerate)
-     * does not lose a genuine press.
+     * with [pressed] rather than ignored. THE REASON IS NOT "no genuine press is ever
+     * lost" — an earlier version of this doc claimed that, and it is WRONG for one of the
+     * two orderings a duplicate call can arrive in:
+     *  - **`true` then `false`** (first call this frame sees pressed, second sees
+     *    released): OR keeps `wasPressed[i]` at `true`, matching what the FIRST
+     *    (non-duplicate) call already committed to `heldSeconds` — consistent, and the
+     *    only outcome that does not contradict the accumulation that already happened.
+     *  - **`false` then `true`**: the first call runs normally with `pressed = false`,
+     *    setting `wasPressed[i] = false` and `heldSeconds[i] = 0`. The SECOND call is the
+     *    duplicate branch, which returns BEFORE the `heldSeconds`/rising-transition code
+     *    below ever runs — so OR-ing `wasPressed[i]` to `true` here sets the source to
+     *    "already pressed" without ever taking the rising-edge path that would have set
+     *    it. On the very next frame, `!wasPressed[i]` is then false, so a genuinely fresh
+     *    press is NOT detected as a rising transition — this ordering, if it occurred,
+     *    WOULD swallow a genuine press for that attempt (not permanently: a later
+     *    release-then-press still edges normally).
+     *
+     * OR is kept anyway, because it is the SAFER of the two available directions for a
+     * cabinet: it can only ever SUPPRESS an edge, never FABRICATE one — replacing it with
+     * "ignore the duplicate's level entirely" would not fix the false-then-true case
+     * either, and AND-ing instead could manufacture a released reading out of a genuinely
+     * held button. And the disagreeing ordering is UNREACHABLE with this class's one
+     * real caller: post the `.code` fix (`EnPustTil`'s offer wiring, and see this class's
+     * `.code`-vs-`.ordinal` note), a duplicate offer only occurs when both `GamepadButton`
+     * values passed by the caller share one `code` — i.e. both calls read
+     * `pad.isPressed(...)` for the SAME physical button in the SAME frame, which
+     * `Gamepad.isPressed` answers identically both times. `true` then `false` (or vice
+     * versa) needs the two calls to disagree about one button's own state within one
+     * frame, which does not happen.
      */
     fun offer(padId: Int, buttonOrdinal: Int, pressed: Boolean)
     {

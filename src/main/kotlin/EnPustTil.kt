@@ -75,10 +75,12 @@ const val GAME_NAME = "EnPustTil"
  * in). Pure and engine-free specifically so it is unit testable without standing up a
  * PulseEngine instance — see EnPustTilSeedTest.
  *
- * Returns [fallback] (the compile-time [EnPustTil.DAILY_SEED]) for both cases a
- * technician's text-file edit can produce: [raw] is null (key absent — day one, before
- * anyone has touched the file) or [raw] is present but not a valid Long (a typo must
- * never crash the booth machine; it just silently reuses day one's seed instead).
+ * Returns [fallback] (the compile-time default, `EnPustTil`'s private `DAILY_SEED` —
+ * not linked, that companion is `private` and a KDoc link to it cannot resolve from a
+ * top-level function) for both cases a technician's text-file edit can produce: [raw] is
+ * null (key absent — day one, before anyone has touched the file) or [raw] is present but
+ * not a valid Long (a typo must never crash the booth machine; it just silently reuses
+ * day one's seed instead).
  */
 fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
 
@@ -92,23 +94,43 @@ fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: 
  * literally stored as a `String`.
  *
  * EMPIRICALLY VERIFIED against the real `ConfigurationImpl` (not reasoned from the
- * decompiled loader alone — see task-6-7-report.md for the harness and full output):
+ * decompiled loader alone — see task-6-7-report.md for the harness and full output, now
+ * updated twice: a first empirical pass got the ABORT mechanism half right, and a second
+ * review measurement corrected it — read that report's "round 2" section, not just its
+ * first pass, before changing this doc again):
  *
  *  - **Every real seed used at this booth so far (`20260902`, `20260903` — all digits)
  *    stores as `Integer`.** `getString` returns null for it; this is the entire bug this
  *    function exists to fix. [rawInt] is checked FIRST for exactly this reason: it is the
  *    shape a legitimate seed actually arrives in, not an edge case.
- *  - **A seed above `Int.MAX_VALUE` does NOT arrive as a `String`**, and the earlier
- *    version of this finding assumed it would — that assumption was WRONG, empirically.
- *    `Integer.parseInt` throws inside `loadConfigFile`, uncaught per-entry, which aborts
- *    parsing application.cfg IN ITS ENTIRETY: every other key in the file — `screenMode`,
- *    `logLevel`, the whole button map, everything — silently reverts to ITS compiled
- *    default for that run too, not just dailySeed. Confirmed directly: a two-key file with
- *    `dailySeed = 99999999999` on one line and a second key on the next line comes back
- *    with BOTH keys unreadable. There is no recovery available at this call site — by the
- *    time `createGame` runs, the load has already silently failed — so the only real
- *    defence is staying under 10 digits, and that is why application.cfg's own comment
- *    says so explicitly rather than implying this function absorbs it.
+ *  - **A seed above `2147483647` (`Int.MAX_VALUE`) does NOT arrive as a `String`.**
+ *    `Integer.parseInt` throws inside `ConfigurationImpl.loadConfigFile`. The throw is
+ *    SILENT, not logged: `ConfigurationInternal.init()` (which the engine actually calls
+ *    for `application.cfg`, decompiled) wraps the call in `runCatching { ... }` and stores
+ *    the `Result` to a local that is NEVER READ — bytecode: `astore_2`, nothing after it.
+ *    (`ConfigurationImpl.load(path)`, a DIFFERENT public method, DOES log "Failed to load
+ *    configuration" at ERROR — but the engine never calls that one for this file, only
+ *    `init()`'s silent `runCatching`, so that log line is not a safety net here.)
+ *  - **The throw aborts parsing partway through, and WHICH keys survive is HASH ORDER,
+ *    NOT FILE ORDER, and therefore unpredictable.** `loadConfigFile` iterates
+ *    `Properties.entrySet()`, a `Hashtable`; every entry already reached before the throw
+ *    is already committed to `this.properties`, and everything the iteration had not yet
+ *    reached is lost — regardless of where either sits in the FILE. Measured against the
+ *    real shipping `application.cfg` with `dailySeed = 99999999999`: `gameName`,
+ *    `targetFps`, `screenMode`, `logLevel`, `kickButton`, `bleedButton` and `restartButton`
+ *    ALL SURVIVE (the cabinet does NOT come up windowed, contrary to an earlier version of
+ *    this doc) — only `dailySeed`, `restartButtonAlt` and `stickDeadzone` are lost. Making
+ *    `targetFps` the bad value instead loses a different subset. DO NOT name which keys
+ *    survive an over-range value as a general rule: it depends on the exact key set in the
+ *    file at the time and changes if a key is added or removed. The one thing this
+ *    function's caller CAN do generically is notice `gameName` came back wrong — see
+ *    [configFileHealthWarning].
+ *  - **The boundary is EXACTLY `2147483647`, verified both sides**: `dailySeed =
+ *    2147483647` loads fine (an ordinary `Integer`); `dailySeed = 2147483648` throws. "Ten
+ *    digits or fewer" (an earlier version of this doc and of application.cfg) is
+ *    ACTIONABLY WRONG on the boundary — `2147483648` is ten digits and throws, and
+ *    `2147483647` is also ten digits and is fine — the only correct statement is the
+ *    numeric ceiling itself.
  *  - **Text containing a `.` (a stray decimal point) stores as `Float`.** There is no
  *    meaningful integer to recover from a fractional value (every real seed here is a
  *    bare integer, so a decimal point is definitionally a typo), and rounding or
@@ -118,11 +140,67 @@ fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: 
  *    exactly as before.
  *  - **An absent key** returns null from every getter and falls back exactly as before.
  *
+ * See [dailySeedConfigWarning] for making the decimal-point and non-numeric-typo cases
+ * VISIBLE — this function only degrades safely, it does not warn.
+ *
  * [rawInt] and [rawString] rather than a `Configuration` reference, so this stays pure
  * and testable without booting the engine — same reasoning as [parseGamepadButton].
  */
 fun resolveDailySeed(rawInt: Int?, rawString: String?, fallback: Long): Long =
     rawInt?.toLong() ?: parseDailySeed(rawString, fallback)
+
+/**
+ * A warning message if `dailySeed` was present in application.cfg, in ANY of the three
+ * shapes its loader can store it as, but did not resolve to a usable value — or null if
+ * the key is either absent or genuinely valid.
+ *
+ * GENERALISES what an earlier version of this fix only caught for ONE of two failure
+ * shapes: it warned on a stray-decimal `Float` (`dailySeed = 2026.0903`) but said nothing
+ * for a non-numeric typo stored as `String` (`dailySeed = 2O260903`, a letter for a
+ * digit) — which is the MORE LIKELY typo of the two, and produced no signal at all. Both
+ * are now covered by the same check: present, and [resolveDailySeed] could not use it.
+ * [rawInt] present is never a failure — an `Int` from this loader is always a valid seed —
+ * so it is not part of this function's signature at all; the caller simply does not call
+ * this when `rawInt != null`.
+ */
+fun dailySeedConfigWarning(rawString: String?, rawFloat: Float?): String?
+{
+    if (rawString != null && rawString.toLongOrNull() == null)
+        return "application.cfg: dailySeed = \"$rawString\" is not a whole number - using the active seed instead. See CLAUDE.md's day-two paragraph."
+    if (rawFloat != null)
+        return "application.cfg: dailySeed = $rawFloat has a decimal point - seeds must be a whole number - using the active seed instead."
+    return null
+}
+
+/**
+ * A WARN-worthy message if application.cfg's load looks like it silently aborted partway
+ * through — see [resolveDailySeed]'s doc for the mechanism this detects the SYMPTOM of,
+ * not the cause: an over-range numeric value (`dailySeed` above `2147483647`, or any other
+ * key with the same shape) throws while `ConfigurationImpl.loadConfigFile` iterates
+ * `Properties.entrySet()` in HASH order, and the throw is swallowed by
+ * `ConfigurationInternal.init()`'s `runCatching` with its `Result` never inspected — so
+ * nothing else in the process ever finds out on its own.
+ *
+ * [gameName] should be `engine.config.getString("gameName")`. It is the one key in
+ * application.cfg that is (a) always present and uncommented in the shipped file, (b)
+ * NEVER subject to the numeric coercion that causes the abort — a game name is never
+ * all-digits, so it can never itself be the value that throws — and (c) has one, known,
+ * unchanging correct value ([GAME_NAME]) rather than a technician-editable one. If a load
+ * silently aborted partway through, `gameName`'s hash bucket has a real (if not
+ * guaranteed — hash order, not "last") chance of being one of the entries never reached,
+ * and reading anything other than [GAME_NAME] back is a signal a technician would
+ * otherwise never get: WHICH other keys were lost is unpredictable and this function does
+ * not attempt to say — see [resolveDailySeed]'s doc for why naming them would immediately
+ * go stale.
+ *
+ * Cheaper than a documented rule a technician has to remember and re-derive by hand: this
+ * is three lines, runs once at startup, and turns "read CLAUDE.md's day-two paragraph
+ * correctly" into "read one WARN line in the booth log."
+ */
+fun configFileHealthWarning(gameName: String?): String? =
+    if (gameName != GAME_NAME)
+        "application.cfg: gameName read back as \"$gameName\", expected \"$GAME_NAME\" - the config file may have failed to load completely (a numeric value above 2147483647 anywhere in it throws mid-parse and silently drops an unpredictable subset of the file's OTHER keys - see resolveDailySeed's doc). Check every key in application.cfg, not just the one you edited."
+    else null
 
 /**
  * Parses a `GamepadButton` name read from application.cfg (kickButton / bleedButton /
@@ -154,18 +232,28 @@ fun parseGamepadButton(raw: String?, fallback: GamepadButton): GamepadButton
 }
 
 /**
- * A warning message for `createGame` to log if [raw] looks like a typo application.cfg
- * silently swallowed, or null if the key is either absent or a genuinely recognised name.
+ * A warning message for `createGame` to log if the key was present in application.cfg, in
+ * ANY of the three shapes its loader can store a value as, but did not resolve to a
+ * genuinely recognised button — or null if the key is either absent entirely or a
+ * genuinely recognised name.
  *
  * WHY THIS EXISTS. [parseGamepadButton] falls back to [default] for every unparseable
- * [raw] — correctly, a typo must never crash the booth machine — but that means a typo
- * and a deliberate "use the compiled default" edit are otherwise INDISTINGUISHABLE: both
- * produce [resolved] == [default] and, before this, nothing printed anywhere a technician
- * would see it. A typo is left silently unbound in front of a queue with the reasonable
- * conclusion "the config file doesn't work" — the precise failure Task 7 exists to
- * prevent, arriving through a different door.
+ * [rawString] — correctly, a typo must never crash the booth machine — but that means a
+ * typo and a deliberate "use the compiled default" edit are otherwise
+ * INDISTINGUISHABLE: both produce [resolved] == [default] and, before this, nothing
+ * printed anywhere a technician would see it. A typo is left silently unbound in front of
+ * a queue with the reasonable conclusion "the config file doesn't work" — the precise
+ * failure Task 7 exists to prevent, arriving through a different door.
  *
- * The heuristic: [raw] is present, resolved to [default], AND [raw] (trimmed,
+ * GENERALISED beyond the `String` shape: a version of this taking only [rawString]
+ * checked nothing for `kickButton = 0` — an all-digit value coerces to `Integer`, so
+ * `parseGamepadButton` was handed `getString(key) == null` and fell back with the
+ * genuinely-absent case, silent. [rawInt]/[rawFloat] present is unconditionally a typo
+ * (no legitimate `GamepadButton` name is purely numeric or contains a decimal point), so
+ * their presence alone — with no name-equality escape hatch, since there is no name to
+ * compare — is enough to warn.
+ *
+ * The [rawString] heuristic: present, resolved to [default], AND [rawString] (trimmed,
  * case-insensitively) is NOT [default]'s own name — i.e. a technician who explicitly
  * writes the default's name back gets no warning (a real, deliberate edit, not a
  * silently-swallowed typo), but anything else that fell back does. Not perfect — it
@@ -174,11 +262,13 @@ fun parseGamepadButton(raw: String?, fallback: GamepadButton): GamepadButton
  * `parseDailySeed`-family functions already use in place of threading a result type
  * through every parser.
  */
-fun gamepadButtonConfigWarning(key: String, raw: String?, resolved: GamepadButton, default: GamepadButton): String?
+fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, rawFloat: Float?, resolved: GamepadButton, default: GamepadButton): String?
 {
-    if (raw == null || resolved != default) return null
-    if (raw.trim().equals(default.name, ignoreCase = true)) return null
-    return "application.cfg: $key = \"$raw\" is not a recognised GamepadButton name - using the compiled default ($default). See application.cfg's BUTTON MAP comment for valid names."
+    if (rawInt != null) return "application.cfg: $key = $rawInt is not a recognised GamepadButton name - using the compiled default ($default). See application.cfg's BUTTON MAP comment for valid names."
+    if (rawFloat != null) return "application.cfg: $key = $rawFloat is not a recognised GamepadButton name - using the compiled default ($default). See application.cfg's BUTTON MAP comment for valid names."
+    if (rawString == null || resolved != default) return null
+    if (rawString.trim().equals(default.name, ignoreCase = true)) return null
+    return "application.cfg: $key = \"$rawString\" is not a recognised GamepadButton name - using the compiled default ($default). See application.cfg's BUTTON MAP comment for valid names."
 }
 
 /**
@@ -929,27 +1019,24 @@ class EnPustTil : PulseEngineGame()
         val dailySeedRawInt = engine.config.getInt("dailySeed")
         val dailySeedRawString = engine.config.getString("dailySeed")
         dailySeed = resolveDailySeed(dailySeedRawInt, dailySeedRawString, DAILY_SEED)
-        // A Float here means the value contained a decimal point — a typo, since every
-        // real seed is a bare integer — and resolveDailySeed already fell back silently.
-        // WARN so that fallback is distinguishable from "the file wasn't touched" (same
-        // reasoning as gamepadButtonConfigWarning below).
-        if (dailySeedRawInt == null && dailySeedRawString == null)
-            engine.config.getFloat("dailySeed")?.let {
-                Logger.warn { "application.cfg: dailySeed = $it has a decimal point - seeds must be a whole number; using $dailySeed instead" }
-            }
+        // WARN whenever the key was present, in EITHER of the two failure shapes, but
+        // could not be used — not just the decimal-point Float case. A rawInt present
+        // never needs this: an Int from this loader is always a valid seed.
+        if (dailySeedRawInt == null)
+            dailySeedConfigWarning(dailySeedRawString, engine.config.getFloat("dailySeed"))?.let { Logger.warn { it } }
         // "Daily seed: $dailySeed" is logged below, once sim/scoreRepository are actually
         // built from it — see that line for why it sits there rather than here.
 
         // Beside dailySeed, and for the same reason: application.cfg is the only thing a
         // technician can edit at the booth without a toolchain.
-        val kickButtonRaw = engine.config.getString("kickButton")
-        val bleedButtonRaw = engine.config.getString("bleedButton")
-        val restartButtonRaw = engine.config.getString("restartButton")
-        val restartButtonAltRaw = engine.config.getString("restartButtonAlt")
-        kickButton = parseGamepadButton(kickButtonRaw, DEFAULT_KICK_BUTTON)
-        bleedButton = parseGamepadButton(bleedButtonRaw, DEFAULT_BLEED_BUTTON)
-        restartButton = parseGamepadButton(restartButtonRaw, DEFAULT_RESTART_BUTTON)
-        restartButtonAlt = parseGamepadButton(restartButtonAltRaw, DEFAULT_RESTART_BUTTON_ALT)
+        val kickButtonRawString = engine.config.getString("kickButton")
+        val bleedButtonRawString = engine.config.getString("bleedButton")
+        val restartButtonRawString = engine.config.getString("restartButton")
+        val restartButtonAltRawString = engine.config.getString("restartButtonAlt")
+        kickButton = parseGamepadButton(kickButtonRawString, DEFAULT_KICK_BUTTON)
+        bleedButton = parseGamepadButton(bleedButtonRawString, DEFAULT_BLEED_BUTTON)
+        restartButton = parseGamepadButton(restartButtonRawString, DEFAULT_RESTART_BUTTON)
+        restartButtonAlt = parseGamepadButton(restartButtonAltRawString, DEFAULT_RESTART_BUTTON_ALT)
         // stickDeadzone = 0 (the natural way to write "disable the deadzone") is all-digit
         // and therefore an Integer under the same coercion, not a Float — see
         // resolveDeadzone's doc. getInt checked first for the same reason dailySeed's is.
@@ -963,19 +1050,28 @@ class EnPustTil : PulseEngineGame()
         // failure Task 7 exists to prevent.
         Logger.warn { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt deadzone=$stickDeadzone" }
 
-        // Per-key: the summary line above says WHAT was resolved, not whether a key was
-        // actually present and malformed versus simply absent. A typo and "the file was
-        // never touched" both print the same summary otherwise.
-        gamepadButtonConfigWarning("kickButton", kickButtonRaw, kickButton, DEFAULT_KICK_BUTTON)?.let { Logger.warn { it } }
-        gamepadButtonConfigWarning("bleedButton", bleedButtonRaw, bleedButton, DEFAULT_BLEED_BUTTON)?.let { Logger.warn { it } }
-        gamepadButtonConfigWarning("restartButton", restartButtonRaw, restartButton, DEFAULT_RESTART_BUTTON)?.let { Logger.warn { it } }
-        gamepadButtonConfigWarning("restartButtonAlt", restartButtonAltRaw, restartButtonAlt, DEFAULT_RESTART_BUTTON_ALT)?.let { Logger.warn { it } }
+        // Per-key, and now checked against ALL THREE coercion shapes (see
+        // gamepadButtonConfigWarning's GENERALISED paragraph) — the summary line above
+        // says WHAT was resolved, not whether a key was actually present and malformed
+        // versus simply absent, and a numeric typo like `kickButton = 0` used to produce
+        // no warning at all because only the String shape was ever checked.
+        gamepadButtonConfigWarning("kickButton", kickButtonRawString, engine.config.getInt("kickButton"), engine.config.getFloat("kickButton"), kickButton, DEFAULT_KICK_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("bleedButton", bleedButtonRawString, engine.config.getInt("bleedButton"), engine.config.getFloat("bleedButton"), bleedButton, DEFAULT_BLEED_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("restartButton", restartButtonRawString, engine.config.getInt("restartButton"), engine.config.getFloat("restartButton"), restartButton, DEFAULT_RESTART_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("restartButtonAlt", restartButtonAltRawString, engine.config.getInt("restartButtonAlt"), engine.config.getFloat("restartButtonAlt"), restartButtonAlt, DEFAULT_RESTART_BUTTON_ALT)?.let { Logger.warn { it } }
 
         // A plausible booth copy-paste (kickButton = bleedButton, or any two of these four
         // landing on the same physical button) makes the game partly or fully unplayable
         // with no signal anywhere else — see gamepadButtonCollisionWarnings's doc.
         gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt)
             .forEach { Logger.warn { it } }
+
+        // A cheap, general symptom-check for "application.cfg silently failed to load
+        // completely" (see resolveDailySeed's doc for the mechanism) — a startup guard
+        // rather than trusting every technician to remember and correctly re-derive a
+        // documented numeric ceiling. See configFileHealthWarning's doc for why gameName
+        // specifically is the sentinel.
+        configFileHealthWarning(engine.config.getString("gameName"))?.let { Logger.warn { it } }
 
         // Read ONCE, here, beside the other capture pins — see parseDepthPin. Null at the
         // booth, where EPT_DEPTH is not set, so applyDepthPin below is a null check per run.
@@ -996,7 +1092,11 @@ class EnPustTil : PulseEngineGame()
         sim = DiveSim(seed = dailySeed)
         applyDepthPin()
         scoreRepository = ScoreRepository(todaySeed = dailySeed)
-        Logger.info { "Daily seed: $dailySeed" }
+        // WARN, not INFO — the same defect fixed 30-odd lines above for the button-map
+        // summary, on the exact value this whole round's critical fix is about: INFO never
+        // reaches application.cfg's booth-default logLevel = WARN, so this line would
+        // never have reached the booth log at all.
+        Logger.warn { "Daily seed: $dailySeed" }
 
         // Booth mode is the default (see application.cfg: FULLSCREEN, quiet logging, no
         // title bar an attendee could drag or close). screenMode and window size cannot be
@@ -1367,7 +1467,15 @@ class EnPustTil : PulseEngineGame()
         // LifecycleInputEdges. This used to OR the LEVELS together and let RunLifecycle
         // edge the result, which one stuck button could hold true forever.
         lifecycleEdges.begin(engine.data.deltaTime)
-        engine.input.gamepads.forEach { pad ->
+        // Indexed, not `.forEach { pad -> ... }` — `Iterable<T>.forEach` on a `List`
+        // allocates one `Iterator` per call, and this runs every update frame. Same
+        // no-per-frame-allocation reasoning as readInput's pad lookup (see
+        // gamepadIdBuffer's doc) and selectGameplayPad — this was the one Iterator this
+        // round's own diff left standing after fixing the other two.
+        val lifecyclePads = engine.input.gamepads
+        for (i in lifecyclePads.indices)
+        {
+            val pad = lifecyclePads[i]
             // Keyed on .code, not .ordinal: GamepadButton has aliases sharing one physical
             // button's code (A/CROSS both 0, X/SQUARE both 2, DPAD_LEFT/LAST both 14, ...).
             // Two DIFFERENT GamepadButton values with the same .code are the same physical
