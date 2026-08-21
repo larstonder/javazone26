@@ -1,4 +1,5 @@
 import booth.BoothLog
+import booth.CallbackGuard
 import dive.DiveInput
 import dive.DiveSim
 import dive.Tuning
@@ -481,6 +482,23 @@ object PauseLayout
  */
 class EnPustTil : PulseEngineGame()
 {
+    /**
+     * Nothing thrown by this game may reach the engine's game-loop handler — it opens a text
+     * editor over the fullscreen cabinet. See CallbackGuard's class doc for the bytecode.
+     */
+    private val guard = CallbackGuard { site, count, cause ->
+        Logger.error(cause) { "[$site] failed (occurrence $count) - the frame is lost, the cabinet continues" }
+    }
+
+    // Held as fields, built once, rather than written inline at the call site: a capturing
+    // lambda allocates per call, and four of these run every frame. See CallbackGuard's
+    // ALLOCATION note and CLAUDE.md's no-per-frame-allocation rule.
+    private val createBody: () -> Unit = { createGame() }
+    private val fixedUpdateBody: () -> Unit = { fixedUpdateGame() }
+    private val updateBody: () -> Unit = { updateGame() }
+    private val renderBody: () -> Unit = { renderGame() }
+    private val destroyBody: () -> Unit = { destroyGame() }
+
     private lateinit var sim: DiveSim
     private val camera = DiveCamera()
     private val lifecycle = RunLifecycle()
@@ -552,7 +570,13 @@ class EnPustTil : PulseEngineGame()
     // before that, which nothing renders in.
     private var opaqueWater: OpaqueWaterEffect? = null
 
-    override fun onCreate()
+    override fun onCreate() = guard.run(SITE_CREATE, createBody)
+
+    /** True if [createGame] threw. The cabinet stays up and says so rather than dying silently. */
+    private val bootFailed: Boolean get() = guard.failureCount(SITE_CREATE) > 0
+
+    /** The real body. See [guard] for why nothing here may throw past this class. */
+    private fun createGame()
     {
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
         // application.cfg (loaded by the engine before onCreate runs — see dailySeed's
@@ -877,7 +901,10 @@ class EnPustTil : PulseEngineGame()
         }
     }
 
-    override fun onFixedUpdate()
+    override fun onFixedUpdate() = guard.run(SITE_FIXED_UPDATE, fixedUpdateBody)
+
+    /** The real body. See [guard] for why nothing here may throw past this class. */
+    private fun fixedUpdateGame()
     {
         // THE ONLY CALL TO DiveSim.tick IN THE GAME (grep it), and therefore the only place
         // the clock counts down or air burns — both are `private set` on the sim and written
@@ -931,7 +958,10 @@ class EnPustTil : PulseEngineGame()
         CameraRig.apply(engine, camera.depth)
     }
 
-    override fun onUpdate()
+    override fun onUpdate() = guard.run(SITE_UPDATE, updateBody)
+
+    /** The real body. See [guard] for why nothing here may throw past this class. */
+    private fun updateGame()
     {
         // Ambient is a continuous function of depth only — no camera/screen dependence — so
         // unlike the positional light draws in onRender, timing here doesn't matter.
@@ -1083,7 +1113,11 @@ class EnPustTil : PulseEngineGame()
             scoreRepository.registerScore(engine, lifecycle.completedInitials, sim.banked)
     }
 
+    override fun onDestroy() = guard.run(SITE_DESTROY, destroyBody)
+
     /**
+     * The real body. See [guard] for why nothing here may throw past this class.
+     *
      * The actual score-saving guarantee on a clean shutdown comes from
      * [ScoreRepository.onDestroy] — it is registered as a [no.njoh.pulseengine.core
      * .service.Service] (see [onCreate]) and the engine calls every service's
@@ -1093,12 +1127,15 @@ class EnPustTil : PulseEngineGame()
      * and to leave a clean, on-site-diagnosable log line distinguishing a graceful
      * shutdown from a crash/power-cut, which this line never gets the chance to log.
      */
-    override fun onDestroy()
+    private fun destroyGame()
     {
         Logger.info { "Én Pust Til shutting down cleanly" }
     }
 
-    override fun onRender()
+    override fun onRender() = guard.run(SITE_RENDER, renderBody)
+
+    /** The real body. See [guard] for why nothing here may throw past this class. */
+    private fun renderGame()
     {
         // World: lit by GlobalIlluminationSystem, which multiplies mainSurface by the
         // computed light map — this is what makes the Abyss genuinely dark. Drawn in METRES
@@ -1652,6 +1689,14 @@ class EnPustTil : PulseEngineGame()
     {
         const val DAILY_SEED = 20260902L
         const val STICK_DEADZONE = 0.2f
+
+        // Site names for CallbackGuard. Constants rather than literals so the booth status line
+        // and the log agree, and so a typo cannot silently create a sixth counter.
+        const val SITE_CREATE = "onCreate"
+        const val SITE_FIXED_UPDATE = "onFixedUpdate"
+        const val SITE_UPDATE = "onUpdate"
+        const val SITE_RENDER = "onRender"
+        const val SITE_DESTROY = "onDestroy"
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90
