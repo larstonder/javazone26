@@ -2267,17 +2267,18 @@ class EnPustTil : PulseEngineGame()
      *   - raw joysticks present        -> devices GLFW/the OS sees at all
      *   - (raw present) - (raw gamepad-mapped) -> devices invisible to this game RIGHT NOW
      *
-     * The "present but unmapped" case is logged at WARN specifically so it survives the
-     * booth-default WARN log level (application.cfg) without needing EPT_DEV — it is exactly
-     * the failure this diagnostic exists to catch, and a technician should see it even
-     * against a plain release .exe. The summary line is INFO, so it is silent by default in
-     * the release build and visible whenever logLevel is DEBUG (application-dev.cfg locally,
-     * or EPT_DEV forcing it against a release .exe).
+     * WARN, not INFO — the same defect fixed twice already in this file (the resolved
+     * button map, the daily-seed line): application.cfg's booth default is
+     * `logLevel = WARN`, which filters INFO out entirely. A correctly-mapped encoder is the
+     * *success* path here, and it used to log nothing at all, which meant this diagnostic's
+     * one useful case for an unattended-booth log — "what did the encoder enumerate as,
+     * once, at boot" — was invisible unless something had already gone wrong. This is once
+     * per boot, so there is no per-frame noise cost to raising it.
      */
     private fun logGamepadDiagnostics()
     {
         val recognised = engine.input.gamepads
-        Logger.info {
+        Logger.warn {
             "GAMEPAD DIAGNOSTIC: engine.input.gamepads = ${recognised.size} " +
             "(ids=${recognised.map { it.id }})"
         }
@@ -2297,7 +2298,7 @@ class EnPustTil : PulseEngineGame()
             rawPresent++
             if (GLFW.glfwJoystickIsGamepad(i))
             {
-                Logger.info { "GAMEPAD DIAGNOSTIC: raw joystick $i ('${GLFW.glfwGetJoystickName(i)}') is gamepad-mapped" }
+                Logger.warn { "GAMEPAD DIAGNOSTIC: raw joystick $i ('${GLFW.glfwGetJoystickName(i)}') is gamepad-mapped" }
             }
             else
             {
@@ -2311,7 +2312,7 @@ class EnPustTil : PulseEngineGame()
 
         val rawUnmapped = unmappedGamepadCount()
         if (rawPresent == 0)
-            Logger.info { "GAMEPAD DIAGNOSTIC: no raw joysticks detected at all (nothing plugged in, or OS hasn't enumerated it yet)" }
+            Logger.warn { "GAMEPAD DIAGNOSTIC: no raw joysticks detected at all (nothing plugged in, or OS hasn't enumerated it yet)" }
         else if (rawUnmapped > 0)
             Logger.warn { "GAMEPAD DIAGNOSTIC: $rawUnmapped of $rawPresent raw joystick(s) are NOT gamepad-mapped" }
     }

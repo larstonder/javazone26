@@ -59,7 +59,8 @@ config. Decide now which of these two you're doing on raffle day:
    actually opens a console and that `winner` prints a result, and ship that build. **This is the
    plausible one-line fix and is UNTESTED** as of this writing — nobody has tried it.
 2. Or: plan to compute the draw by hand from `scoreboard.json`, using the exact weighting in
-   `ScoreRepository.kt`'s `winner` command (`score/ScoreRepository.kt:264-283`): every entry with
+   `ScoreRepository.kt`'s `winner` command (`score/ScoreRepository.kt:245-285`, `tickets()` at
+   `:271`): every entry with
    `score > 0` gets `10 + floor(3 * score / bestScoreToday)` tickets — 10 base, up to 3 more
    scaled linearly by how close the score is to the best score recorded that day — then draw one
    ticket uniformly at random across the pool. Three lines of arithmetic over the day's
@@ -94,10 +95,17 @@ Path (from `booth/BoothLog.kt`'s `logDirectory`, which is `<homeDir>/<gameName>/
 %USERPROFILE%\EnPustTil\logs\booth-<epoch>.log
 ```
 
-Expect the start-up banner, `Daily seed: 20260902` (or whatever `dailySeed` resolved to —
-`EnPustTil.kt:1120`), `Buttons: kick=A bleed=B restart=START/A deadzone=0.2` (`EnPustTil.kt:1072`,
-values reflecting whatever `application.cfg` set), and the gamepad diagnostics
-(`logGamepadDiagnostics`).
+Expect the start-up banner (`main()`'s `Booth log: <path>` line, `EnPustTil.kt:63` — teed into the
+file, so it should be the first line), `Daily seed: 20260902` (or whatever `dailySeed` resolved to
+— `EnPustTil.kt:1120`), `Buttons: kick=A bleed=B restart=START/A deadzone=0.2`
+(`EnPustTil.kt:1072`, values reflecting whatever `application.cfg` set), and the gamepad
+diagnostics (`logGamepadDiagnostics`) — `GAMEPAD DIAGNOSTIC: engine.input.gamepads = N ...` plus
+one `... is gamepad-mapped` line per recognised device. All of these are now at `Logger.warn`
+specifically so a **healthy** encoder still writes something: an earlier version of
+`logGamepadDiagnostics` logged its success-path lines at `Logger.info`, which `application.cfg`'s
+`logLevel = WARN` booth default filters out entirely, so a correctly-mapped pad would leave zero
+gamepad lines in this log and a technician could misread that silence as the tee having failed.
+Fixed alongside this document — see `EnPustTil.kt` around `logGamepadDiagnostics`'s doc comment.
 
 **If empty or missing:** the log tee (`BoothLog.install`) never ran, or the profile directory is
 unwritable. This means Task 1 did not take, and every remaining check that says "check the log"
@@ -144,20 +152,33 @@ Observed FPS: **______________**  Panel resolution: **______________**
 ### 5. The watchdog kill-test — [ANY WIN]
 
 **Kill the right process.** With `stayAlive = true` (confirmed in D1), `en-pust-til.exe` is a
-*resident parent* of `javaw.exe`, not a launcher that exits — Task Manager shows **two entries
-for one running game**: `en-pust-til.exe` and `javaw.exe`.
+*resident parent* of `javaw.exe`, not a launcher that exits. **Everything below this line about
+what Task Manager and the screen actually show is reasoned from source, not observed** — nobody
+on this project has a Windows machine, so this predicts from `launch4j`'s and `start-booth.bat`'s
+documented behaviour rather than reporting something anyone has watched happen. In particular,
+whether launch4j's native launcher stub wraps its child in a Windows Job Object that cascade-kills
+`javaw.exe` when `en-pust-til.exe` dies is exactly the kind of detail source-reading cannot
+settle — if it does, the "orphaned `javaw.exe`" prediction below is simply wrong, and the whole
+two-process picture may not hold the way this section describes.
 
-- **Kill `javaw.exe`** (the actual JVM/game process). This is the correct crash simulation:
-  launch4j propagates its exit code back through the still-running `en-pust-til.exe`, `start
-  /wait` in `start-booth.bat` returns, the watchdog logs the exit code and relaunches after ~5
-  seconds. **This is what a real crash looks like — use this one.**
-- **Do NOT kill `en-pust-til.exe`** to simulate a crash. That kills the resident parent while
-  `javaw.exe` keeps running underneath it, orphaned — the game window stays on screen. The
-  watchdog's `start /wait` was waiting on the process you just killed, so it *also* sees an exit
-  and relaunches: a second `en-pust-til.exe`/`javaw.exe` pair starts on top of the orphaned first
-  one. Task Manager then shows three-plus processes and, worse, two live game windows/instances
-  fighting over the same fullscreen display. This is a real failure mode worth knowing about, but
-  it is not what check 6 or check 7 are testing.
+The recommended action does not depend on that being right, so do it anyway: **kill `javaw.exe`**
+(the actual JVM/game process), not `en-pust-til.exe`. This is the correct crash simulation on
+either theory — launch4j propagates its exit code back through the still-running
+`en-pust-til.exe`, `start /wait` in `start-booth.bat` returns, the watchdog logs the exit code and
+relaunches after ~5 seconds.
+
+Predicted (not yet observed) if you deliberately kill `en-pust-til.exe` instead, to see what the
+wrong process looks like: Task Manager shows two entries for one running game
+(`en-pust-til.exe` and `javaw.exe`) before the kill; killing the parent leaves `javaw.exe` running
+underneath it, orphaned, with the game window still on screen, while the watchdog's `start /wait`
+— which was waiting on the process you just killed — also sees an exit and relaunches a second
+`en-pust-til.exe`/`javaw.exe` pair on top of the orphaned first one, giving three-plus processes
+and two live game windows/instances fighting over the same fullscreen display. **If a Job Object
+is in play, none of that may happen** — killing the parent could cascade-kill `javaw.exe` cleanly
+instead, in which case Task Manager will show only one pair, no orphan, and the watchdog's
+relaunch will look identical to the correct-kill case. Whichever it is, this is not what check 6
+or check 7 are testing — **record what actually happens here**, since whoever runs this check is
+the first person ever to find out.
 
 Confirm: kill `javaw.exe`, watch `watchdog.log` (`tools/booth/start-booth.bat`'s own `%WDLOG%` —
 **separate from the booth log**, written by the batch script's own `echo` redirects, path:
