@@ -1,42 +1,39 @@
 package render
 
 import kotlin.test.Test
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class GamepadScanTest
 {
     @Test
-    fun `false when nothing is pressed anywhere`() {
-        assertFalse(anyLifecycleActionPressed(keyPressed = false, gamepadActionPressed = emptyList()))
-        assertFalse(anyLifecycleActionPressed(keyPressed = false, gamepadActionPressed = listOf(false, false, false)))
+    fun `gameplay follows the pad that started the run, not slot zero`()
+    {
+        // THE BOOTH FAILURE: a stray HID in slot 0 gave a startable, unplayable run - START
+        // worked (lifecycle scans every pad) and the diver did not move (gameplay read
+        // firstOrNull). Repeating until someone noticed.
+        assertEquals(3, selectGameplayPad(padIds = listOf(0, 3), preferred = 3))
     }
 
     @Test
-    fun `true when the keyboard key alone is pressed`() {
-        assertTrue(anyLifecycleActionPressed(keyPressed = true, gamepadActionPressed = emptyList()))
+    fun `with no run started yet, gameplay falls back to the first pad`()
+    {
+        // Attract mode, and the frame a keyboard start begins a run: there is no preferred
+        // pad, and the old behaviour is the right default.
+        assertEquals(0, selectGameplayPad(padIds = listOf(0, 3), preferred = null))
     }
 
     @Test
-    fun `true when only the FIRST gamepad is pressed`() {
-        assertTrue(anyLifecycleActionPressed(keyPressed = false, gamepadActionPressed = listOf(true, false, false)))
-    }
-
-    /**
-     * The load-bearing case for finding 3. If this were implemented as
-     * `gamepadActionPressed.firstOrNull() ?: false` (i.e. only slot 0 is ever consulted —
-     * exactly the bug this function exists to prevent), this list's first element is
-     * `false`, so that implementation returns `false` and this test fails. Only scanning
-     * ALL gamepads (`.any`) finds the `true` sitting at index 1.
-     */
-    @Test
-    fun `true when a LATER gamepad is pressed and the first is not`() {
-        assertTrue(anyLifecycleActionPressed(keyPressed = false, gamepadActionPressed = listOf(false, true)))
+    fun `a preferred pad that has been unplugged falls back to the first pad`()
+    {
+        // Mid-run unplug must not freeze the diver for the rest of the run.
+        assertEquals(0, selectGameplayPad(padIds = listOf(0, 3), preferred = 7))
     }
 
     @Test
-    fun `true when the last of many gamepads is pressed`() {
-        val pads = List(4) { false } + true
-        assertTrue(anyLifecycleActionPressed(keyPressed = false, gamepadActionPressed = pads))
+    fun `no pads at all selects nothing`()
+    {
+        // Keyboard-only development, and an unmapped encoder at the booth.
+        assertNull(selectGameplayPad(padIds = emptyList(), preferred = 3))
     }
 }

@@ -72,8 +72,9 @@ Nothing is lost: `DiveCamera`'s easing is `1 - e^(-k*dt)` and already frame-rate
    tick is gated on `simulationAdvances`, which is false in `IDLE`, so a correctly-gated sea
    would be frozen solid on the one screen a booth queue spends its time looking at. Both are
    pinnable for reproducible captures.
-3. Input scan: gameplay reads `gamepads.firstOrNull()`; lifecycle input scans **every** gamepad
-   (`anyLifecycleActionPressed`). Pause (Esc) and exit (hold Q) are keyboard-only.
+3. Input scan: gameplay follows `activePadId` (the pad that started the run - see
+   `selectGameplayPad`); lifecycle input scans **every** gamepad, per-source, via
+   `LifecycleInputEdges`. Pause (Esc) and exit (hold Q) are keyboard-only.
 4. `lifecycle.update(...)`, then react: `exitRequested` -> `engine.window.close()`;
    `justStarted` -> fresh `DiveSim`, `applyDepthPin`, `camera.snapTo`, `CameraRig.snap`,
    `DiveLighting.resetAim`, `DiverSprite.restartLoop`; `initialsJustCompleted` ->
@@ -197,7 +198,7 @@ whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min`
 |---|---|
 | `../EnPustTil.kt` | The only `PulseEngineGame`. Surfaces, asset queueing, the four callbacks, input reading, the attract / pause / run-over / initials screens. Also `DefaultFont`, `ScreenText`, `AttractLayout`, `PauseLayout` - all pure and unit-tested. |
 | `RunLifecycle.kt` | `IDLE -> PLAYING -> PAUSED / RUN_OVER -> ENTER_INITIALS`. Pure, engine-free, so the booth's whole unattended-recovery behaviour is unit-tested. Does its own previous-frame edge detection, because the engine's `Gamepad` has no `wasClicked`. |
-| `GamepadScan.kt` | `anyLifecycleActionPressed` - "any button to start" must mean *any* gamepad, not index 0. |
+| `GamepadScan.kt` | `selectGameplayPad` - gameplay follows the pad whose button started the run, not slot 0. The "any button to start" rule now lives in `LifecycleInputEdges`' class doc. |
 
 ### Camera and framing
 

@@ -41,9 +41,9 @@ import render.RunLifecycleState
 import render.Sky
 import render.WaterRenderer
 import render.WaterSurface
-import render.anyLifecycleActionPressed
 import render.drawTextWithOutline
 import render.fillRect
+import render.selectGameplayPad
 import score.ScoreRepository
 
 fun main()
@@ -567,6 +567,26 @@ class EnPustTil : PulseEngineGame()
     private var depthPin: Float? = null
 
     /**
+     * The pad whose button started the current run, or null for a keyboard start / attract
+     * mode. See [selectGameplayPad] for the slot-0 failure this removed.
+     */
+    private var activePadId: Int? = null
+
+    /**
+     * Reused every frame by [readInput] rather than rebuilt with `pads.map { it.id }` — this
+     * project forbids per-frame allocation on the update path (CLAUDE.md; a `Color(...)`
+     * allocation in this exact file was a review finding one task ago). Cleared and refilled
+     * each call rather than sized once: the booth normally has one pad, but a second HID
+     * plugged in mid-session must still be seen without this buffer needing to grow past a
+     * size chosen for the common case. The residual cost — each `Int` id boxes into an
+     * `Integer` on `add`, since `selectGameplayPad` takes `List<Int>` to stay pure and
+     * engine-free — is the same handful-of-small-objects allowance `LifecycleInputEdges`'s
+     * class doc already documents for gamepad iteration elsewhere in this codebase, and is
+     * bounded by how many gamepads GLFW enumerates, not by frame rate.
+     */
+    private val gamepadIdBuffer = ArrayList<Int>(4)
+
+    /**
      * Puts the diver at [depthPin], if there is one. Called after EVERY `DiveSim` construction.
      *
      * Both call sites matter and a new one must call it too, which is why
@@ -1075,10 +1095,11 @@ class EnPustTil : PulseEngineGame()
         // wake the attract screen. Key.R (unconditional restart) was removed for the same
         // reason; see fix-gamepad-report.md.
         //
-        // Unlike readInput()'s gameplay reads (gamepads.firstOrNull() — deliberately kept,
-        // see that method's doc), lifecycle input scans EVERY connected gamepad. Index 0 is
-        // not guaranteed to be the cabinet's stick at a booth; see anyLifecycleActionPressed's
-        // doc (render/GamepadScan.kt) for why "any button to start" must mean any gamepad.
+        // Unlike readInput()'s gameplay reads (which follow activePadId — the pad that
+        // STARTED the run, see selectGameplayPad's doc), lifecycle input scans EVERY
+        // connected gamepad. Index 0 is not guaranteed to be the cabinet's stick at a booth;
+        // see LifecycleInputEdges' class doc for why "any button to start" must mean any
+        // gamepad, now enforced per-source rather than by the collapsed OR this replaced.
         // Every (pad, button) pair is its own source now, edged independently — see
         // LifecycleInputEdges. This used to OR the LEVELS together and let RunLifecycle
         // edge the result, which one stuck button could hold true forever.
@@ -1102,7 +1123,7 @@ class EnPustTil : PulseEngineGame()
         //
         // No gamepad button reaches either of these, unlike every other lifecycle input in
         // this file (which deliberately scans EVERY connected gamepad — see
-        // anyLifecycleActionPressed). Three reasons, in increasing order of severity:
+        // LifecycleInputEdges' class doc). Three reasons, in increasing order of severity:
         //
         //  1. The cabinet has a joystick and two buttons, and both buttons are already
         //     spoken for twice over — A/B are kick and bleed during a run, and START/A are
@@ -1160,6 +1181,9 @@ class EnPustTil : PulseEngineGame()
 
         if (lifecycle.justStarted)
         {
+            // Captured on the frame the run starts, not read per frame: gameplay must stay
+            // with whoever pressed the button even if a second device is plugged in mid-run.
+            activePadId = lifecycleEdges.firedPadId
             sim = DiveSim(seed = dailySeed)
             // BEFORE the snap below, not after: snapTo teleports the camera to sim.depth, and
             // a pin applied afterwards would leave the camera at the surface easing 140 m down
@@ -1726,7 +1750,14 @@ class EnPustTil : PulseEngineGame()
      */
     private fun readInput(): DiveInput
     {
-        val pad = engine.input.gamepads.firstOrNull()
+        // Gameplay follows the pad that STARTED the run (activePadId, captured on
+        // lifecycle.justStarted), not slot 0 — see selectGameplayPad's doc for the booth
+        // failure ("startable, unplayable run") a stray HID in slot 0 used to cause.
+        val pads = engine.input.gamepads
+        gamepadIdBuffer.clear()
+        for (i in pads.indices) gamepadIdBuffer.add(pads[i].id)
+        val chosenId = selectGameplayPad(gamepadIdBuffer, activePadId)
+        val pad = pads.firstOrNull { it.id == chosenId }
         val padX = pad?.getAxis(GamepadAxis.LEFT_X)?.deadzone() ?: 0f
         val padY = pad?.getAxis(GamepadAxis.LEFT_Y)?.deadzone() ?: 0f
 
@@ -1743,8 +1774,8 @@ class EnPustTil : PulseEngineGame()
 
     /**
      * Initials-entry cycling input: stick up/down (any connected gamepad — same "any
-     * button" reasoning as [anyLifecycleActionPressed], since this is menu navigation,
-     * not gameplay) OR the UP/DOWN keys, so keyboard development keeps working. Level
+     * button" reasoning as [LifecycleInputEdges], since this is menu navigation, not
+     * gameplay) OR the UP/DOWN keys, so keyboard development keeps working. Level
      * readings, same as [readInput] — [score.InitialsEntry] does its own edge-tracking.
      */
     private fun readInitialsCycle(): Pair<Boolean, Boolean>

@@ -52,6 +52,25 @@ package render
  *
  * Engine-free — ordinals and ints, never `Gamepad` or `GamepadButton` — so it is unit
  * testable without a GL context, following this project's pure-logic-extracted pattern.
+ *
+ * "ANY BUTTON TO START" MUST MEAN ANY GAMEPAD, NOT JUST THE FIRST ONE ENUMERATED. This
+ * class is fed from EVERY connected gamepad (`EnPustTil` calls [offer] once per (pad,
+ * button) pair inside a `gamepads.forEach`), never from `firstOrNull()`. At a booth,
+ * index 0 in `engine.input.gamepads` is not guaranteed to be the cabinet's own stick — a
+ * second device left plugged in from testing, a presenter remote, or any other HID GLFW
+ * happens to map as a gamepad can take slot 0. If lifecycle input only looked at
+ * `firstOrNull()`, the cabinet's actual START/A press would silently do nothing while
+ * that other device sat at index 0. This used to be enforced by collapsing every source
+ * into one boolean with `.any {}` before this class existed (`anyLifecycleActionPressed`,
+ * removed once nothing called it — see git history if you need the old shape); the rule
+ * is unchanged, it is just enforced per-SOURCE now rather than by an OR taken up front,
+ * which is what let one stuck button defeat every other source (see THE BUG THIS FIXES,
+ * above).
+ *
+ * This does NOT apply to gameplay (movement/kick/bleed) — see
+ * [EnPustTil.readInput]/[render.selectGameplayPad], which follows the ONE pad whose
+ * button actually started the run: two people fighting over one diver via two different
+ * pads is worse than one person plugged into the wrong slot.
  */
 class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
 {
