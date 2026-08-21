@@ -19,6 +19,7 @@ import no.njoh.pulseengine.modules.lighting.shared.NormalMapRenderer
 import no.njoh.pulseengine.modules.metrics.MetricViewer
 import org.lwjgl.glfw.GLFW
 import render.Backdrop
+import render.BoothStatus
 import render.CameraInvariants
 import render.CameraRig
 import render.DiveCamera
@@ -1154,6 +1155,20 @@ class EnPustTil : PulseEngineGame()
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun renderGame()
     {
+        // A failed onCreate leaves sim/scoreRepository lateinit-unset (see bootFailed's
+        // doc). Every draw below touches one or the other before anything reaches the
+        // screen — DiveRenderer.render hands `sim` straight to the GPU a few lines down —
+        // so a frame that fell through to there after a failed boot would throw EVERY
+        // TIME, be swallowed by CallbackGuard, and draw NOTHING: a black-but-alive cabinet,
+        // indistinguishable on screen from a machine that is simply off. Checked FIRST,
+        // before any lateinit access, and returns rather than falling through — there is no
+        // world or HUD to draw without a DiveSim.
+        if (bootFailed)
+        {
+            drawBootFailedScreen(engine.gfx.getSurfaceOrDefault("hud"))
+            return
+        }
+
         // World: lit by GlobalIlluminationSystem, which multiplies mainSurface by the
         // computed light map — this is what makes the Abyss genuinely dark. Drawn in METRES
         // through engine.gfx.mainCamera, which CameraRig wrote on the last fixed tick; the
@@ -1404,6 +1419,70 @@ class EnPustTil : PulseEngineGame()
             h * AttractLayout.PRESS_START_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
         drawLeaderboard(hud, w, h)
+        drawBoothStatusLine(hud, w, h)
+    }
+
+    /**
+     * Bottom-left, small and dim: findable by an attendant looking for it, ignorable by a
+     * player who is not. NOT EPT_DEV gated, unlike the red unmapped-joystick overlay — a
+     * fault nobody at the booth can see is the exact problem this line exists for. See
+     * [BoothStatus] for what each segment means and why.
+     *
+     * Only ever reached with `bootFailed = false`: [renderGame] returns before this whole
+     * draw path is reached when it is true — see [drawBootFailedScreen], the one place
+     * `bootFailed = true` is ever passed.
+     */
+    private fun drawBoothStatusLine(hud: Surface, w: Float, h: Float)
+    {
+        // A fraction of screen HEIGHT, not a pixel count and not width — engine.window.*
+        // returns physical framebuffer pixels, and the booth display's aspect ratio is not
+        // known in advance (CLAUDE.md, platform constraints).
+        val fontSize = h * 0.014f
+        hud.drawText(
+            BoothStatus.line(
+                seed = dailySeed,
+                unmappedPads = unmappedGamepadCount(),
+                stuckSources = lifecycleEdges.stuckCount,
+                chatterSources = lifecycleEdges.chatterCount,
+                callbackFailures = guard.totalFailures,
+                lastFailureSite = guard.lastFailureSite,
+                bootFailed = false
+            ),
+            x = fontSize,
+            y = h - fontSize,
+            fontSize = fontSize
+        )
+    }
+
+    /**
+     * The ENTIRE frame whenever [bootFailed] is true. There is no `DiveSim` to draw a world
+     * or a numeric HUD around — see [renderGame]'s early return, which is what routes here
+     * instead of falling through into code that would throw on `sim`/`scoreRepository`
+     * every frame. Deliberately the only thing on screen, not one line among many: a failed
+     * boot is the single case a technician cannot walk away from, and everything else this
+     * status line reports is a degraded-but-still-running booth.
+     */
+    private fun drawBootFailedScreen(hud: Surface)
+    {
+        val w = hud.config.width.toFloat()
+        val h = hud.config.height.toFloat()
+        val fontSize = h * 0.03f
+
+        hud.setDrawColor(Color.RED)
+        hud.drawText(
+            BoothStatus.line(
+                seed = dailySeed,
+                unmappedPads = unmappedGamepadCount(),
+                stuckSources = lifecycleEdges.stuckCount,
+                chatterSources = lifecycleEdges.chatterCount,
+                callbackFailures = guard.totalFailures,
+                lastFailureSite = guard.lastFailureSite,
+                bootFailed = true
+            ),
+            x = w * 0.05f,
+            y = h * 0.5f,
+            fontSize = fontSize
+        )
     }
 
     private fun drawLeaderboard(hud: Surface, w: Float, h: Float)
@@ -1615,8 +1694,15 @@ class EnPustTil : PulseEngineGame()
             "(ids=${recognised.map { it.id }})"
         }
 
+        // This loop still walks the raw GLFW range itself, rather than calling
+        // unmappedGamepadCount(), because it does something that function deliberately does
+        // not: it logs EACH joystick individually (mapped or not) so a technician reading
+        // the log can tell which physical device is the problem, not just how many. The
+        // rawUnmapped COUNT below is taken from unmappedGamepadCount() rather than
+        // accumulated here a second time, so the number in this log line and the number on
+        // the booth status line (drawBoothStatusLine / drawBootFailedScreen) cannot drift
+        // apart from each other.
         var rawPresent = 0
-        var rawUnmapped = 0
         for (i in GLFW.GLFW_JOYSTICK_1..GLFW.GLFW_JOYSTICK_LAST)
         {
             if (!GLFW.glfwJoystickPresent(i)) continue
@@ -1627,7 +1713,6 @@ class EnPustTil : PulseEngineGame()
             }
             else
             {
-                rawUnmapped++
                 Logger.warn {
                     "GAMEPAD DIAGNOSTIC: raw joystick $i ('${GLFW.glfwGetJoystickName(i)}') is PRESENT but has NO " +
                     "SDL gamepad mapping — invisible to engine.input.gamepads. If this is the booth encoder, the " +
@@ -1636,11 +1721,25 @@ class EnPustTil : PulseEngineGame()
             }
         }
 
+        val rawUnmapped = unmappedGamepadCount()
         if (rawPresent == 0)
             Logger.info { "GAMEPAD DIAGNOSTIC: no raw joysticks detected at all (nothing plugged in, or OS hasn't enumerated it yet)" }
         else if (rawUnmapped > 0)
             Logger.warn { "GAMEPAD DIAGNOSTIC: $rawUnmapped of $rawPresent raw joystick(s) are NOT gamepad-mapped" }
     }
+
+    /**
+     * Joysticks GLFW can see that SDL has no gamepad mapping for — the exact state in which
+     * the cabinet's encoder is invisible to `engine.input.gamepads` while working fine at
+     * the OS level. Extracted out of [logGamepadDiagnostics] rather than duplicated so the
+     * number on the booth status line and the number in the log cannot drift apart — see
+     * that function's own comment on why it still walks the raw range itself as well, for
+     * per-joystick logging this count alone cannot provide.
+     */
+    private fun unmappedGamepadCount(): Int =
+        (GLFW.GLFW_JOYSTICK_1..GLFW.GLFW_JOYSTICK_LAST).count {
+            GLFW.glfwJoystickPresent(it) && !GLFW.glfwJoystickIsGamepad(it)
+        }
 
     /**
      * Dev-only input diagnostic overlay (EPT_DEV). Turns "does the cabinet's stick/buttons

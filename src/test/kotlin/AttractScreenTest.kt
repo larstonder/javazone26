@@ -1,3 +1,4 @@
+import render.BoothStatus
 import render.Framing
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -41,6 +42,31 @@ class AttractScreenTest
                 "See DefaultFont's doc."
             )
         }
+    }
+
+    @Test
+    fun `the booth status line's worst case is inside the default font's baked atlas too`()
+    {
+        // BoothStatus.line is not one of ScreenText's constants — it is built at draw time
+        // in EnPustTil (drawBoothStatusLine / drawBootFailedScreen) — so the sweep above
+        // never sees it. Its worst case includes a failed boot, the most severe thing the
+        // line can say, on top of every counter maxed out — the exact case a vanished
+        // string would be most dangerous for, since it is drawn as the ENTIRE frame.
+        val text = BoothStatus.line(
+            seed = 20260903L,
+            unmappedPads = 9,
+            stuckSources = 9,
+            chatterSources = 9,
+            callbackFailures = 99,
+            lastFailureSite = "onFixedUpdate",
+            bootFailed = true
+        )
+        val missing = DefaultFont.undrawableCodePointsIn(text)
+        assertTrue(
+            missing.isEmpty(),
+            "\"$text\" contains ${missing.map { "U+%04X".format(it) }}, which the engine's " +
+            "default font cannot draw — it will render as nothing at all, silently."
+        )
     }
 
     @Test
