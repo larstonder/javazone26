@@ -35,7 +35,10 @@ package render
  * wired to `anyInputPressed` it restarts the run before anyone reads their score, and
  * wired to `confirmPressed` it burns all three initials slots in a handful of frames and
  * auto-submits `AAA` for every player. [MIN_EDGE_INTERVAL_SECONDS] is the guard — see its
- * doc and the per-source `secondsSinceEdge` tracking in [offer].
+ * doc and the per-source `secondsSinceEdge` tracking in [offer] — and [chatterCount] is
+ * what makes a chattering source visible at all, the same way [stuckCount] does for a
+ * stuck-closed one. Leaving chatter invisible would repeat the exact shape of failure
+ * this whole class exists to close: healthy-looking attract screen, broken cabinet.
  *
  * ALLOCATION: begin/offer/commit is a push protocol precisely so the caller does not build
  * a collection per frame. The parallel ArrayLists grow only when a genuinely new source
@@ -57,6 +60,7 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
     private val wasPressed = ArrayList<Boolean>()
     private val heldSeconds = ArrayList<Float>()
     private val secondsSinceEdge = ArrayList<Float>()
+    private val suppressedStreak = ArrayList<Int>()
     private val seenThisFrame = ArrayList<Boolean>()
 
     private var dt = 0f
@@ -72,16 +76,39 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
 
     /**
      * How many sources are currently jammed stuck-closed. Drawn on the booth status line.
-     * Deliberately does NOT count chattering sources — a stuck button and a chattering one
-     * call for different physical fixes (power-cycle the cabinet vs. reseat a connector),
-     * and folding both into one number would tell an operator something is wrong without
-     * telling them which repair to attempt. A plain indexed loop, not `.count { }` — see
-     * class doc's ALLOCATION paragraph.
+     * Deliberately does NOT count chattering sources — see [chatterCount] — a stuck
+     * button and a chattering one call for different physical fixes (power-cycle the
+     * cabinet vs. reseat a connector), and folding both into one number would tell an
+     * operator something is wrong without telling them which repair to attempt. A plain
+     * indexed loop, not `.count { }` — see class doc's ALLOCATION paragraph.
      */
     val stuckCount: Int get()
     {
         var count = 0
         for (i in heldSeconds.indices) if (heldSeconds[i] >= stuckSeconds) count++
+        return count
+    }
+
+    /**
+     * How many sources are currently CHATTERING: producing rising transitions the
+     * debounce is repeatedly rejecting, as opposed to one rejected transition followed by
+     * quiet. Drawn on the booth status line, alongside [stuckCount] — see class doc for
+     * why chatter must not be silently swallowed by the debounce that defeats it.
+     *
+     * THE DISTINCTION FROM A ONE-OFF: a human pressing the same button twice quickly
+     * produces AT MOST one blocked attempt before they stop, because a second press
+     * follows a first one they meant to make. A chattering CONTACT keeps trying every
+     * couple of frames with nothing driving it, so a source only counts here once it has
+     * been blocked [CHATTER_STREAK_THRESHOLD] times without the quiet spell that would
+     * mean it settled — see [offer]'s settle check and that constant's doc for exactly
+     * what "settled" means and why one blocked attempt does not qualify.
+     *
+     * A plain indexed loop, not `.count { }` — see class doc's ALLOCATION paragraph.
+     */
+    val chatterCount: Int get()
+    {
+        var count = 0
+        for (i in suppressedStreak.indices) if (suppressedStreak[i] >= CHATTER_STREAK_THRESHOLD) count++
         return count
     }
 
@@ -115,6 +142,7 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
             // source ever offers must not be suppressed as "too soon after" a last edge
             // that never happened.
             secondsSinceEdge.add(MIN_EDGE_INTERVAL_SECONDS)
+            suppressedStreak.add(0)
             seenThisFrame.add(true)
             i = padIds.size - 1
         }
@@ -123,6 +151,15 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
         val held = if (pressed) heldSeconds[i] + dt else 0f
         heldSeconds[i] = held
         secondsSinceEdge[i] = secondsSinceEdge[i] + dt
+
+        // SETTLE CHECK, for chatterCount. secondsSinceEdge only resets on a FIRED edge,
+        // so during sustained chatter it cycles low forever (bounded by roughly
+        // MIN_EDGE_INTERVAL_SECONDS, since that is what lets a fire through again) and
+        // never reaches CHATTER_SETTLE_SECONDS. It only climbs past that once the source
+        // genuinely stops being touched — held steady, or actually released for good —
+        // which is the one signal available here that distinguishes "still chattering,
+        // just between blocked attempts" from "settled." See CHATTER_SETTLE_SECONDS' doc.
+        if (secondsSinceEdge[i] >= CHATTER_SETTLE_SECONDS) suppressedStreak[i] = 0
 
         // A source declared stuck contributes nothing in EITHER direction: no edge of its
         // own, and no block on any other source producing one. `held < stuckSeconds` can
@@ -135,19 +172,27 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
         // anyway so a pathological multi-second frame (a debugger breakpoint, a GC pause)
         // cannot manufacture a fresh "edge" out of a button that has simply been held the
         // whole time.
-        //
-        // secondsSinceEdge[i] >= MIN_EDGE_INTERVAL_SECONDS is the debounce: it rejects a
-        // transition from a source whose LAST FIRED EDGE was too recent, which is what a
-        // chattering button (see class doc) produces every other frame forever. It is
-        // reset only when an edge actually fires, not on every attempted transition, so a
-        // source that is genuinely toggling slowly (well under chatter rate) is never
-        // permanently silenced — it simply cannot exceed ~25 edges/second.
-        if (!firstSight && pressed && !wasPressed[i] && held < stuckSeconds &&
-            secondsSinceEdge[i] >= MIN_EDGE_INTERVAL_SECONDS)
+        val risingTransition = !firstSight && pressed && !wasPressed[i] && held < stuckSeconds
+        if (risingTransition && secondsSinceEdge[i] >= MIN_EDGE_INTERVAL_SECONDS)
         {
+            // secondsSinceEdge[i] >= MIN_EDGE_INTERVAL_SECONDS is the debounce: it rejects
+            // a transition from a source whose LAST FIRED EDGE was too recent, which is
+            // what a chattering button (see class doc) produces every other frame
+            // forever. It is reset only when an edge actually fires, not on every
+            // attempted transition, so a source that is genuinely toggling slowly (well
+            // under chatter rate) is never permanently silenced — it simply cannot exceed
+            // 12.5 edges/second.
             edge = true
             secondsSinceEdge[i] = 0f
             if (firedPadId == null) firedPadId = padId
+        }
+        else if (risingTransition)
+        {
+            // Blocked by the debounce. Deliberately NOT reset by the fire branch above —
+            // a chattering source fires occasionally too (whenever the cycle happens to
+            // clear MIN_EDGE_INTERVAL_SECONDS), and an occasional successful fire is not
+            // evidence the chatter stopped. Only the settle check above clears this.
+            suppressedStreak[i]++
         }
         wasPressed[i] = pressed
     }
@@ -168,10 +213,11 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
     fun commit(): Boolean
     {
         // Forget sources not offered this frame — an unplugged pad must not keep reporting
-        // itself stuck on the booth status line for the rest of the day. Six parallel lists,
-        // kept in lockstep: every add() above and every removeAt() below touches all six in
-        // the same order, and this sweep runs indices DESCENDING so a removal never shifts
-        // an index this loop has not visited yet.
+        // itself stuck (or chattering — clearing chatterCount too is the point, not a side
+        // effect) on the booth status line for the rest of the day. Seven parallel lists,
+        // kept in lockstep: every add() above and every removeAt() below touches all seven
+        // in the same order, and this sweep runs indices DESCENDING so a removal never
+        // shifts an index this loop has not visited yet.
         var i = padIds.size - 1
         while (i >= 0)
         {
@@ -182,6 +228,7 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
                 wasPressed.removeAt(i)
                 heldSeconds.removeAt(i)
                 secondsSinceEdge.removeAt(i)
+                suppressedStreak.removeAt(i)
                 seenThisFrame.removeAt(i)
             }
             i--
@@ -208,22 +255,61 @@ class LifecycleInputEdges(private val stuckSeconds: Float = STUCK_SECONDS)
 
         /**
          * The minimum time a source must wait after producing an edge before it may
-         * produce another. 40 ms allows 25 presses/second through untouched — far above
-         * any human mash rate — while rejecting the every-other-frame edge a chattering
-         * booth encoder would otherwise emit at 60 fps (see class doc). Chosen as a rate
-         * limit on FIRED edges, not on attempted transitions, so a source that is
-         * genuinely pressed twice in quick succession by a human still gets its second
-         * press once 40 ms have passed, rather than being locked out for a fixed window.
+         * produce another. Chosen as a rate limit on FIRED edges, not on attempted
+         * transitions, so a source that is genuinely pressed twice in quick succession by
+         * a human still gets its second press once this interval has passed, rather than
+         * being locked out for a fixed window.
          *
-         * NOT 50 ms, deliberately: at this suite's one-frame-is-0.016f convention, three
-         * frames (hold, release, re-press — exactly the shape of `a press produces exactly
-         * one edge`'s "a fresh press fires again" case) sum to 0.048s, which a 50 ms floor
-         * would reject as too soon after the first press and break an already-correct,
-         * already-reviewed test. A single chattering step (press, one release frame,
-         * press) sums to only 0.032s, so 0.04s sits with real margin on both sides: it
-         * still rejects every-other-frame chatter while leaving room for a genuine
-         * hold-then-re-press one frame later than that.
+         * 0.08s (12.5 presses/second), not 0.04s. A first pass used 0.04s and it was
+         * WRONG: measured against real chatter shapes, 0.04s catches a 2-frame-period
+         * bounce at 60 fps (~33 ms between edges) but MISSES a 3-frame-period one
+         * (~50 ms) — and because `confirmPressed` and `anyInputPressed` are the same
+         * pulse (see `EnPustTil`'s companion doc), a 3-frame bounce still burns all three
+         * initials slots in ~150 ms or restarts the cabinet before anyone reads their
+         * score. A debounce that does not cover the failure it exists for is not a
+         * debounce, it is decoration.
+         *
+         * 0.08s covers a 4-frame-period bounce at 60 fps (~67 ms) and a 9-frame-period
+         * one at 120 fps (`application.cfg` sets `targetFps = 120`; this constant is in
+         * real seconds, so it scales correctly across either). The human cost of sitting
+         * this high is close to zero IN THIS GAME SPECIFICALLY — this button starts a run
+         * (one press) or advances an initials slot (three presses across a whole ENTER_
+         * INITIALS screen), never something that benefits from rapid repeats — which is
+         * not a property a general-purpose debounce could assume, and is worth writing
+         * down rather than leaving implicit. Competitive button-mashing tops out around
+         * 77-125 ms between presses, so 80 ms sits below the human floor with margin
+         * rather than merely below "any" mash rate.
+         *
+         * The test suite's timing moves to stay clear of this constant, not the other way
+         * around: `a press produces exactly one edge`'s "a fresh press fires again" case
+         * holds its release open for ~10 frames (~0.16s), deliberately well above this
+         * value — see that test's comment before shrinking this constant to fit a test
+         * again.
          */
-        const val MIN_EDGE_INTERVAL_SECONDS = 0.04f
+        const val MIN_EDGE_INTERVAL_SECONDS = 0.08f
+
+        /**
+         * How many consecutive debounce-blocked rising transitions (with no settle in
+         * between — see [CHATTER_SETTLE_SECONDS]) mark a source as chattering in
+         * [chatterCount]. 2, not 1: a human's genuine quick double-press produces exactly
+         * one blocked attempt before they stop, so counting on the first blocked attempt
+         * would flag every ordinary fast re-press as a hardware fault. A SECOND blocked
+         * attempt, still within the same unsettled run, is what a person does not
+         * produce — nobody presses a button three times in the ~150 ms this implies
+         * without an unhealthy contact behind it.
+         */
+        const val CHATTER_STREAK_THRESHOLD = 2
+
+        /**
+         * How long a source must go without a FIRED edge before an earlier blocked-attempt
+         * streak is forgotten. Must be comfortably ABOVE the longest gap sustained chatter
+         * can produce between fires — which is bounded by [MIN_EDGE_INTERVAL_SECONDS]
+         * itself, since that is the exact interval that lets a fire through again — so a
+         * source that is still oscillating never reaches this window and never gets
+         * mistaken for settled. 0.3s is triple that gap: comfortably clear of ongoing
+         * chatter, while still short enough that a genuinely fixed connector reads as
+         * healthy again well within the same booth session.
+         */
+        const val CHATTER_SETTLE_SECONDS = 0.3f
     }
 }

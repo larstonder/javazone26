@@ -30,6 +30,14 @@ class LifecycleInputEdgesTest
         assertTrue(edges.frame(dt = 0.016f, start = true, a = false), "the press frame fires")
         assertFalse(edges.frame(dt = 0.016f, start = true, a = false), "holding must not re-fire")
         assertFalse(edges.frame(dt = 0.016f, start = false, a = false), "release is not an edge")
+
+        // The gap between the fired edge above and the re-press below is held open for
+        // ~10 frames (~0.16s) DELIBERATELY - comfortably above MIN_EDGE_INTERVAL_SECONDS
+        // (0.08s), not incidentally straddling it. A single extra release frame here used
+        // to sit at 0.048s, under a since-raised debounce threshold, and made this test
+        // collide with the anti-chatter guard; widen this gap again rather than shrinking
+        // the constant back down if it ever collides a second time.
+        repeat(8) { assertFalse(edges.frame(dt = 0.016f, start = false, a = false), "still released") }
         assertTrue(edges.frame(dt = 0.016f, start = true, a = false), "a fresh press fires again")
     }
 
@@ -262,6 +270,61 @@ class LifecycleInputEdgesTest
         edges.offer(0, START, startPressed)
         edges.offer(0, A, true)
         assertTrue(edges.commit(), "A must still fire despite START chattering on the same pad")
+    }
+
+    @Test
+    fun `a chattering source counts toward chatterCount`()
+    {
+        val edges = newEdges()
+        assertFalse(edges.frame(dt = 0f, start = false, a = false))
+
+        var pressed = true
+        repeat(20) { edges.frame(dt = 0.016f, start = pressed, a = false); pressed = !pressed }
+
+        assertTrue(edges.chatterCount >= 1, "sustained oscillation must be counted as chattering")
+    }
+
+    @Test
+    fun `a single fast double-tap is not counted as chattering`()
+    {
+        // THE DISTINCTION chatterCount exists to draw: a person who presses the same
+        // button twice quickly produces exactly ONE blocked attempt, then stops. That
+        // must read as a normal fast re-press, not a hardware fault.
+        val edges = newEdges()
+        assertFalse(edges.frame(dt = 0f, start = false, a = false))
+        assertTrue(edges.frame(dt = 0.016f, start = true, a = false), "first press fires")
+        assertFalse(edges.frame(dt = 0.016f, start = false, a = false), "release")
+        assertFalse(edges.frame(dt = 0.016f, start = true, a = false), "quick re-press is blocked by the debounce")
+
+        assertEquals(0, edges.chatterCount, "one blocked attempt is not chattering - a human produces exactly this")
+    }
+
+    @Test
+    fun `chatterCount clears when the source settles or is unplugged`()
+    {
+        // Settling: the source stops oscillating (holds one level steady) for longer than
+        // CHATTER_SETTLE_SECONDS, with no unplug involved at all.
+        val settled = newEdges()
+        assertFalse(settled.frame(dt = 0f, start = false, a = false))
+        var pressed = true
+        repeat(20) { settled.frame(dt = 0.016f, start = pressed, a = false); pressed = !pressed }
+        assertTrue(settled.chatterCount >= 1, "setup: must be chattering before it can settle")
+
+        // Holds steady at the level the toggle loop left it on - no further transitions at
+        // all - for well past CHATTER_SETTLE_SECONDS (0.3s).
+        repeat(25) { settled.frame(dt = 0.016f, start = false, a = false) }
+        assertEquals(0, settled.chatterCount, "holding steady must let the chatter flag settle")
+
+        // Unplugging: the source disappears entirely rather than going quiet.
+        val unplugged = newEdges()
+        assertFalse(unplugged.frame(dt = 0f, start = false, a = false))
+        pressed = true
+        repeat(20) { unplugged.frame(dt = 0.016f, start = pressed, a = false); pressed = !pressed }
+        assertTrue(unplugged.chatterCount >= 1, "setup: must be chattering before it can unplug")
+
+        unplugged.begin(0.016f) // the pad is offered nothing at all this frame - gone
+        unplugged.commit()
+        assertEquals(0, unplugged.chatterCount, "an unplugged pad must not keep reporting itself chattering")
     }
 
     private companion object
