@@ -2,9 +2,11 @@ package score
 
 /**
  * Pure ranking/selection logic for the leaderboard. No `no.njoh.pulseengine` import —
- * [ScoreRepository] is the only thing in this package that touches a file or the
- * engine; everything here just orders and filters a list already sitting in memory, so
- * it can be unit-tested (and mutation-tested) without booting the engine.
+ * [EngineScoreStore] is the only class in this package that touches `engine.data`
+ * directly (`ScoreRepository` itself also imports `PulseEngine`, and `AtomicFileSwap`
+ * touches a file directly, just never through the engine); everything here just orders
+ * and filters a list already sitting in memory, so it can be unit-tested (and
+ * mutation-tested) without booting the engine.
  */
 object Leaderboard
 {

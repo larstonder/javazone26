@@ -16,11 +16,15 @@ The second constraint is queue throughput. Design spec section 12: **three-lette
 a form field**. That is also why no name and no e-mail is ever collected - there is no
 personal data here and therefore no consent flow to build.
 
-Only `ScoreStore.kt`'s `EngineScoreStore` touches `no.njoh.pulseengine` or a file directly.
-That seam is what lets `ScoreRepository` itself - not just the ranking, the validation and
-the initials state machine around it - be unit-tested without a GL context.
-`ScoreRepositoryTest` constructs a real temp-directory `ScoreStore` and drives
-`registerScore` for real, atomic promote included.
+`EngineScoreStore` (`ScoreStore.kt`) is the only class in this package that touches
+`engine.data` directly - though not the only place that touches the engine or a file at
+all: `ScoreRepository` itself imports `PulseEngine`, and `AtomicFileSwap` touches the
+filesystem directly (deliberately - it is a `Files.move`, not a data read/write, so it
+does not go through `engine.data`). The `EngineScoreStore` seam is what lets
+`ScoreRepository` itself - not just the ranking, the validation and the initials state
+machine around it - be unit-tested without a GL context. `ScoreRepositoryTest`
+constructs a real temp-directory `ScoreStore` and drives `registerScore` for real, atomic
+promote included.
 
 ## Files
 
@@ -29,7 +33,7 @@ the initials state machine around it - be unit-tested without a GL context.
 | `ScoreEntry.kt` | The record: `initials`, `score`, `seed`, `timestampMs`. Four fields, no logic. |
 | `Leaderboard.kt` | Pure ranking and selection - `rank`, `topN`, `isWorthRecording`. |
 | `InitialsEntry.kt` | The three-letter entry state machine, plus `isValidInitials` and `sanitizeEntries` (the load-time filter, which lives here because it is the same shape rule). |
-| `AtomicFileSwap.kt` | `promoteAtomically(temp, live, onFailure)` - one function, one `Files.move`, with a failure channel so a caller can report rather than silently lose a promotion. |
+| `AtomicFileSwap.kt` | `promoteAtomically(temp, live, onFailure)` - one function, two `Files.move` calls (a primary atomic rename, and a fallback plain replace if the filesystem cannot do it atomically), with a failure channel so a caller can report rather than silently lose a promotion. |
 | `ScoreStore.kt` | The seam: `ScoreStore` (`exists`/`load`/`saveAsync`/`saveSync`/`fileFor`/`listNames`) and `EngineScoreStore`, the only class in this package that touches `engine.data` directly. Its class doc carries the decompiled evidence for every claim this file makes about `DataImpl`'s failure behaviour. |
 | `ScoreRepository.kt` | An engine `Service` that loads (and sweeps stale temp files) on create, saves synchronously on every registration and on destroy, rolls backups asynchronously, and registers the `winner` raffle command. |
 
@@ -173,8 +177,10 @@ day's scores are then gone from the display.)
 back to the compile-time `DAILY_SEED = 20260902L` at `EnPustTil.kt:1633`). Change the seed
 for day two and you get a fresh water column *and* a fresh leaderboard, while day one's
 rows stay in the same file under the old seed - preserved, just no longer displayed.
-`parseDailySeed` returns the fallback for both an absent key and an unparseable one, so a
-technician's typo reuses day one's seed rather than crashing the booth.
+`resolveDailySeed` (the live resolution path - it checks for a numeric `dailySeed` key
+first, then falls back to `parseDailySeed` for a string one) returns the fallback for both
+an absent key and an unparseable one, so a technician's typo reuses day one's seed rather
+than crashing the booth.
 
 ## Initials entry
 

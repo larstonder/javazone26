@@ -89,11 +89,21 @@ class AtomicFileSwapTest
         val temp = dir.resolve("swap.tmp").apply { writeText("payload") }
         // A directory where the live file should be: Files.move cannot replace it. Confirmed
         // on this filesystem (APFS, macOS) by running this test — it fails for the expected
-        // reason (java.nio.file.FileSystemException: "Is a directory", landing in the
-        // generic catch below rather than AtomicMoveNotSupportedException), not vacuously;
-        // the same holds on NTFS per the java.nio.file.Files.move documentation. Built
-        // inside `dir` (not a second File.createTempFile pair) so tearDown's
-        // deleteRecursively sweeps it along with everything else this class creates.
+        // reason (java.nio.file.FileSystemException: "Is a directory"), not vacuously; the
+        // same holds on NTFS per the java.nio.file.Files.move documentation. Built inside
+        // `dir` (not a second File.createTempFile pair) so tearDown's deleteRecursively
+        // sweeps it along with everything else this class creates.
+        //
+        // WHICH BRANCH THIS EXERCISES: `temp` and `live` are both on the same filesystem,
+        // so ATOMIC_MOVE genuinely is supported here and the FileSystemException above is
+        // thrown straight out of the FIRST Files.move call, landing in promoteAtomically's
+        // generic `catch (e: Exception)` — NOT the nested try/catch inside the
+        // AtomicMoveNotSupportedException fallback branch. That nested catch (added when a
+        // review pointed out sibling `catch` clauses don't catch each other) stays
+        // deliberately untested: triggering it needs a filesystem that BOTH rejects
+        // ATOMIC_MOVE and then fails the plain replace fallback too, which is not
+        // reachable from a single real filesystem in a JVM test. Read as covering "a
+        // promotion fails", not "every branch that can report a failure".
         val live = dir.resolve("swaplive").apply { mkdirs(); resolve("child").writeText("x") }
 
         val ok = promoteAtomically(temp, live, onFailure = { reported += it })

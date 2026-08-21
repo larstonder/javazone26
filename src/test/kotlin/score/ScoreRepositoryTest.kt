@@ -206,6 +206,11 @@ class ScoreRepositoryTest
         val top = r.topN(10)
         assertEquals(2, top.size, "the real engine-written file must round-trip, not silently read as empty")
         assertEquals(listOf("AAA", "AEE"), top.map { it.initials })
+        // Pin the score too, not just initials/order: AAA-before-AEE is also what the
+        // timestamp tie-break in Leaderboard.rank would produce even if both scores were
+        // equal, so without this the test would not actually catch a dropped/garbled
+        // `score` field on the round trip.
+        assertEquals(1989, top[0].score)
     }
 
     @Test
@@ -240,6 +245,27 @@ class ScoreRepositoryTest
         repo(store).registerScore(initials = "LTO", score = 0)
 
         assertEquals(emptyList(), store.writes)
+    }
+
+    @Test
+    fun `registering a score with no store reports the loss and never appears on the board`()
+    {
+        // Unreachable in the real booth's call order - onCreate always builds a store
+        // before updateGame can call registerScore - but the guard exists so a null
+        // store cannot silently accept a score into memory that is never written and
+        // never reported. Both halves matter: reverting the guard to run AFTER
+        // entries.add (instead of before) leaves this exact scoring run present on the
+        // in-memory board while still failing to persist it - the worse of the two
+        // failures, since the booth's own HUD would then show a score that vanishes the
+        // moment the process restarts. All 594 tests before this one passed with that
+        // ordering; this is the one that would have caught it.
+        val reported = mutableListOf<String>()
+        val r = ScoreRepository(todaySeed = 1L, store = null, onSaveFailure = { reported += it })
+
+        r.registerScore(initials = "LTO", score = 500)
+
+        assertEquals(1, reported.size, "a score with nowhere to go must be reported exactly once")
+        assertTrue(r.topN(10).isEmpty(), "an unpersisted score must not appear on the board either")
     }
 
     @Test
