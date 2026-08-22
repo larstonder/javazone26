@@ -1760,14 +1760,37 @@ class PauseScreenTest
     }
 
     @Test
-    fun `the bar track spans twice its half-span`()
+    fun `the exit bar fits across the narrowest plausible panel`()
     {
+        // What actually bounds BAR_HALF_SPAN: the bar is sized from screen HEIGHT but drawn
+        // across screen WIDTH, so on a narrow panel it is the width that runs out first. 4:3
+        // is the narrowest aspect anything in this project is tested against.
+        //
+        // NOTE: an earlier draft of this plan asserted `barTrackWidth(h) == h * BAR_HALF_SPAN
+        // * 2f` here, which is barTrackWidth's own DEFINITION — both sides move together, so
+        // no change to the constant could ever fail it. It tested the compiler. Replaced
+        // after review; see CLAUDE.md on why a test that cannot fail is worse than no test.
         val h = 1000f
-        assertEquals(
-            h * PauseLayout.BAR_HALF_SPAN * 2f,
-            PauseLayout.barTrackWidth(h),
-            1e-3f
+        val narrowestWidth = h * 4f / 3f
+        assertTrue(
+            PauseLayout.barTrackWidth(h) < narrowestWidth,
+            "the exit bar is ${PauseLayout.barTrackWidth(h)} wide on a $narrowestWidth panel - it runs off the screen"
         )
+    }
+
+    @Test
+    fun `the exit bar's fill grows monotonically with the hold`()
+    {
+        // The bar is the only feedback a technician gets that holding the key is working, so
+        // it has to grow the whole way through rather than jumping or stalling. Pins
+        // barFillWidth's contract against a non-linear or inverted refactor - a real risk,
+        // since nothing else in the codebase reads this function.
+        val h = 1000f
+        val quarter = PauseLayout.barFillWidth(0.25f, h)
+        val half = PauseLayout.barFillWidth(0.5f, h)
+        val threeQuarters = PauseLayout.barFillWidth(0.75f, h)
+        assertTrue(quarter < half, "the bar did not grow between a quarter and a half of the hold")
+        assertTrue(half < threeQuarters, "the bar did not grow between a half and three quarters of the hold")
     }
 }
 ```
