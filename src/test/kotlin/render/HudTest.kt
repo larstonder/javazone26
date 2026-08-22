@@ -505,7 +505,10 @@ class HudTest
         val legendWidth = longest.length * LEGEND_EM * h * Hud.LEGEND_FONT_FRACTION
         val legendLeft = Hud.legendRightX(w, h) - legendWidth
 
-        val clockRight = w * 0.5f + Hud.clockBoxWidth(Hud.clockFontSize(h), 4) * 0.5f
+        // 5 glyphs ("10:00"), not 4 ("9:59") - the file's own test above documents that a run
+        // crossing ten minutes widens the box, and the narrowest-panel check should assert the
+        // WORST case the clock box can actually reach, not the easier one.
+        val clockRight = w * 0.5f + Hud.clockBoxWidth(Hud.clockFontSize(h), 5) * 0.5f
 
         assertTrue(
             legendLeft > clockRight,

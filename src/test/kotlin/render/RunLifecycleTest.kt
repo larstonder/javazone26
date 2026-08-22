@@ -635,7 +635,11 @@ class RunLifecycleTest
         // person in the queue - the same reasoning as the RUN_OVER dwell.
         val lc = briefingLifecycle()
         lc.update(dt = 0f, anyInputPressed = true, runOver = false)
-        repeat(10) { lc.update(dt = BRIEF_DWELL * 0.05f, anyInputPressed = true, runOver = false) }
+        // 10 * (BRIEF_DWELL * 0.2) = 1.0s: past the 0.5s dwell but short of BRIEF (3s), so this
+        // genuinely exercises the gate AFTER the dwell has elapsed - the button is held the whole
+        // time (never released), so a correct edge-detected gate stays refused throughout, while a
+        // regressed level read would fire the instant timeInState crosses the dwell.
+        repeat(10) { lc.update(dt = BRIEF_DWELL * 0.2f, anyInputPressed = true, runOver = false) }
         assertEquals(RunLifecycleState.BRIEFING, lc.state)
     }
 

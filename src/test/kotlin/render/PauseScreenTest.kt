@@ -65,6 +65,11 @@ class PauseScreenTest
         assertEquals(track, PauseLayout.barFillWidth(1f, h), 1e-4f, "a completed hold must fill the track")
         assertTrue(PauseLayout.barFillWidth(0.5f, h) < track, "a half hold must not fill the track")
         assertTrue(PauseLayout.barFillWidth(0.5f, h) > 0f, "a half hold must show something")
+        assertEquals(
+            PauseLayout.barFillWidth(1f, h), PauseLayout.barFillWidth(1.5f, h), 1e-4f,
+            "an overshot hold must clamp to the track, not draw past it - an unclamped multiply " +
+                "is exactly how a rectangle ends up drawn off the side of the screen"
+        )
     }
 
     @Test
