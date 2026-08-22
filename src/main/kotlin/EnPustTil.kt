@@ -844,10 +844,24 @@ object PauseLayout
  * WHY THIS SCREEN HAS A SCRIM AND THE ATTRACT SCREEN DOES NOT. [AttractLayout] reserves
  * `DIVER_SCREEN_FRACTION ± DIVER_HALO_HALF_HEIGHT` for the diver and lays its four elements
  * around that band. The briefing has seven and does not fit around it, so it darkens the
- * world instead and uses the full height. The scrim is LIGHTER than [PauseLayout.SCRIM_ALPHA]
- * on purpose: the two screens already differ in heading and content, and differing in weight
- * as well is what stops a player reading "the machine is waiting for me" as "the machine is
- * stopped".
+ * world instead of trying to. The scrim is LIGHTER than [PauseLayout.SCRIM_ALPHA] on purpose:
+ * the two screens already differ in heading and content, and differing in weight as well is
+ * what stops a player reading "the machine is waiting for me" as "the machine is stopped".
+ *
+ * THE SCRIM DOES NOT MOVE THE DIVER. An earlier version of this doc argued that darkening the
+ * world "frees the full screen height" for text, as if a scrim were a substitute for the halo
+ * carve-out [AttractLayout] does. It is not: a scrim dims what is drawn, it does not stop the
+ * diver being drawn, and at every run start he sits exactly where he always does, lit and
+ * moving, at [render.Framing.DIVER_SCREEN_FRACTION] under the same
+ * [AttractLayout.DIVER_HALO_HALF_HEIGHT] glow band the attract screen dodges. A pinned
+ * screenshot of the first shipped layout (rows at 0.300 / 0.357 / 0.414, inside the
+ * 0.26–0.54 band) showed exactly this: the diver's head sitting visibly between "Z" and
+ * "kick", darkened by the scrim but not erased by it. So this screen observes the identical
+ * `DIVER_SCREEN_FRACTION ± DIVER_HALO_HALF_HEIGHT` band the attract screen does, and — like
+ * [AttractLayout] — puts its content below the diver rather than across him: the sign goes
+ * above the band (title only, it fits), everything else below it. The scrim's job is
+ * legibility against the moving water and light, not clearance from the diver; clearance is
+ * the anchors' job, exactly as it is for [AttractLayout].
  *
  * Nothing is drawn beneath the scrim but the live world — no attract sign, no leaderboard, no
  * HUD. The briefing is the only thing on screen to read, and a leaderboard competing with it
@@ -855,7 +869,7 @@ object PauseLayout
  * board is hidden for up to one countdown per play, which is accepted: it is on screen the
  * whole time nobody is playing, which is most of the day.
  *
- * @see BriefingScreenTest, which pins the non-overlap and the width fit.
+ * @see BriefingScreenTest, which pins the non-overlap, the width fit and the diver clearance.
  */
 object BriefingLayout
 {
@@ -865,11 +879,16 @@ object BriefingLayout
      */
     const val SCRIM_ALPHA = 0.55f
 
-    const val TITLE_Y = 0.16f
+    const val TITLE_Y = 0.09f
     const val TITLE_FONT = 0.055f
 
-    /** Top of the first control row. */
-    const val ROWS_TOP_Y = 0.30f
+    /**
+     * Top of the first control row. Below [AttractLayout.DIVER_HALO_HALF_HEIGHT]'s band
+     * (0.26–0.54 with today's constants) rather than inside it — see this object's class
+     * doc for the pinned screenshot that showed the diver's head sitting between two rows
+     * when this was 0.30.
+     */
+    const val ROWS_TOP_Y = 0.57f
     const val ROW_FONT = 0.030f
 
     /** Row pitch as a multiple of [ROW_FONT] — 1.9 leaves most of a line of air between rows. */
@@ -887,13 +906,13 @@ object BriefingLayout
      */
     const val COLUMN_GAP = 0.012f
 
-    const val RULE_Y = 0.53f
+    const val RULE_Y = 0.76f
     const val RULE_FONT = 0.034f
 
-    const val COUNTDOWN_Y = 0.66f
+    const val COUNTDOWN_Y = 0.845f
     const val COUNTDOWN_FONT = 0.028f
 
-    const val SKIP_Y = 0.74f
+    const val SKIP_Y = 0.905f
     const val SKIP_FONT = 0.022f
 
     fun rowY(index: Int): Float = ROWS_TOP_Y + ROW_FONT * ROW_SPACING * index

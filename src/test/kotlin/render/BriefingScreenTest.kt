@@ -1,5 +1,6 @@
 package render
 
+import AttractLayout
 import BriefingLayout
 import DefaultFont
 import ScreenText
@@ -111,6 +112,38 @@ class BriefingScreenTest
     // drives it (`briefingAutoStarts`) is pinned in RunLifecycleTest, and the drawn result is
     // checked by the pinned window grab in Step 8 - which is the only evidence that can
     // actually show a string on a screen.
+
+    @Test
+    fun `every element clears the diver and its glow`()
+    {
+        // THE FINDING FIXED HERE. The diver is drawn at every run start, pinned to
+        // Framing.DIVER_SCREEN_FRACTION with AttractLayout.DIVER_HALO_HALF_HEIGHT of glow
+        // either side of him - exactly the band AttractScreenTest's "the sign clears the
+        // diver and its glow" polices for the attract screen. The scrim this screen draws
+        // DARKENS the world; it does not remove the diver from it, so a briefing element
+        // laid out inside this band still visually collides with him. A pinned capture at
+        // the first shipped anchors (rows at 0.300/0.357/0.414) showed exactly that - the
+        // diver's head sitting between "Z" and "kick".
+        //
+        // Derived from the two constants, not hardcoded as 0.26/0.54, so a future change to
+        // either the diver's screen position or the halo's measured size moves this band -
+        // and this test - with it, rather than silently going stale.
+        val haloTop = Framing.DIVER_SCREEN_FRACTION - AttractLayout.DIVER_HALO_HALF_HEIGHT
+        val haloBottom = Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT
+
+        for ((name, y, font) in boxes())
+        {
+            val bottom = y + font
+            val clearsAbove = bottom <= haloTop
+            val clearsBelow = y >= haloBottom
+            assertTrue(
+                clearsAbove || clearsBelow,
+                "$name occupies ${y}h..${bottom}h, which intrudes into the diver's " +
+                "${haloTop}h..${haloBottom}h halo band by " +
+                "${minOf(bottom, haloBottom) - maxOf(y, haloTop)}h"
+            )
+        }
+    }
 
     @Test
     fun `the control rows are evenly spaced and ordered downward`()
