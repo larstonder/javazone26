@@ -107,7 +107,7 @@ booth machine needs the board somewhere else.
 ## Lifecycle hooks
 
 `ScoreRepository` extends the engine's `Service` and is registered with
-`engine.service.add(scoreRepository)` in `EnPustTil.kt:1257`. Verified call order (from
+`engine.service.add(scoreRepository)` in `EnPustTil.kt:1303`. Verified call order (from
 decompiling `ServiceManagerImpl`): `add()` queues the service; `init()` runs right after
 `PulseEngineGame.onCreate()` returns and calls `onCreate` on everything queued; `destroy()`
 runs during shutdown, just after `PulseEngineGame.onDestroy()`, and calls `onDestroy` on
@@ -124,7 +124,7 @@ every registered service.
 
 **If the cabinet is killed without `onDestroy` running** - `pkill -9`, power cut, a hung
 process force-quit - nothing that was already registered is lost. Every `registerScore`
-already ran its own synchronous save-and-promote before returning (`EnPustTil.kt:1648` is
+already ran its own synchronous save-and-promote before returning (`EnPustTil.kt:1698` is
 the only caller, fired on `RunLifecycle.initialsJustCompleted`). There is no window between
 "registered" and "on disk" any more - the two happen on the same call stack. A run that was
 still on screen was never registered in the first place. The `onDestroy` save exists for
@@ -174,8 +174,8 @@ day's scores are then gone from the display.)
 **Every entry stores the seed it was earned under.** That is the whole day-two mechanism:
 `ScoreRepository.topN` (`score/ScoreRepository.kt:69`) filters to `todaySeed`,
 `registerScore` (`score/ScoreRepository.kt:77`) stamps `todaySeed`, and
-`todaySeed` comes from `application.cfg`'s `dailySeed` key (`EnPustTil.kt:1043-1045`, falling
-back to the compile-time `DAILY_SEED = 20260902L` at `EnPustTil.kt:2408`). Change the seed
+`todaySeed` comes from `application.cfg`'s `dailySeed` key (`EnPustTil.kt:1084-1086`, falling
+back to the compile-time `DAILY_SEED = 20260902L` at `EnPustTil.kt:2484`). Change the seed
 for day two and you get a fresh water column *and* a fresh leaderboard, while day one's
 rows stay in the same file under the old seed - preserved, just no longer displayed.
 `resolveDailySeed` (the live resolution path - it checks for a numeric `dailySeed` key
@@ -205,12 +205,16 @@ idle-timeout machinery covers initials entry too.
 - If both up and down edge on the same frame, up wins, deterministically
   (`score/InitialsEntry.kt:75`).
 
-Wiring: `readInitialsCycle` (`EnPustTil.kt:2232`) reads stick Y past `stickDeadzone` (a
+Wiring: `readInitialsCycle` (`EnPustTil.kt:2308`) reads stick Y past `stickDeadzone` (a
 booth-configurable field, resolved from application.cfg - see `parseDeadzone`) on *any*
 connected gamepad, or the UP/DOWN keys. Confirm reuses the same `actionPressed`
-signal as the restart button (`EnPustTil.kt:1517-1530` - gamepad `START` or `A`, or
-`SPACE`), so the cabinet needs no third physical input. On-screen help text is
-`ScreenText.INITIALS_HELP` (`EnPustTil.kt:538`).
+signal as the restart button (`EnPustTil.kt:1567-1580` - gamepad `START` or `A`, or
+`SPACE`), so the cabinet needs no third physical input. On-screen help text is no longer a
+fixed constant: it is composed per-device by `render/ControlHints.kt`'s
+`initialsHelp(arcade, startLabel)` and cached on `EnPustTil` as `hintInitialsHelp`, rebuilt
+only when a gamepad's presence flips - so the line names whichever device (arcade buttons
+or keyboard keys) is actually connected, rather than a string that could name a rebound
+button wrongly.
 
 **When entry is offered, and when it ends.** `RUN_OVER` moves into `ENTER_INITIALS` on its
 own after the dwell, with no press required, whenever `Leaderboard.isWorthRecording(banked)`
