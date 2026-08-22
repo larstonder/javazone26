@@ -485,4 +485,66 @@ class HudTest
         // Half a breath is half a ring.
         assertEquals(Hud.AIR_BUBBLE_COUNT / 2, Hud.airBubblesRemaining(Tuning.BASE_AIR_SECONDS * 0.5f, Tuning.BASE_AIR_SECONDS))
     }
+
+    // --- The in-run control legend --------------------------------------------------
+
+    /** Same upper-bound em estimate the clock box sizes itself with. */
+    private val LEGEND_EM = 0.62f
+
+    @Test
+    fun `the legend clears the clock box on the narrowest plausible panel`()
+    {
+        // THE one legend relationship that can actually fail, and therefore the one asserted
+        // numerically. Everything else about the legend's corner is structural (see the two
+        // tests below); this is arithmetic and it is tight.
+        val h = 1000f
+        val w = h * 4f / 3f                      // 4:3, the narrowest aspect tested anywhere here
+
+        // The longest legend a rebind can produce: both action buttons on bumpers.
+        val longest = "STICK swim  ·  RIGHT BUMPER kick  ·  LEFT BUMPER bleed"
+        val legendWidth = longest.length * LEGEND_EM * h * Hud.LEGEND_FONT_FRACTION
+        val legendLeft = Hud.legendRightX(w, h) - legendWidth
+
+        val clockRight = w * 0.5f + Hud.clockBoxWidth(Hud.clockFontSize(h), 4) * 0.5f
+
+        assertTrue(
+            legendLeft > clockRight,
+            "the legend starts at $legendLeft and the clock box ends at $clockRight - they overlap"
+        )
+    }
+
+    @Test
+    fun `the legend sits above the depth tape and inside the screen`()
+    {
+        val h = 1000f
+        val w = h * 16f / 9f
+        val bottom = Hud.legendBaselineY(h) + h * Hud.LEGEND_FONT_FRACTION
+
+        assertTrue(Hud.legendBaselineY(h) > 0f, "the legend runs off the top")
+        assertTrue(
+            bottom < h * Hud.TAPE_TOP_FRACTION,
+            "the legend collides with the depth tape, which starts at ${Hud.TAPE_TOP_FRACTION}h"
+        )
+        assertTrue(Hud.legendRightX(w, h) < w, "the legend runs off the right edge")
+    }
+
+    @Test
+    fun `the legend can never collide with the HELD numerals`()
+    {
+        // This is the assertion that moved the legend out of the bottom-left corner, where an
+        // earlier design put it. HELD hangs HELD_OFFSET_METRES below the diver, and the diver
+        // is bounded ABOVE by DIVER_MIN_FRACTION - so the highest HELD can ever reach is
+        // that fraction plus the offset, converted at the LARGEST visible depth (which gives
+        // the smallest pixels-per-metre and therefore the smallest offset in screen terms).
+        val h = 1000f
+        val largestVisibleDepth = Framing.VISIBLE_DEPTH_METRES          // the loosest case
+        val heldOffsetFraction = Hud.HELD_OFFSET_METRES / largestVisibleDepth
+        val highestHeldTop = h * (Framing.DIVER_MIN_FRACTION + heldOffsetFraction)
+
+        val legendBottom = Hud.legendBaselineY(h) + h * Hud.LEGEND_FONT_FRACTION
+        assertTrue(
+            legendBottom < highestHeldTop,
+            "the legend ends at $legendBottom and HELD can reach up to $highestHeldTop"
+        )
+    }
 }

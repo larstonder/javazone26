@@ -2028,7 +2028,11 @@ class EnPustTil : PulseEngineGame()
 
             RunLifecycleState.BRIEFING -> drawBriefingScreen(hud, w, h)
 
-            RunLifecycleState.PLAYING -> Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+            RunLifecycleState.PLAYING ->
+            {
+                Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+                Hud.renderControlLegend(hud, hintLegend, w, h)
+            }
 
             // The screen underneath is drawn FIRST and in full, then dimmed by the pause
             // screen's own scrim. A paused run keeps its HUD — a stopped clock and a full
@@ -2038,7 +2042,15 @@ class EnPustTil : PulseEngineGame()
             RunLifecycleState.PAUSED ->
             {
                 if (lifecycle.pausedFromIdle) drawIdleScreen(hud, w, h)
-                else Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+                else
+                {
+                    Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+                    // Included deliberately. drawPauseScreen's own comment says a complete HUD
+                    // behind the scrim - "a stopped clock and a full ring of bubbles" - is the
+                    // clearest statement that the run is being HELD, not ended. A legend that
+                    // vanished on pause would contradict that.
+                    Hud.renderControlLegend(hud, hintLegend, w, h)
+                }
                 drawPauseScreen(hud, w, h)
             }
 

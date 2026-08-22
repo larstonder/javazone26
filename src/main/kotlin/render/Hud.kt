@@ -155,7 +155,9 @@ object Hud
     // 6 o'clock bubble (6.0 + 0.45). That slot can only be occupied while at least half the ring
     // remains — firstOccupiedSlot(7) is 7 — and at seven bubbles the size gain has not started, so
     // the bubble there is never the oversized one. Nothing to move.
-    private const val HELD_OFFSET_METRES = 8f
+    // internal (not private): HudTest derives the legend's clearance above HELD's highest
+    // possible reach from this same constant, rather than duplicating the number.
+    internal const val HELD_OFFSET_METRES = 8f
     private const val HELD_HEAT_SCALE = 3000f         // held value at which colour/size maxes out
     private const val HELD_MIN_FONT_FRACTION = 0.045f
     private const val HELD_MAX_FONT_BONUS_FRACTION = 0.05f
@@ -167,7 +169,9 @@ object Hud
     private const val CLOCK_FONT_FRACTION = 0.05f
     private const val MARGIN_FRACTION = 0.02f
     private const val TAPE_WIDTH_FRACTION = 0.006f
-    private const val TAPE_TOP_FRACTION = 0.10f
+    // internal (not private): HudTest asserts the legend clears this exact boundary rather
+    // than a hardcoded copy of it.
+    internal const val TAPE_TOP_FRACTION = 0.10f
     private const val TAPE_BOTTOM_FRACTION = 0.08f
     private const val TAPE_RIGHT_MARGIN_FRACTION = 0.035f
     private const val TAPE_LABEL_FONT_FRACTION = 0.018f
@@ -177,8 +181,25 @@ object Hud
 
     private const val CLOCK_DANGER_SECONDS = 20f
 
+    /**
+     * The in-run control legend's height fraction. Between the tape's graduation labels
+     * (0.014) and its travelling depth readout (0.018): present, and subordinate to both the
+     * clock and HELD.
+     */
+    const val LEGEND_FONT_FRACTION = 0.016f
+
+    private const val LEGEND_MARGIN_FRACTION = 0.02f
+
     private val cold = Color(0.75f, 0.85f, 1f)
     private val danger = Color(1f, 0.25f, 0.2f)
+
+    /**
+     * The legend's ink. A SEPARATE pre-allocated Color rather than `cold` at a lower alpha:
+     * `cold` is a shared mutable singleton (Color has four mutable float fields), so lowering
+     * "its" alpha would silently re-tint BANKED, the clock, the tape handle and every
+     * graduation label — and building one per frame is forbidden outright.
+     */
+    private val legendInk = Color(0.75f, 0.85f, 1f, authoredAlphaFor(0.55f))
 
     /**
      * WHERE A LINE OF TEXT ACTUALLY SITS RELATIVE TO THE `y` IT IS DRAWN AT — read out of the
@@ -500,6 +521,12 @@ object Hud
     fun clockBoxCentreY(h: Float): Float =
         h * MARGIN_FRACTION + clockBoxHeight(clockFontSize(h)) * 0.5f
 
+    /** Top of the legend's text box. Same top margin `drawBanked` uses. */
+    fun legendBaselineY(h: Float): Float = h * LEGEND_MARGIN_FRACTION
+
+    /** The legend is right-aligned, so this is where its text ENDS. */
+    fun legendRightX(w: Float, h: Float): Float = w - h * LEGEND_MARGIN_FRACTION
+
     /**
      * Half the width of a rounded rectangle at a row [dy] from its centre — the whole geometry
      * of [fillRoundedRect], pulled out because it is the part that can be wrong.
@@ -599,6 +626,29 @@ object Hud
         drawAirRing(surface, sim, diverX, diverY, pixelsPerMetre, aimDegrees)
         drawHeld(surface, sim, diverX, diverY, pixelsPerMetre, h)
         drawDepthTape(surface, sim, w, h)
+    }
+
+    /**
+     * The one-line "what do I press" legend, top-right, for the whole run.
+     *
+     * WHY TOP-RIGHT AND NOT BOTTOM-LEFT, which is where a legend conventionally goes: the
+     * bottom-left corner is not free. `DiveCamera` clamps the camera's lag at
+     * `DIVER_MAX_FRACTION` of the visible depth, so the diver can sit as low as 0.81h, and
+     * [HELD_OFFSET_METRES] hangs the held count below him at a font that grows with the haul
+     * — worst case the numerals straddle the bottom margin entirely, and they are centred on
+     * a diver whose x roams the whole column. Top-right is provably clear instead: HELD hangs
+     * BELOW a diver bounded above by `DIVER_MIN_FRACTION`, so it can never reach the top
+     * strip at all; the depth tape starts at `TAPE_TOP_FRACTION`; and BANKED is top-left.
+     * The only relationship left that can fail is the clock box, which `HudTest` pins
+     * numerically at 4:3.
+     */
+    fun renderControlLegend(surface: Surface, text: String, w: Float, h: Float)
+    {
+        surface.drawTextWithOutline(
+            text,
+            legendRightX(w, h), legendBaselineY(h),
+            h * LEGEND_FONT_FRACTION, h, legendInk, xOrigin = 1f
+        )
     }
 
     /**
