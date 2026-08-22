@@ -95,10 +95,10 @@ Path (from `booth/BoothLog.kt`'s `logDirectory`, which is `<homeDir>/<gameName>/
 %USERPROFILE%\EnPustTil\logs\booth-<epoch>.log
 ```
 
-Expect the start-up banner (`main()`'s `Booth log: <path>` line, `EnPustTil.kt:65` — teed into the
+Expect the start-up banner (`main()`'s `Booth log: <path>` line — teed into the
 file, so it should be the first line), `Daily seed: 20260902` (or whatever `dailySeed` resolved to
-— `EnPustTil.kt:1292`), `Buttons: kick=A bleed=B restart=START/A deadzone=0.2`
-(`EnPustTil.kt:1239`, values reflecting whatever `application.cfg` set), and the gamepad
+— logged in `createGame`), `Buttons: kick=A bleed=B restart=START/A deadzone=0.2`
+(also logged in `createGame`, values reflecting whatever `application.cfg` set), and the gamepad
 diagnostics (`logGamepadDiagnostics`) — `GAMEPAD DIAGNOSTIC: engine.input.gamepads = N ...` plus
 one `... is gamepad-mapped` line per recognised device. All of these are now at `Logger.warn`
 specifically so a **healthy** encoder still writes something: an earlier version of
@@ -277,7 +277,7 @@ does not crash and does not leave the button unbound to nothing.
 or `0.2`/`0.35` (decimal) both load correctly. This used to be a trap (a version of this reader
 that only called `Configuration.getFloat` would silently ignore an all-digits `stickDeadzone = 0`
 and keep the compiled default instead, since `application.cfg`'s own loader stores all-digit
-values as `Integer`, not `Float`), but `resolveDeadzone` (`EnPustTil.kt:391-392`) now checks the
+values as `Integer`, not `Float`), but `resolveDeadzone` now checks the
 `Int` reading first and falls back to the `Float` reading, so both shapes resolve. Confirm via
 the log's `Buttons: ... deadzone=<n>` line that the value you wrote is the value that loaded,
 regardless of which shape you used — that line is the general check for "did this edit take" and

@@ -46,7 +46,7 @@ log — and anything a library prints or a stack trace dumps besides — with no
 read-only profile directory or a full disk costs the booth its log file, deliberately, rather than
 the window that has not opened yet.
 
-It runs from `main`, before `PulseEngine.run<EnPustTil>()` — `EnPustTil.kt:61-67` — specifically
+It runs from `main`, before `PulseEngine.run<EnPustTil>()` — specifically
 because a failure during engine start-up happens inside `run()` and would otherwise be logged to
 the same unreadable stdout. `logDirectory` (`BoothLog.kt:47`) puts the log beside the scoreboard,
 not in a temp folder — one folder copied to a USB stick at end of day carries both. `MAX_RETAINED_LOGS`
@@ -75,15 +75,15 @@ report there would write two days of identical stack traces into the booth log a
 else. `totalFailures` and `lastFailureSite` (`CallbackGuard.kt:44-49`) are what
 `render.BoothStatus`'s attract-screen line reads to say a boot failed at all.
 
-Wired in `EnPustTil.kt:941-943`: `guard` is built once with an `onFailure` that logs through
+Wired in `EnPustTil`'s `guard` field: `guard` is built once with an `onFailure` that logs through
 `Logger.error` — "the frame is lost, the cabinet continues". Every engine callback is a one-line
 delegation, `override fun on…() = guard.run(CallbackSites.X, xBody)` —
-`onCreate`/`EnPustTil.kt:1114`, `onFixedUpdate`/`:1556`, `onUpdate`/`:1618`,
-`onDestroy`/`:1853`, `onRender`/`:1872` — and `CallbackGuardTest` source-scans for exactly that
-shape, so none of the five may grow a second statement. The real bodies (`createGame`,
-`fixedUpdateGame`, `updateGame`, `renderGame`, `destroyGame`) are held as `val …Body: () -> Unit`
-fields (`EnPustTil.kt:948-952`) rather than written inline, because a capturing lambda allocates
-per call and four of these run every frame — see `CallbackGuard`'s own ALLOCATION note.
+`onCreate`, `onFixedUpdate`, `onUpdate`, `onDestroy`, `onRender` — and `CallbackGuardTest`
+source-scans for exactly that shape, so none of the five may grow a second statement. The real
+bodies (`createGame`, `fixedUpdateGame`, `updateGame`, `renderGame`, `destroyGame`) are held as
+`val …Body: () -> Unit` fields (`createBody`/`fixedUpdateBody`/`updateBody`/`renderBody`/
+`destroyBody`) rather than written inline, because a capturing lambda allocates per call and four
+of these run every frame — see `CallbackGuard`'s own ALLOCATION note.
 
 ## `CallbackSites` — one name, agreed everywhere it is used
 
