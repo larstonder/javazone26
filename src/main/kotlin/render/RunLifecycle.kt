@@ -4,7 +4,7 @@ import score.InitialsEntry
 import score.Leaderboard
 
 /** The presentation states a booth run cycles through. */
-enum class RunLifecycleState { IDLE, PLAYING, PAUSED, RUN_OVER, ENTER_INITIALS }
+enum class RunLifecycleState { IDLE, BRIEFING, PLAYING, PAUSED, RUN_OVER, ENTER_INITIALS }
 
 /**
  * Pure state machine for the run lifecycle — no pulseengine imports, so it is fully
@@ -72,7 +72,9 @@ class RunLifecycle(
     private val idleTimeoutSeconds: Float = IDLE_TIMEOUT_SECONDS,
     private val initialsIdleTimeoutSeconds: Float = INITIALS_IDLE_TIMEOUT_SECONDS,
     private val pauseIdleTimeoutSeconds: Float = PAUSE_IDLE_TIMEOUT_SECONDS,
-    private val exitHoldSeconds: Float = EXIT_HOLD_SECONDS
+    private val exitHoldSeconds: Float = EXIT_HOLD_SECONDS,
+    private val briefingSeconds: Float = BRIEFING_SECONDS,
+    private val briefingDwellSeconds: Float = BRIEFING_DWELL_SECONDS
 )
 {
     var state: RunLifecycleState = RunLifecycleState.IDLE
@@ -83,6 +85,20 @@ class RunLifecycle(
      * signal to construct a brand new `DiveSim` this frame. False every other call.
      */
     var justStarted: Boolean = false
+        private set
+
+    /**
+     * True for exactly the [update] call that transitions IDLE -> BRIEFING.
+     *
+     * EnPustTil latches `lifecycleEdges.firedPadId` on this, and that latch is load-bearing.
+     * `firedPadId` is reset to null at the top of EVERY frame, and the briefing's countdown
+     * fires [justStarted] on a frame with NO press — so without this flag `activePadId` would
+     * be null on the common path, `selectGameplayPad` would fall through to slot 0, and the
+     * cabinet would reproduce the exact failure `GamepadScan`'s doc records: a stray HID in
+     * slot 0 means "the cabinet's own START press worked and the diver did not move. A
+     * startable, unplayable run, silently repeating for every person in the queue."
+     */
+    var justEnteredBriefing: Boolean = false
         private set
 
     /**
@@ -176,7 +192,7 @@ class RunLifecycle(
      */
     val simulationAdvances: Boolean get() = when (state)
     {
-        RunLifecycleState.IDLE, RunLifecycleState.PAUSED -> false
+        RunLifecycleState.IDLE, RunLifecycleState.BRIEFING, RunLifecycleState.PAUSED -> false
         RunLifecycleState.PLAYING, RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
     }
 
@@ -187,8 +203,10 @@ class RunLifecycle(
      * the sprite should still kick in place at the surface rather than hold frame 0 — a
      * motionless diver is indistinguishable from a frozen one, and `AttractLayout` was
      * measured against a surface shot with a diver that reads as alive. So this is
-     * [simulationAdvances] with IDLE added back in, PAUSED excluded (a stopped clock and a
-     * still diver is what the pause screen's "the run is being held, not ended" promises).
+     * [simulationAdvances] with IDLE and BRIEFING added back in, PAUSED excluded (a stopped
+     * clock and a still diver is what the pause screen's "the run is being held, not ended"
+     * promises). BRIEFING joins IDLE for the same reason — a still diver behind the
+     * explanation screen reads as a crashed game, not a waiting one.
      *
      * Exposed here rather than spelled out at the call site as `simulationAdvances ||
      * state == IDLE` for the same reason `simulationAdvances` itself is a property and not a
@@ -199,7 +217,8 @@ class RunLifecycle(
     val spriteAnimates: Boolean get() = when (state)
     {
         RunLifecycleState.PAUSED -> false
-        RunLifecycleState.IDLE, RunLifecycleState.PLAYING, RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
+        RunLifecycleState.IDLE, RunLifecycleState.BRIEFING, RunLifecycleState.PLAYING,
+        RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
     }
 
     /**
@@ -208,6 +227,33 @@ class RunLifecycle(
      * as a dead key, and the technician lets go and tries something else.
      */
     val exitHoldProgress: Float get() = (exitHeldSeconds / exitHoldSeconds).coerceIn(0f, 1f)
+
+    /**
+     * Seconds left before the briefing starts the dive on its own; 0 outside BRIEFING.
+     *
+     * Guarded on the state because [timeInState] is shared with the RUN_OVER, PAUSED and
+     * ENTER_INITIALS dwells — an unguarded form would report a live countdown from the
+     * attract screen.
+     */
+    val briefingCountdownSeconds: Float
+        get() = if (state == RunLifecycleState.BRIEFING) (briefingSeconds - timeInState).coerceAtLeast(0f) else 0f
+
+    /**
+     * Whether a press would now skip the briefing. The skip hint's visibility is gated on
+     * this, so the hint appears at the instant pressing starts working — the affordance and
+     * the capability arrive together, and the screen never invites a press that does nothing.
+     */
+    val briefingSkippable: Boolean
+        get() = state == RunLifecycleState.BRIEFING && timeInState >= briefingDwellSeconds
+
+    /**
+     * Whether the briefing has a countdown at all. False under `EPT_BRIEFING_HOLD`, which
+     * passes an infinite [briefingSeconds] so the screen can be photographed.
+     * `drawBriefingScreen` suppresses the countdown line on this: `Float.POSITIVE_INFINITY`
+     * converts to `Int.MAX_VALUE`, so the pinned screen would otherwise read
+     * "STARTING IN 2147483647" — a defect in the one screen the flag exists to capture.
+     */
+    val briefingAutoStarts: Boolean get() = briefingSeconds.isFinite()
 
     private val initialsEntry = InitialsEntry()
 
@@ -272,6 +318,7 @@ class RunLifecycle(
     ): RunLifecycleState
     {
         justStarted = false
+        justEnteredBriefing = false
         justReturnedToIdle = false
         initialsJustCompleted = false
         exitRequested = false
@@ -290,8 +337,23 @@ class RunLifecycle(
                 // has one way to close the cabinet down and does not have to remember a
                 // keyboard shortcut nobody wrote down. Checked AFTER the start press so a
                 // player and a technician acting in the same frame gives the player the run.
-                if (pressedEdge) enter(RunLifecycleState.PLAYING, started = true)
+                if (pressedEdge)
+                {
+                    // A zero-or-less briefing is NO briefing - straight to PLAYING, exactly
+                    // as this did before BRIEFING existed. See BRIEFING_SECONDS.
+                    if (briefingSeconds > 0f) enterBriefing()
+                    else enter(RunLifecycleState.PLAYING, started = true)
+                }
                 else if (pauseEdge) enterPause(RunLifecycleState.IDLE)
+
+            RunLifecycleState.BRIEFING ->
+                // The dwell first: the press that opened this screen must not also close it.
+                // pauseEdge is deliberately NOT handled, exactly as it is not in RUN_OVER or
+                // ENTER_INITIALS - a technician waits at most one countdown.
+                if (timeInState >= briefingDwellSeconds && pressedEdge)
+                    enter(RunLifecycleState.PLAYING, started = true)
+                else if (timeInState >= briefingSeconds)
+                    enter(RunLifecycleState.PLAYING, started = true)
 
             RunLifecycleState.PLAYING ->
                 // runOver first: a run whose clock has just hit zero is finished, and must
@@ -359,6 +421,12 @@ class RunLifecycle(
         enter(RunLifecycleState.PAUSED)
     }
 
+    private fun enterBriefing()
+    {
+        enter(RunLifecycleState.BRIEFING)
+        justEnteredBriefing = true
+    }
+
     private fun enter(newState: RunLifecycleState, started: Boolean = false, resuming: Boolean = false)
     {
         // Set here rather than at the three call sites so a fourth route back to IDLE added
@@ -384,6 +452,33 @@ class RunLifecycle(
     {
         /** Minimum time RUN_OVER stays on screen before any input can restart. */
         const val DWELL_SECONDS = 2.5f
+
+        /**
+         * How long the pre-run briefing stays up before the dive starts on its own.
+         *
+         * This countdown IS the unattended-recovery guarantee for the state: a player who
+         * walks away mid-briefing does not strand the cabinet, because the run starts,
+         * drowns, and falls through RUN_OVER -> IDLE on the timers above. That is why
+         * BRIEFING needs no idle timeout of its own.
+         *
+         * ZERO OR LESS MEANS NO BRIEFING AT ALL — IDLE goes straight to PLAYING, exactly as
+         * it did before this state existed. That is the natural reading of the parameter, it
+         * gives a one-constant way to switch the briefing off if it proves too slow in front
+         * of a real queue, and it is what lets every test written before BRIEFING keep
+         * asserting what it always asserted.
+         */
+        const val BRIEFING_SECONDS = 5f
+
+        /**
+         * How long the briefing ignores input before a press can skip it.
+         *
+         * The press that OPENS the briefing must not also close it. Edge detection already
+         * forces a release-then-press, but a double-tap is ordinary on an arcade button and
+         * would blow straight past the text. This is the same guard RUN_OVER uses via
+         * [DWELL_SECONDS], at a fifth of the duration — long enough to swallow a double-tap,
+         * short enough that a returning player who knows the game is not held up.
+         */
+        const val BRIEFING_DWELL_SECONDS = 0.75f
 
         /**
          * Total time (from entering RUN_OVER, dwell included) before falling back to IDLE

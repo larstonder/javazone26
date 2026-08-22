@@ -1647,11 +1647,19 @@ class EnPustTil : PulseEngineGame()
             engine.window.close()
         }
 
+        // Latch the pad that opened the briefing. The countdown auto-start fires justStarted
+        // on a frame with NO press, and lifecycleEdges.firedPadId is nulled at the top of
+        // every frame — so without this the common path binds gameplay to slot 0. See
+        // RunLifecycle.justEnteredBriefing, and GamepadScan's "startable, unplayable run".
+        if (lifecycle.justEnteredBriefing) activePadId = lifecycleEdges.firedPadId
+
         if (lifecycle.justStarted)
         {
-            // Captured on the frame the run starts, not read per frame: gameplay must stay
-            // with whoever pressed the button even if a second device is plugged in mid-run.
-            activePadId = lifecycleEdges.firedPadId
+            // `?:` keeps the value latched when the briefing opened, for the auto-start frame
+            // where no edge fired. Every other route here — a press that skipped the
+            // briefing, a RUN_OVER retry, a zero-length briefing — has a real edge this
+            // frame, so firedPadId wins and the behaviour is identical to before.
+            activePadId = lifecycleEdges.firedPadId ?: activePadId
             sim = DiveSim(seed = dailySeed)
             // BEFORE the snap below, not after: snapTo teleports the camera to sim.depth, and
             // a pin applied afterwards would leave the camera at the surface easing 140 m down
@@ -1894,6 +1902,10 @@ class EnPustTil : PulseEngineGame()
         when (lifecycle.state)
         {
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
+
+            // Drawn in Task 5. Until then the briefing is a pause showing live water, which
+            // is deliberate and testable: the state machine is what this task delivers.
+            RunLifecycleState.BRIEFING -> { }
 
             RunLifecycleState.PLAYING -> Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
 

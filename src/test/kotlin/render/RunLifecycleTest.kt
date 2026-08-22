@@ -14,12 +14,33 @@ class RunLifecycleTest
     private val PAUSE_IDLE_TIMEOUT = 6f // measured from PAUSED entry
     private val EXIT_HOLD = 1f          // unbroken seconds of the exit input to actually quit
 
+    // Briefing timings for the tests that actually exercise it. The shared newLifecycle()
+    // factory passes briefingSeconds = 0f instead — see `a zero-length briefing...` below.
+    private val BRIEF = 3f
+    private val BRIEF_DWELL = 0.5f
+
     private fun newLifecycle() = RunLifecycle(
         dwellSeconds = DWELL,
         idleTimeoutSeconds = IDLE_TIMEOUT,
         initialsIdleTimeoutSeconds = INITIALS_IDLE_TIMEOUT,
         pauseIdleTimeoutSeconds = PAUSE_IDLE_TIMEOUT,
-        exitHoldSeconds = EXIT_HOLD
+        exitHoldSeconds = EXIT_HOLD,
+        // A zero-length briefing is NO briefing (see `a zero-length briefing...`), so every
+        // test written before BRIEFING existed keeps asserting exactly what it always did.
+        // Without this, 29 of the 34 would fail: three shared helpers press once and
+        // immediately assert the resulting state, and all of them drive with dt = 0f, so a
+        // briefing would never expire.
+        briefingSeconds = 0f
+    )
+
+    private fun briefingLifecycle() = RunLifecycle(
+        dwellSeconds = DWELL,
+        idleTimeoutSeconds = IDLE_TIMEOUT,
+        initialsIdleTimeoutSeconds = INITIALS_IDLE_TIMEOUT,
+        pauseIdleTimeoutSeconds = PAUSE_IDLE_TIMEOUT,
+        exitHoldSeconds = EXIT_HOLD,
+        briefingSeconds = BRIEF,
+        briefingDwellSeconds = BRIEF_DWELL
     )
 
     /** Drive a fresh lifecycle from IDLE into a paused run, with every input released. */
@@ -322,7 +343,7 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `spriteAnimates agrees with simulationAdvances everywhere except IDLE`() {
+    fun `spriteAnimates agrees with simulationAdvances everywhere except IDLE and BRIEFING`() {
         // Reads BOTH properties and compares them, rather than only asserting spriteAnimates
         // is true — the earlier version of this test did the latter, which cannot fail from a
         // simulationAdvances-side regression: it would have stayed green even if
@@ -534,5 +555,174 @@ class RunLifecycleTest
 
         assertEquals(RunLifecycleState.IDLE, lc.state)
         assertFalse(lc.justReturnedToIdle, "a resume is not a return to attract mode")
+    }
+
+    @Test
+    fun `a zero-length briefing goes straight from IDLE to PLAYING`()
+    {
+        // The rule the whole existing test file rests on. newLifecycle() passes
+        // briefingSeconds = 0f, so all 34 tests written before BRIEFING existed keep
+        // asserting exactly what they always asserted. A zero-length briefing is not a
+        // briefing that closes instantly - it is no briefing at all.
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertTrue(lc.justStarted, "justStarted must still fire on the IDLE transition")
+    }
+
+    @Test
+    fun `a press in IDLE enters BRIEFING, not PLAYING`()
+    {
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.BRIEFING, lc.state)
+        assertFalse(lc.justStarted, "the run has not started yet - nothing may build a DiveSim")
+        assertTrue(lc.justEnteredBriefing, "EnPustTil latches the pad id on this flag")
+    }
+
+    @Test
+    fun `justEnteredBriefing is a one-tick event`()
+    {
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertTrue(lc.justEnteredBriefing)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        assertFalse(lc.justEnteredBriefing, "a latched flag would re-latch the pad every frame")
+    }
+
+    @Test
+    fun `the briefing auto-starts the run when the countdown expires, with no input`()
+    {
+        // The unattended-recovery guarantee: a player who walks off mid-briefing must not
+        // strand the cabinet. The run starts, drowns, and falls through RUN_OVER -> IDLE on
+        // the existing timers.
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = BRIEF + 0.01f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertTrue(lc.justStarted, "the auto-start is still a run start")
+    }
+
+    @Test
+    fun `a press before the dwell does not skip the briefing`()
+    {
+        // The press that OPENS the briefing must not also close it. Edge detection already
+        // forces a release-then-press, but a double-tap is ordinary on an arcade button and
+        // would otherwise blow straight past the text.
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = BRIEF_DWELL * 0.5f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.BRIEFING, lc.state)
+    }
+
+    @Test
+    fun `a press after the dwell skips the briefing`()
+    {
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = BRIEF_DWELL + 0.01f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertTrue(lc.justStarted)
+    }
+
+    @Test
+    fun `a held button does not skip the briefing`()
+    {
+        // A stuck booth encoder button must never be able to skip the explanation for every
+        // person in the queue - the same reasoning as the RUN_OVER dwell.
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        repeat(10) { lc.update(dt = BRIEF_DWELL * 0.05f, anyInputPressed = true, runOver = false) }
+        assertEquals(RunLifecycleState.BRIEFING, lc.state)
+    }
+
+    @Test
+    fun `the briefing freezes the simulation but keeps the diver kicking`()
+    {
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertFalse(lc.simulationAdvances, "a briefing that burned air would drown the player")
+        assertTrue(lc.spriteAnimates, "a frozen diver behind the briefing reads as dead, not idle")
+    }
+
+    @Test
+    fun `the countdown counts down, never goes negative, and reads zero outside BRIEFING`()
+    {
+        val lc = briefingLifecycle()
+        assertEquals(0f, lc.briefingCountdownSeconds, "IDLE shares timeInState with BRIEFING")
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(BRIEF, lc.briefingCountdownSeconds, 0.001f)
+        lc.update(dt = BRIEF * 0.5f, anyInputPressed = false, runOver = false)
+        assertEquals(BRIEF * 0.5f, lc.briefingCountdownSeconds, 0.001f)
+    }
+
+    @Test
+    fun `briefingSkippable is state-blind-proof`()
+    {
+        // timeInState is shared by the RUN_OVER, PAUSED and ENTER_INITIALS dwells, so an
+        // unguarded `timeInState >= briefingDwellSeconds` would read true in IDLE. Harmless
+        // today, but it would pin the wrong contract.
+        val lc = briefingLifecycle()
+        lc.update(dt = BRIEF_DWELL * 5f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertFalse(lc.briefingSkippable, "IDLE is not a skippable briefing")
+
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertFalse(lc.briefingSkippable, "not yet - the dwell has not elapsed")
+        lc.update(dt = BRIEF_DWELL + 0.01f, anyInputPressed = false, runOver = false)
+        assertTrue(lc.briefingSkippable)
+    }
+
+    @Test
+    fun `an infinite briefing never auto-starts but still skips on a press`()
+    {
+        // The EPT_BRIEFING_HOLD contract: the capture pin must hold the screen open for a
+        // screencapture, and must still be dismissable by hand.
+        val lc = RunLifecycle(
+            dwellSeconds = DWELL,
+            idleTimeoutSeconds = IDLE_TIMEOUT,
+            initialsIdleTimeoutSeconds = INITIALS_IDLE_TIMEOUT,
+            pauseIdleTimeoutSeconds = PAUSE_IDLE_TIMEOUT,
+            exitHoldSeconds = EXIT_HOLD,
+            briefingSeconds = Float.POSITIVE_INFINITY,
+            briefingDwellSeconds = BRIEF_DWELL
+        )
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertFalse(lc.briefingAutoStarts, "drawBriefingScreen suppresses the countdown on this")
+        lc.update(dt = 10_000f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.BRIEFING, lc.state, "it must hold for the capture")
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+    }
+
+    @Test
+    fun `a retry from RUN_OVER does not re-brief`()
+    {
+        // The owner's decision, pinned so a later "for consistency" change reddens the build.
+        // A player who just drowned in eight seconds retries instantly; the briefing is for
+        // the person who just walked up.
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = BRIEF + 0.01f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = true)
+        assertEquals(RunLifecycleState.RUN_OVER, lc.state)
+        lc.update(dt = DWELL + 0.01f, anyInputPressed = false, runOver = true)
+        lc.update(dt = 0f, anyInputPressed = true, runOver = true)
+        assertEquals(RunLifecycleState.PLAYING, lc.state, "a retry goes straight back to the water")
+    }
+
+    @Test
+    fun `Esc during the briefing does not pause`()
+    {
+        // Consistent with RUN_OVER and ENTER_INITIALS, which also ignore it. A technician
+        // waits at most one countdown for the cabinet menu.
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.BRIEFING, lc.state)
     }
 }
