@@ -407,7 +407,11 @@ private var arcadeHints: Boolean = true
 // allocation in the render path (the one written exemption is HUD numeric formatting, which
 // these are not). The button map is fixed once config is read, so `arcadeHints` is the only
 // input that can vary — these are rebuilt only when it flips.
-private var hintPressStart: String = ScreenText.PRESS_START
+// All four start empty, not at the old ScreenText constants — Step 5 deletes those, and a
+// field initialiser referencing a constant this same task removes would not compile. The
+// value is meaningless before createGame seeds the cache in Step 3, and
+// refreshControlHints' `hintPlayAgain.isNotEmpty()` guard already reads empty as unseeded.
+private var hintPressStart: String = ""
 private var hintPlayAgain: String = ""
 private var hintInitialsHelp: String = ""
 private var hintLegend: String = ""
