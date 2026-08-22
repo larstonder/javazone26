@@ -146,7 +146,8 @@ changed, and the answer is **keep ours**. `HudTest` covers the geometry of all t
 
 The two constraints this section recorded are still live and still worth reading before
 touching `render/Hud.kt` — `Hud.authoredAlphaFor()` for anything semi-transparent, and the
-U+0020..U+011F atlas limit for anything drawn as text.
+U+0020..U+011F atlas limit for anything drawn as text (this is what made an em dash vanish,
+`8fb47d2`).
 
 ### 2.6 Owner-supplied art still to be wired
 

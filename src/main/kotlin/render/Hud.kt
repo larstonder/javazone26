@@ -188,6 +188,10 @@ object Hud
      */
     const val LEGEND_FONT_FRACTION = 0.016f
 
+    // Equal to MARGIN_FRACTION above (0.02f) - that is a COINCIDENCE, not shared tuning: this is
+    // the legend's own inset from the screen edge, decided independently of the BANKED/clock/tape
+    // margin. Do not merge these into one constant - doing so would silently move the legend if
+    // MARGIN_FRACTION were ever retuned for the other HUD elements.
     private const val LEGEND_MARGIN_FRACTION = 0.02f
 
     private val cold = Color(0.75f, 0.85f, 1f)

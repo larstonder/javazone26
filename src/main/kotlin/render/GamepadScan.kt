@@ -5,7 +5,11 @@ package render
  * [preferred] if it is still connected, otherwise the first one, otherwise none.
  *
  * [preferred] is the pad whose button actually started the run - see
- * [LifecycleInputEdges.firedPadId], captured by EnPustTil on `RunLifecycle.justStarted`.
+ * [LifecycleInputEdges.firedPadId], captured by EnPustTil at two sites: primarily on
+ * `RunLifecycle.justEnteredBriefing` (the frame the button press opens the briefing), with
+ * `RunLifecycle.justStarted` as a fallback (`firedPadId ?: activePadId`) for the countdown
+ * auto-start, which fires `justStarted` on a frame with no press at all, after
+ * `lifecycleEdges` has already been re-committed and nulled `firedPadId`.
  *
  * WHAT THIS REPLACED, and why it was a booth failure. Gameplay used to read
  * `engine.input.gamepads.firstOrNull()` while lifecycle input scanned every pad (see

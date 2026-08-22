@@ -1023,11 +1023,16 @@ class EnPustTil : PulseEngineGame()
      */
     private var arcadeHints: Boolean = true
 
-    // The four composed hints. ControlHints builds Strings, and CLAUDE.md forbids per-frame
+    // ONE-WAY LATCH backing arcadeHints' real-hardware reading - see refreshControlHints' doc
+    // for why this is a separate field from arcadeHints rather than folded into it. Starts
+    // false; once a real detection sets it true, it never goes false again this process.
+    private var arcadeEverDetected: Boolean = false
+
+    // The five composed hints. ControlHints builds Strings, and CLAUDE.md forbids per-frame
     // allocation in the render path (the one written exemption is HUD numeric formatting, which
     // these are not). The button map is fixed once config is read, so `arcadeHints` is the only
     // input that can vary — these are rebuilt only when it flips.
-    // All four start empty, not at the old ScreenText constants — Step 5 deletes those, and a
+    // All five start empty, not at the old ScreenText constants — Step 5 deletes those, and a
     // field initialiser referencing a constant this same task removes would not compile. The
     // value is meaningless before createGame seeds the cache in Step 3, and
     // refreshControlHints' `hintPlayAgain.isNotEmpty()` guard already reads empty as unseeded.
@@ -1035,6 +1040,10 @@ class EnPustTil : PulseEngineGame()
     private var hintPlayAgain: String = ""
     private var hintInitialsHelp: String = ""
     private var hintLegend: String = ""
+    // "PRESS <button> TO DIVE NOW" for the briefing skip prompt. Built from hintPressStart
+    // rather than re-deriving ControlHints.confirm(...) a second time — see the review finding
+    // that put this field here, and drawBriefingScreen for the per-frame allocation it replaced.
+    private var hintBriefingSkip: String = ""
 
     /**
      * The dev-only depth pin, or null at the booth. Resolved in [onCreate] from
@@ -1568,7 +1577,7 @@ class EnPustTil : PulseEngineGame()
         // comparison (it used to read `state != IDLE`) so that the rule lives in the pure,
         // unit-tested state machine next to the states it talks about, and so that adding a
         // state cannot silently pick a default: RunLifecycle.simulationAdvances is an
-        // exhaustive `when` with no `else`, so a sixth state is a compile error there. It is
+        // exhaustive `when` with no `else`, so a seventh state is a compile error there. It is
         // false for IDLE (attract mode must not run a clock while the machine sits
         // unattended) and for PAUSED, and true for the rest — RUN_OVER and ENTER_INITIALS
         // included, unchanged, since DiveSim.tick already no-ops once runOver is set.
@@ -1591,7 +1600,7 @@ class EnPustTil : PulseEngineGame()
         // without the simulation. Asked of RunLifecycle.spriteAnimates rather than spelled
         // out as `simulationAdvances || state == IDLE` here, for the same reason the gate
         // above reads `lifecycle.simulationAdvances` rather than `state != IDLE`: the rule
-        // lives in the pure, exhaustive `when` next to the states it talks about, so a sixth
+        // lives in the pure, exhaustive `when` next to the states it talks about, so a seventh
         // state is a compile error there instead of silently getting "sprite frozen" here.
         if (lifecycle.spriteAnimates)
             DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
@@ -2412,10 +2421,8 @@ class EnPustTil : PulseEngineGame()
         // affordance, so the screen never invites a press that does nothing.
         if (lifecycle.briefingSkippable)
         {
-            val skip = "PRESS " + ControlHints.confirm(arcadeHints, gamepadButtonLabel(restartButton)) +
-                       ScreenText.BRIEFING_SKIP_SUFFIX
             hud.drawTextWithOutline(
-                skip,
+                hintBriefingSkip,
                 centreX, h * BriefingLayout.SKIP_Y,
                 h * BriefingLayout.SKIP_FONT, h, Color.WHITE, xOrigin = 0.5f
             )
@@ -2498,10 +2505,27 @@ class EnPustTil : PulseEngineGame()
      * `Collection<T>.isNotEmpty()`. That was checked rather than assumed, because
      * `gamepadIdBuffer` and `GamepadScan` both document the OPPOSITE result for `firstOrNull { }`
      * and `forEach` on the same list.
+     *
+     * ONE-WAY LATCH ([arcadeEverDetected]): once real hardware detection has found an arcade
+     * controller, it stays "found" for the rest of the process, even if the reading that
+     * produced it later flips back to false. A generic USB arcade encoder is a realistic booth
+     * failure mode for a LOOSE CONNECTOR, not just an absent one — see
+     * `LifecycleInputEdges.chatterCount`, which exists for exactly this — and without the latch
+     * a chattering connection would make `engine.input.gamepads.isNotEmpty()` flip every frame,
+     * rebuilding the hint cache at 60 Hz and strobing the attract screen between `PRESS START`
+     * and `PRESS SPACE` in front of the queue. A booth has no keyboard, so once a pad has
+     * genuinely been seen, staying on arcade labels is strictly correct. This is a SEPARATE
+     * field from [arcadeHints] deliberately: [arcadeHints] defaults to `true` at construction
+     * (a one-frame bias — see its own doc) and gets corrected by the first real reading here, so
+     * folding the latch into [arcadeHints] itself would make that correction never happen and
+     * pin every dev machine that has never owned a pad to permanent arcade labels too.
+     * [arcadeEverDetected] starts `false` and is unaffected by that bias.
      */
     private fun refreshControlHints()
     {
-        val arcade = engine.input.gamepads.isNotEmpty() || unmappedGamepadCount() > 0
+        arcadeEverDetected = arcadeEverDetected ||
+            engine.input.gamepads.isNotEmpty() || unmappedGamepadCount() > 0
+        val arcade = arcadeEverDetected
         if (arcade == arcadeHints && hintPlayAgain.isNotEmpty()) return
         arcadeHints = arcade
         rebuildControlHints()
@@ -2514,6 +2538,7 @@ class EnPustTil : PulseEngineGame()
         hintPlayAgain = ControlHints.playAgain(arcadeHints, startLabel)
         hintInitialsHelp = ControlHints.initialsHelp(arcadeHints, startLabel)
         hintLegend = ControlHints.legend(arcadeHints, gamepadButtonLabel(kickButton), gamepadButtonLabel(bleedButton))
+        hintBriefingSkip = hintPressStart + ScreenText.BRIEFING_SKIP_SUFFIX
     }
 
     /**
