@@ -633,14 +633,19 @@ object Hud
      *
      * WHY TOP-RIGHT AND NOT BOTTOM-LEFT, which is where a legend conventionally goes: the
      * bottom-left corner is not free. `DiveCamera` clamps the camera's lag at
-     * `DIVER_MAX_FRACTION` of the visible depth, so the diver can sit as low as 0.81h, and
-     * [HELD_OFFSET_METRES] hangs the held count below him at a font that grows with the haul
-     * — worst case the numerals straddle the bottom margin entirely, and they are centred on
-     * a diver whose x roams the whole column. Top-right is provably clear instead: HELD hangs
-     * BELOW a diver bounded above by `DIVER_MIN_FRACTION`, so it can never reach the top
-     * strip at all; the depth tape starts at `TAPE_TOP_FRACTION`; and BANKED is top-left.
-     * The only relationship left that can fail is the clock box, which `HudTest` pins
-     * numerically at 4:3.
+     * `DIVER_MAX_FRACTION` (0.75) of the visible depth, and that fraction is measured against
+     * the diver's CENTRE — `sim.depth` is what both `fillRectCentred` draws the sprite around
+     * (`DiveRenderer.drawDiver`) and what `diverY` (this file's `render` entry point) is derived
+     * from, so 0.75h is the figure the rest of this comment's reasoning is built on. Add the
+     * sprite's own half-height on top of that — `Framing.DIVER_HEIGHT_METRES` (9) /
+     * `Framing.VISIBLE_DEPTH_METRES` (60) / 2 = 0.075 — and the diver's sprite can reach 0.825h
+     * at its lowest, bottom edge included. [HELD_OFFSET_METRES] then hangs the held count a
+     * further 8 m (0.133h) below the diver's CENTRE at a font that grows with the haul — worst
+     * case the numerals straddle the bottom margin entirely, and they are centred on a diver
+     * whose x roams the whole column. Top-right is provably clear instead: HELD hangs BELOW a
+     * diver bounded above by `DIVER_MIN_FRACTION`, so it can never reach the top strip at all;
+     * the depth tape starts at `TAPE_TOP_FRACTION`; and BANKED is top-left. The only relationship
+     * left that can fail is the clock box, which `HudTest` pins numerically at 4:3.
      */
     fun renderControlLegend(surface: Surface, text: String, w: Float, h: Float)
     {

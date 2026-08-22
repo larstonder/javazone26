@@ -130,19 +130,23 @@ What the code needs, none of which exists:
 
 The deferred entity-layer analysis (§9 of `docs/superpowers/plans/2026-08-06-engine-world-coordinates.md`) is worth reading first: props are the one case where scene entities might pay off, but its conclusion was that they buy little, and it records the trap that a prototype entity setting `HIDDEN` in `init{}` can never be selected in the editor (`SceneEditor.kt:267`, `:597`, `:668`).
 
-### 2.5 HUD restyle
+### 2.5 HUD restyle — DONE
 
-Lowest risk on the list. The HUD is functionally what the mockup shows; it just reads plainer. All on the `"hud"` surface, which is **not** relit by GI, so authored colours are what appear.
+Shipped. Recorded here rather than deleted, because this section still read as outstanding
+work long after it was built, and a stale to-do for something already in the codebase is how
+the same work gets done twice.
 
-From the mockup: a small pearl icon beside `BANKED`; the clock in a rounded bordered box; the depth tape with real ticks and labels at 0/25/50/75/100 m and a slider-style handle.
+- Pearl icon beside `BANKED`: `Hud.pearlIcon` + `bankedIconDiameter`, drawn through `IridescenceRenderer`.
+- Clock in a rounded bordered box: `Hud.clockPlate` + `roundedCornerBands` + `roundedBandHalfWidth`.
+- Depth tape with real ticks, labels and a slider handle: `TAPE_GRADUATION_METRES = 25f`, `graduationCount`/`graduationDepth`, and the lozenge handle in `drawDepthTape`.
 
-The mockup's held count is white; ours is amber heating toward red as the haul grows, which is a deliberate cue from spec §12. **Probably keep ours — flag rather than change.**
+Its one open question is also **settled**: the mockup's held count was white and ours is amber
+heating toward red, a deliberate cue from design spec §12. The flag was raised rather than
+changed, and the answer is **keep ours**. `HudTest` covers the geometry of all three.
 
-Two things to respect:
-- Semi-transparent colours on this surface come out far fainter than authored: RGB is stored pre-multiplied by alpha **and** alpha is stored squared, so 0.15 alpha displays near 0.02. Use `Hud.authoredAlphaFor()`. This is what made the depth tape invisible until `44a3902`.
-- Every drawn string must be inside the default font's baked atlas, **U+0020..U+011F**. Anything above renders as nothing at all *and consumes no width*, silently. Add new strings to `ScreenText`; `AttractScreenTest` asserts they are drawable. This is what made an em dash vanish (`8fb47d2`).
-
-Files: `render/Hud.kt`, `EnPustTil.kt`.
+The two constraints this section recorded are still live and still worth reading before
+touching `render/Hud.kt` — `Hud.authoredAlphaFor()` for anything semi-transparent, and the
+U+0020..U+011F atlas limit for anything drawn as text.
 
 ### 2.6 Owner-supplied art still to be wired
 
