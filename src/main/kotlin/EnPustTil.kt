@@ -24,6 +24,7 @@ import render.Backdrop
 import render.BoothStatus
 import render.CameraInvariants
 import render.CameraRig
+import render.ControlHints
 import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
@@ -251,6 +252,13 @@ fun parseGamepadButton(raw: String?, fallback: GamepadButton): GamepadButton
     val name = raw?.trim()?.uppercase() ?: return fallback
     return GamepadButton.entries.firstOrNull { it.name == name } ?: fallback
 }
+
+/**
+ * A configured button's name as it should appear on screen. Thin, but it is the seam that
+ * keeps [render.ControlHints] engine-free: that object takes `String` labels and never a
+ * `GamepadButton`, so it needs no pulseengine import and can be tested with no GL context.
+ */
+fun gamepadButtonLabel(button: GamepadButton): String = ControlHints.labelFor(button.name)
 
 /**
  * A warning message for `createGame` to log if the key was present in application.cfg, in
@@ -532,10 +540,14 @@ object ScreenText
     const val SEPARATOR = "  ·  "
 
     const val TITLE = "ÉN PUST TIL"
-    const val PRESS_START = "PRESS START"
     const val LEADERBOARD_HEADING = "TODAY'S DIVERS"
-    const val PLAY_AGAIN = "SPACE / START to play again"
-    const val INITIALS_HELP = "UP/DOWN: change letter   A / START: next"
+
+    // PRESS_START, PLAY_AGAIN and INITIALS_HELP used to live here as literals. They named
+    // buttons that application.cfg can rebind, so the screen could lie; PLAY_AGAIN and
+    // INITIALS_HELP also named a keyboard key AND a gamepad button in one breath, which is
+    // half-irrelevant on every machine. They are now composed per-device by
+    // render/ControlHints.kt and cached on EnPustTil. ControlHintsTest is their font-atlas
+    // sweep — a composed string can never appear in ScreenText.all().
 
     // --- The pause / exit screen (Esc) -------------------------------------------------
     // Deliberately plain ASCII. Not because anything here would break the font atlas (see
@@ -583,10 +595,7 @@ object ScreenText
     fun all(): List<String> = listOf(
         SEPARATOR,
         TITLE,
-        PRESS_START,
         LEADERBOARD_HEADING,
-        PLAY_AGAIN,
-        INITIALS_HELP,
         UNMAPPED_JOYSTICK_WARNING,
         PAUSED_TITLE,
         MENU_TITLE,
@@ -873,6 +882,38 @@ class EnPustTil : PulseEngineGame()
     private var stickDeadzone = DEFAULT_STICK_DEADZONE
 
     /**
+     * Whether control prompts should name ARCADE controls rather than keyboard keys.
+     *
+     * Deliberately NOT `engine.input.gamepads.isNotEmpty()` alone. A generic arcade USB encoder
+     * may have no SDL gamepad mapping, in which case it is invisible to that list while working
+     * fine at the OS level — a verified platform finding, and the reason [logGamepadDiagnostics]
+     * exists. Gating on the mapped list alone would put "PRESS SPACE" on the attract screen of a
+     * cabinet that has no keyboard, in front of the queue, as the most visible string in the
+     * game. Today that string reads "PRESS START" and is right by accident in exactly that case;
+     * a change that made the booth's worst input failure ALSO display the wrong instruction would
+     * be a regression. Naming the right control on a broken machine beats naming a control the
+     * machine does not have.
+     *
+     * [unmappedGamepadCount] already walks the raw GLFW joystick list every attract frame for the
+     * booth status line, with an indexed loop for the no-allocation rule, so the second half of
+     * this costs nothing new.
+     */
+    private var arcadeHints: Boolean = true
+
+    // The four composed hints. ControlHints builds Strings, and CLAUDE.md forbids per-frame
+    // allocation in the render path (the one written exemption is HUD numeric formatting, which
+    // these are not). The button map is fixed once config is read, so `arcadeHints` is the only
+    // input that can vary — these are rebuilt only when it flips.
+    // All four start empty, not at the old ScreenText constants — Step 5 deletes those, and a
+    // field initialiser referencing a constant this same task removes would not compile. The
+    // value is meaningless before createGame seeds the cache in Step 3, and
+    // refreshControlHints' `hintPlayAgain.isNotEmpty()` guard already reads empty as unseeded.
+    private var hintPressStart: String = ""
+    private var hintPlayAgain: String = ""
+    private var hintInitialsHelp: String = ""
+    private var hintLegend: String = ""
+
+    /**
      * The dev-only depth pin, or null at the booth. Resolved in [onCreate] from
      * [DEPTH_PIN_ENV] — see [parseDepthPin] for what it is for and why it exists.
      *
@@ -1089,6 +1130,11 @@ class EnPustTil : PulseEngineGame()
         // with no signal anywhere else — see gamepadButtonCollisionWarnings's doc.
         gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt)
             .forEach { Logger.warn { it } }
+
+        // AFTER the button map resolves and BEFORE the first renderGame. A cache seeded at
+        // field-init time would hold pre-config labels — the fields above are still their
+        // compiled defaults until the four lines above run.
+        rebuildControlHints()
 
         // A cheap, general symptom-check for "application.cfg silently failed to load
         // completely" (see resolveDailySeed's doc for the mechanism) — a startup guard
@@ -1495,6 +1541,10 @@ class EnPustTil : PulseEngineGame()
         // Every (pad, button) pair is its own source now, edged independently — see
         // LifecycleInputEdges. This used to OR the LEVELS together and let RunLifecycle
         // edge the result, which one stuck button could hold true forever.
+        //
+        // Before the lifecycle reads input, so a pad plugged in this frame is reflected on the
+        // screen drawn from this frame's state rather than the next one's.
+        refreshControlHints()
         lifecycleEdges.begin(engine.data.deltaTime)
         // Indexed, not `.forEach { pad -> ... }` — `Iterable<T>.forEach` on a `List`
         // allocates one `Iterator` per call, and this runs every update frame. Same
@@ -1960,7 +2010,7 @@ class EnPustTil : PulseEngineGame()
             h * AttractLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
         hud.drawTextWithOutline(
-            ScreenText.PRESS_START,
+            hintPressStart,
             w * 0.5f, h * AttractLayout.PRESS_START_Y,
             h * AttractLayout.PRESS_START_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -2102,7 +2152,7 @@ class EnPustTil : PulseEngineGame()
             h * 0.04f, h, Color.WHITE, xOrigin = 0.5f
         )
         hud.drawTextWithOutline(
-            ScreenText.PLAY_AGAIN,
+            hintPlayAgain,
             w * 0.5f, h * 0.5f + h * 0.045f,
             h * 0.022f, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -2184,7 +2234,7 @@ class EnPustTil : PulseEngineGame()
         )
 
         hud.drawTextWithOutline(
-            ScreenText.INITIALS_HELP,
+            hintInitialsHelp,
             w * 0.5f, h * 0.6f,
             h * 0.02f, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -2221,6 +2271,32 @@ class EnPustTil : PulseEngineGame()
             kick       = (pad?.isPressed(kickButton) ?: false) || engine.input.isPressed(Key.Z),
             bleed      = (pad?.isPressed(bleedButton) ?: false) || engine.input.isPressed(Key.X)
         )
+    }
+
+    /**
+     * Rebuilds the cached hint strings if — and only if — the connected input hardware changed.
+     *
+     * Called once per frame from [updateGame]. `gamepads.isNotEmpty()` allocates nothing:
+     * `Input.getGamepads()` returns a `java.util.List`, so this resolves to the inline
+     * `Collection<T>.isNotEmpty()`. That was checked rather than assumed, because
+     * `gamepadIdBuffer` and `GamepadScan` both document the OPPOSITE result for `firstOrNull { }`
+     * and `forEach` on the same list.
+     */
+    private fun refreshControlHints()
+    {
+        val arcade = engine.input.gamepads.isNotEmpty() || unmappedGamepadCount() > 0
+        if (arcade == arcadeHints && hintPlayAgain.isNotEmpty()) return
+        arcadeHints = arcade
+        rebuildControlHints()
+    }
+
+    private fun rebuildControlHints()
+    {
+        val startLabel = gamepadButtonLabel(restartButton)
+        hintPressStart = ControlHints.pressStart(arcadeHints, startLabel)
+        hintPlayAgain = ControlHints.playAgain(arcadeHints, startLabel)
+        hintInitialsHelp = ControlHints.initialsHelp(arcadeHints, startLabel)
+        hintLegend = ControlHints.legend(arcadeHints, gamepadButtonLabel(kickButton), gamepadButtonLabel(bleedButton))
     }
 
     /**
