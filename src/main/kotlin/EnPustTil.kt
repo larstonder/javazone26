@@ -47,6 +47,7 @@ import render.drawTextWithOutline
 import render.fillRect
 import render.selectGameplayPad
 import score.ScoreRepository
+import kotlin.math.ceil
 
 fun main()
 {
@@ -587,6 +588,25 @@ object ScreenText
     fun initialsSlots(letters: String, slot: Int) =
         letters.mapIndexed { i, c -> if (i == slot) "[$c]" else " $c " }.joinToString(" ")
 
+    // --- The pre-run briefing ----------------------------------------------------------
+    // Controls plus the ONE rule the game does not otherwise teach. Air, the anglerfish and
+    // the point-of-no-return are deliberately absent: everything on this screen costs reading
+    // time in front of a queue, and those three teach themselves by happening.
+
+    const val BRIEFING_TITLE = "HOW TO DIVE"
+
+    /** The one thing a player must know that nothing else on screen ever says. */
+    const val BRIEFING_RULE = "SURFACE TO BANK YOUR PEARLS"
+
+    const val BRIEFING_VERB_SWIM = "swim"
+    const val BRIEFING_VERB_KICK = "kick"
+    const val BRIEFING_VERB_BLEED = "bleed pearls"
+
+    /** Completes "PRESS <button>" — the button half comes from ControlHints.confirm. */
+    const val BRIEFING_SKIP_SUFFIX = " TO DIVE NOW"
+
+    fun briefingCountdown(seconds: Int) = "STARTING IN $seconds"
+
     /**
      * Every drawable string, with the interpolated ones instantiated at values that
      * exercise their widest form. Used only by the test; cheap enough not to warrant
@@ -606,7 +626,14 @@ object ScreenText
         runOver(99999),
         newScore(12345),
         initialsSlots("AAA", 0),
-        initialsSlots("ØYA", 2)
+        initialsSlots("ØYA", 2),
+        BRIEFING_TITLE,
+        BRIEFING_RULE,
+        BRIEFING_VERB_SWIM,
+        BRIEFING_VERB_KICK,
+        BRIEFING_VERB_BLEED,
+        BRIEFING_SKIP_SUFFIX,
+        briefingCountdown(5)
     )
 }
 
@@ -809,6 +836,70 @@ object PauseLayout
 }
 
 /**
+ * Anchors for the pre-run briefing. Values only, no logic — the presentation twin of
+ * [AttractLayout], and read the same way: every number is a fraction of screen HEIGHT (never
+ * width, never a pixel count — the booth panel's aspect is not known in advance), and text
+ * grows DOWNWARD from its anchor, so a block occupies `y .. y + fontSize`.
+ *
+ * WHY THIS SCREEN HAS A SCRIM AND THE ATTRACT SCREEN DOES NOT. [AttractLayout] reserves
+ * `DIVER_SCREEN_FRACTION ± DIVER_HALO_HALF_HEIGHT` for the diver and lays its four elements
+ * around that band. The briefing has seven and does not fit around it, so it darkens the
+ * world instead and uses the full height. The scrim is LIGHTER than [PauseLayout.SCRIM_ALPHA]
+ * on purpose: the two screens already differ in heading and content, and differing in weight
+ * as well is what stops a player reading "the machine is waiting for me" as "the machine is
+ * stopped".
+ *
+ * Nothing is drawn beneath the scrim but the live world — no attract sign, no leaderboard, no
+ * HUD. The briefing is the only thing on screen to read, and a leaderboard competing with it
+ * is the one thing that would stop a first-timer reaching the rule line. The cost is that the
+ * board is hidden for up to one countdown per play, which is accepted: it is on screen the
+ * whole time nobody is playing, which is most of the day.
+ *
+ * @see BriefingScreenTest, which pins the non-overlap and the width fit.
+ */
+object BriefingLayout
+{
+    /**
+     * Lighter than [PauseLayout.SCRIM_ALPHA] (0.72). Authored alpha — pass it through
+     * [Hud.authoredAlphaFor], because this surface stores alpha squared.
+     */
+    const val SCRIM_ALPHA = 0.55f
+
+    const val TITLE_Y = 0.16f
+    const val TITLE_FONT = 0.055f
+
+    /** Top of the first control row. */
+    const val ROWS_TOP_Y = 0.30f
+    const val ROW_FONT = 0.030f
+
+    /** Row pitch as a multiple of [ROW_FONT] — 1.9 leaves most of a line of air between rows. */
+    const val ROW_SPACING = 1.9f
+
+    /**
+     * Half the gutter between the two columns. The control token is drawn `xOrigin = 1f`
+     * (RIGHT-aligned) at `centreX - COLUMN_GAP * h` and the verb `xOrigin = 0f` (LEFT-aligned)
+     * at `centreX + COLUMN_GAP * h`, so the tokens keep a clean right edge whatever their
+     * width — which matters, because a rebind can turn `A` into `RIGHT BUMPER`.
+     *
+     * NOTE this is the OPPOSITE of [AttractLayout]'s leaderboard, which aligns its columns
+     * OUTWARD (`rankX` is `xOrigin = 0` at `centre - halfSpan`). Copying `rankX`/`scoreX` here
+     * gets the alignments backwards and loses exactly the property this buys.
+     */
+    const val COLUMN_GAP = 0.012f
+
+    const val RULE_Y = 0.53f
+    const val RULE_FONT = 0.034f
+
+    const val COUNTDOWN_Y = 0.66f
+    const val COUNTDOWN_FONT = 0.028f
+
+    const val SKIP_Y = 0.74f
+    const val SKIP_FONT = 0.022f
+
+    fun rowY(index: Int): Float = ROWS_TOP_Y + ROW_FONT * ROW_SPACING * index
+}
+
+/**
  * Engine shell. Reads input, ticks the pure simulation on the fixed update,
  * and draws it. All game logic lives in the `dive` package.
  *
@@ -843,7 +934,20 @@ class EnPustTil : PulseEngineGame()
 
     private lateinit var sim: DiveSim
     private val camera = DiveCamera()
-    private val lifecycle = RunLifecycle()
+
+    /**
+     * EPT_BRIEFING_HOLD pins the briefing open so it can be photographed. The documented
+     * window-grab route takes about fourteen seconds to reach a screencapture, which is
+     * longer than the briefing lasts — without this the one screen that most needs a real
+     * frame is the one screen that cannot be captured. One getenv, unset at the booth, same
+     * cost as EPT_DEV / EPT_DEPTH / EPT_FAIL_BOOT. Read HERE rather than in RunLifecycle so
+     * that class stays a pure object with no environment reads.
+     */
+    private val lifecycle = RunLifecycle(
+        briefingSeconds =
+            if (System.getenv("EPT_BRIEFING_HOLD") != null) Float.POSITIVE_INFINITY
+            else RunLifecycle.BRIEFING_SECONDS
+    )
 
     /**
      * Per-source lifecycle edges. See LifecycleInputEdges' class doc for the stuck-button
@@ -1903,9 +2007,7 @@ class EnPustTil : PulseEngineGame()
         {
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
 
-            // Drawn in Task 5. Until then the briefing is a pause showing live water, which
-            // is deliberate and testable: the state machine is what this task delivers.
-            RunLifecycleState.BRIEFING -> { }
+            RunLifecycleState.BRIEFING -> drawBriefingScreen(hud, w, h)
 
             RunLifecycleState.PLAYING -> Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
 
@@ -2223,6 +2325,78 @@ class EnPustTil : PulseEngineGame()
 
         hud.setDrawColor(1f, 0.85f, 0.3f, Hud.authoredAlphaFor(0.95f))
         hud.fillRect(barX, barY, PauseLayout.barFillWidth(lifecycle.exitHoldProgress, h), barHeight)
+    }
+
+    /**
+     * The pre-run briefing: what the three controls do, plus the one rule the game never
+     * otherwise states. Drawn over a darkened live world; see [BriefingLayout] for why this
+     * screen has a scrim and the attract screen does not.
+     */
+    private fun drawBriefingScreen(hud: Surface, w: Float, h: Float)
+    {
+        // Authored alpha, not displayed alpha - this surface stores alpha squared, so asking
+        // for 0.55 directly would land near 0.3. See Hud's doc for the measurement.
+        hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(BriefingLayout.SCRIM_ALPHA))
+        hud.fillRect(0f, 0f, w, h)
+
+        val centreX = w * 0.5f
+        val gap = h * BriefingLayout.COLUMN_GAP
+
+        hud.drawTextWithOutline(
+            ScreenText.BRIEFING_TITLE,
+            centreX, h * BriefingLayout.TITLE_Y,
+            h * BriefingLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+
+        // Token right-aligned, verb left-aligned - INWARD, unlike the leaderboard's outward
+        // columns. See BriefingLayout.COLUMN_GAP.
+        drawBriefingRow(hud, 0, ControlHints.swim(arcadeHints), ScreenText.BRIEFING_VERB_SWIM, centreX, gap, h)
+        drawBriefingRow(hud, 1, ControlHints.kick(arcadeHints, gamepadButtonLabel(kickButton)), ScreenText.BRIEFING_VERB_KICK, centreX, gap, h)
+        drawBriefingRow(hud, 2, ControlHints.bleed(arcadeHints, gamepadButtonLabel(bleedButton)), ScreenText.BRIEFING_VERB_BLEED, centreX, gap, h)
+
+        // Amber, not white: this is the one thing a player must know that nothing else on
+        // screen ever says. Same literal drawPauseScreen uses for its exit bar - deliberately
+        // NOT Hud.noReturnMark, which is public but is a TAPE colour with its own authored
+        // alpha and a different RGB.
+        hud.drawTextWithOutline(
+            ScreenText.BRIEFING_RULE,
+            centreX, h * BriefingLayout.RULE_Y,
+            h * BriefingLayout.RULE_FONT, h, 1f, 0.85f, 0.3f, 1f, xOrigin = 0.5f
+        )
+
+        // Suppressed under EPT_BRIEFING_HOLD: briefingSeconds is infinite there, and
+        // Float.POSITIVE_INFINITY.toInt() is Int.MAX_VALUE, so this would read
+        // "STARTING IN 2147483647" - on the one screen the flag exists to photograph.
+        if (lifecycle.briefingAutoStarts)
+        {
+            val seconds = ceil(lifecycle.briefingCountdownSeconds).toInt()
+            hud.drawTextWithOutline(
+                ScreenText.briefingCountdown(seconds),
+                centreX, h * BriefingLayout.COUNTDOWN_Y,
+                h * BriefingLayout.COUNTDOWN_FONT, h, Color.WHITE, xOrigin = 0.5f
+            )
+        }
+
+        // Only once a press would actually do something. The hint appearing IS the
+        // affordance, so the screen never invites a press that does nothing.
+        if (lifecycle.briefingSkippable)
+        {
+            val skip = "PRESS " + ControlHints.confirm(arcadeHints, gamepadButtonLabel(restartButton)) +
+                       ScreenText.BRIEFING_SKIP_SUFFIX
+            hud.drawTextWithOutline(
+                skip,
+                centreX, h * BriefingLayout.SKIP_Y,
+                h * BriefingLayout.SKIP_FONT, h, Color.WHITE, xOrigin = 0.5f
+            )
+        }
+    }
+
+    private fun drawBriefingRow(hud: Surface, index: Int, token: String, verb: String, centreX: Float, gap: Float, h: Float)
+    {
+        val y = h * BriefingLayout.rowY(index)
+        val font = h * BriefingLayout.ROW_FONT
+        hud.drawTextWithOutline(token, centreX - gap, y, font, h, Color.WHITE, xOrigin = 1f)
+        hud.drawTextWithOutline(verb, centreX + gap, y, font, h, Color.WHITE, xOrigin = 0f)
     }
 
     /**
