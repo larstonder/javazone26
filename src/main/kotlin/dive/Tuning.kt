@@ -112,8 +112,10 @@ object Tuning
      * 0.45 m mismatch against the 4.45 m silhouette that a pearl does, which is the point —
      * after this change the two objects are wrong by the same small amount instead of the pearl
      * being the outlier. A vent stays the easier target because it is DRAWN at
-     * `Framing.AIR_POCKET_SIZE_METRES` = 2.4 m against a pearl's 1.2 m, so you can see and line
-     * up on it from further away.
+     * `Framing.AIR_POCKET_SIZE_METRES` = 3.6 m against a pearl's 1.2 m, so you can see and line
+     * up on it from further away. (That was 2.4 m until the vent took its animated sheet and was
+     * scaled 1.5x; the gap this paragraph is about therefore got WIDER, not narrower, and the
+     * argument for leaving this radius alone is unchanged by it — see that constant's KDoc.)
      *
      * Growing it is measured to be free and is still wrong. Flying the same sweep at 4.5 and 5.0
      * moved nothing (33, 33, 32 pearls home; identical max loads at 130/135/140) because

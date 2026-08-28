@@ -1,5 +1,5 @@
 """
-Frame sizing and grid selection for the diver sprite sheet bake.
+Frame sizing and grid selection for the sprite sheet bake.
 
 Pure integer maths, no numpy and no I/O, so every number the bake depends on can be
 asserted without touching the 183 MB of source art.
@@ -7,6 +7,10 @@ asserted without touching the 183 MB of source art.
 import math
 from typing import NamedTuple
 
+# The DIVER's content box, and the default aspect for `frame_width`. Every other set
+# passes its own measured aspect; this one is a constant because the diver's numbers
+# are quoted in the design spec and asserted by tests that must not need the art.
+#
 # Measured over all 84 source files, alpha > 0, with the bbox taken from the NORMAL
 # maps: they are true 8-bit, while Pillow truncates the 16-bit diffuse to its high
 # byte and zeroes very low alpha, which yields a bbox one pixel narrow (628 vs 629).

@@ -35,19 +35,60 @@ def _on_checker(cell: np.ndarray) -> Image.Image:
     )
 
 
-def write_qa_bundle(out_dir, grid: Grid, frame_count: int,
-                    diffuse_sheet: np.ndarray, normal_sheet: np.ndarray) -> None:
+def _relit_gif(grid: Grid, normal_sheet: np.ndarray, path) -> None:
+    """
+    Frame 0's normals relit by a key light walking a full circle.
+
+    A flipped or wrongly-decoded channel makes the highlight travel the WRONG WAY,
+    which is obvious in motion and nearly invisible in a still.
+    """
+    lit = []
+    for angle_index in range(16):
+        theta = angle_index / 16.0 * 2.0 * np.pi
+        light = np.array([np.cos(theta), np.sin(theta), 0.6])
+        light = light / np.linalg.norm(light)
+        cell = next(iter(_cells(grid, normal_sheet, 1)))
+        v = cell[..., :3] / 255.0 * 2.0 - 1.0          # sheet is LINEAR-encoded
+        shade = np.clip((v * light).sum(axis=-1), 0, 1)
+        alpha = cell[..., 3:4] / 255.0
+        rgb = (shade[..., None] * 255 * alpha).astype(np.uint8)
+        lit.append(Image.fromarray(np.repeat(rgb, 3, axis=-1), mode="RGB"))
+    lit[0].save(
+        path, save_all=True, append_images=lit[1:],
+        duration=100, loop=0, disposal=2,
+    )
+
+
+def write_qa_bundle(out_dir, grid: Grid, frame_count: int, layers: list) -> None:
+    """
+    `layers` is [(kind, asset_name, sheet), ...] in the sprite set's own order.
+
+    Every artifact is produced per-layer rather than for a fixed diffuse/normal pair,
+    because a set may have only one of them - see spritesheet.sets. The relit GIF is
+    the one that must follow the NORMAL layers specifically: it is meaningless on a
+    diffuse sheet and it is the only check that catches a flipped channel.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. The loop, at final resolution. Watch the seam.
-    frames = [_on_checker(c) for c in _cells(grid, diffuse_sheet, frame_count)]
+    kinds = [kind for kind, _, _ in layers]
+    # Name artifacts by kind, which is what a human reading the directory wants, and
+    # fall back to the asset name only where that would collide.
+    names = [kind if kinds.count(kind) == 1 else asset
+             for kind, asset, _ in layers]
+
+    # 1. The loop, at final resolution. Watch the seam. Prefer a diffuse layer - it is
+    #    what the player sees - but a normals-only set animates its normal map here,
+    #    which still shows a hitch or a duplicated tail frame.
+    loop_index = kinds.index("diffuse") if "diffuse" in kinds else 0
+    frames = [_on_checker(c)
+              for c in _cells(grid, layers[loop_index][2], frame_count)]
     frames[0].save(
         out_dir / "loop.gif", save_all=True, append_images=frames[1:],
         duration=1000 // 30, loop=0, disposal=2,
     )
 
     # 2. Indexed contact sheet - an off-by-one grid is visible at a glance.
-    for name, sheet in (("diffuse", diffuse_sheet), ("normal", normal_sheet)):
+    for name, (_, _, sheet) in zip(names, layers):
         canvas = _on_checker(sheet).convert("RGB")
         draw = ImageDraw.Draw(canvas)
         for index in range(grid.cols * grid.rows):
@@ -61,21 +102,9 @@ def write_qa_bundle(out_dir, grid: Grid, frame_count: int,
                       fill=(255, 255, 0))
         canvas.save(out_dir / f"contact-{name}.png")
 
-    # 3. Normals relit by a moving key light. A flipped or wrongly-decoded channel
-    #    makes the highlight travel the WRONG WAY, which is obvious in motion and
-    #    nearly invisible in a still.
-    lit = []
-    for angle_index in range(16):
-        theta = angle_index / 16.0 * 2.0 * np.pi
-        light = np.array([np.cos(theta), np.sin(theta), 0.6])
-        light = light / np.linalg.norm(light)
-        cell = next(iter(_cells(grid, normal_sheet, 1)))
-        v = cell[..., :3] / 255.0 * 2.0 - 1.0          # sheet is LINEAR-encoded
-        shade = np.clip((v * light).sum(axis=-1), 0, 1)
-        alpha = cell[..., 3:4] / 255.0
-        rgb = (shade[..., None] * 255 * alpha).astype(np.uint8)
-        lit.append(Image.fromarray(np.repeat(rgb, 3, axis=-1), mode="RGB"))
-    lit[0].save(
-        out_dir / "normal-relit.gif", save_all=True, append_images=lit[1:],
-        duration=100, loop=0, disposal=2,
-    )
+    # 3. One relit GIF per normal layer.
+    normals = [(name, sheet) for name, (kind, _, sheet) in zip(names, layers)
+               if kind == "normal"]
+    for name, sheet in normals:
+        suffix = "" if len(normals) == 1 else f"-{name}"
+        _relit_gif(grid, sheet, out_dir / f"normal-relit{suffix}.gif")

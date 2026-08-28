@@ -2,8 +2,11 @@ package render
 
 import dive.Tuning
 import dive.Zone
+import java.io.File
+import kotlin.math.hypot
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -596,9 +599,237 @@ class DiveRendererTest
         }
     }
 
+    // ---- The air vent's drawn rect -------------------------------------------------------------
+    //
+    // A vent stopped being a square when it took [OxygenSprite]'s sheet: the cell is 182x216, so
+    // the drawn rect is TALLER than it is wide and the width is not a number anyone can check by
+    // looking at an animated blob. These four tests pin the two halves of that — the rect itself,
+    // and the two traps the wiring had to walk past.
+
+    @Test
+    fun `a vent is drawn taller than it is wide, and the width follows the sheet`()
+    {
+        val height = Framing.AIR_POCKET_SIZE_METRES
+        val width = DiveRenderer.ventWidthFor(height)
+
+        // The direction of the inequality is the whole point. A vent used to be drawn
+        // `AIR_POCKET_SIZE_METRES` on both axes, so the failure this catches is someone restoring
+        // that — or inverting the aspect, which would stretch the plume sideways by 19%.
+        assertTrue(
+            width < height,
+            "the vent's cell is 182x216 (0.843:1), so the drawn rect must be narrower than it is " +
+                "tall — got ${width}m x ${height}m"
+        )
+        assertTrue(
+            width > height * 0.5f,
+            "the art is 0.843:1, not a sliver — a width under half the height means the aspect " +
+                "was inverted somewhere (got ${width}m for a ${height}m vent)"
+        )
+
+        // Not a restatement of `height * FRAME_ASPECT`. The aspect is measured off the committed
+        // PNG in exactly one place and `OxygenSpriteTest` re-derives it from that file's IHDR, so
+        // this asserts the renderer still ASKS rather than remembering — an inlined 0.843f here
+        // would survive a re-bake at a different frame height and silently disagree with the art.
+        assertEquals(
+            OxygenSprite.widthForHeight(height),
+            width,
+            0f,
+            "DiveRenderer.ventWidthFor must delegate to OxygenSprite.widthForHeight, not re-derive it"
+        )
+
+        // A ratio, not an offset: doubling the world height doubles the world width.
+        assertEquals(width * 2f, DiveRenderer.ventWidthFor(height * 2f), 1e-4f)
+
+        // The player has to be able to reach every pixel of it. `OxygenSpriteTest` asserts this
+        // against the sheet's own arithmetic; here it is asserted against the number the renderer
+        // actually draws with, which is the one a change to this file would move.
+        val cornerReach = hypot(width * 0.5f, height * 0.5f)
+        assertTrue(
+            cornerReach < Tuning.AIR_POCKET_PICKUP_RADIUS,
+            "the drawn vent's corner reaches ${cornerReach}m from its centre but the pickup radius " +
+                "is ${Tuning.AIR_POCKET_PICKUP_RADIUS}m — the player can touch the art without " +
+                "getting the breath"
+        )
+    }
+
+    @Test
+    fun `a vent's cull square contains both of the shapes it can draw`()
+    {
+        // `showsSquare` takes ONE size, and this method draws two different rects: the textured
+        // one (narrow) and, when the shader or the sheet is missing, the flat square it always
+        // was. Culling against anything smaller than the larger side pops an object off at the
+        // edge of the screen — the safe direction is to keep something that is off frame.
+        //
+        // Swept rather than checked at the shipping height, because the whole reason this is `max`
+        // and not the bare height `drawDiver` passes is that a re-bake could make the cell WIDER
+        // than it is tall, at which point the bare height starts clipping vents at the sides.
+        for (height in listOf(0.5f, 1f, Framing.AIR_POCKET_SIZE_METRES, 5f, 40f))
+        {
+            val width = DiveRenderer.ventWidthFor(height)
+            val cull = DiveRenderer.ventCullSizeFor(height)
+
+            assertTrue(
+                cull >= width && cull >= height,
+                "a ${width}m x ${height}m vent is culled against a ${cull}m square — that is " +
+                    "smaller than the object on at least one axis, so it will vanish before it " +
+                    "leaves the frame"
+            )
+        }
+
+        // And the fallback square specifically: it is drawn `AIR_POCKET_SIZE_METRES` on both axes,
+        // so the cull square must be at least that or the degraded frame culls differently from
+        // the textured one — a bug that only appears on the handful of frames before the sheet
+        // uploads, which is exactly where nobody looks.
+        assertEquals(
+            Framing.AIR_POCKET_SIZE_METRES,
+            DiveRenderer.ventCullSizeFor(Framing.AIR_POCKET_SIZE_METRES),
+            0f,
+            "the fallback square is AIR_POCKET_SIZE_METRES on both axes and must be fully covered " +
+                "by the cull square"
+        )
+    }
+
+    @Test
+    fun `a vent is not grown by the equal-area disc compensation`()
+    {
+        // THE TRAP. `drawPearlSurface` and `Hud.drawAirRing` both pass their size through
+        // `IridescenceRenderer.equalAreaQuad`, because the ANALYTIC path inscribes a disc in the
+        // quad and loses 1 - pi/4 of its area. A vent does not take that path: its silhouette is
+        // the sheet's ALPHA, which fills the cell to within the 2 px margin the bake leaves. So
+        // the compensation would be applied to a shape that is already full, oversizing the plume
+        // by ~12% on each axis and pushing its corners toward the pickup radius.
+        //
+        // Asserted by source scan because there is no seam to observe it at: both forms compile,
+        // both draw a plausible blob, and the difference is 12% on an object nobody has seen at
+        // the correct size.
+        val body = drawAirPocketsBody()
+        assertFalse(
+            body.contains("equalAreaQuad"),
+            "drawAirPockets applies IridescenceRenderer.equalAreaQuad. That factor compensates " +
+                "for the analytic hemisphere being inscribed in its quad; a textured vent's " +
+                "silhouette already fills the cell, so this oversizes it. See the method's KDoc."
+        )
+    }
+
+    @Test
+    fun `a vent's albedo and its normal map are one argument list`()
+    {
+        // The rule CLAUDE.md states for every normal-mapped sprite here and `drawDiver` is the
+        // worked example of: the second call's arguments are COPIED, never derived a second time.
+        // For a vent it is stronger than usual — the iridescence shader takes the vent's SHAPE
+        // from this same texture's alpha, so a normal map on a different rect would light a
+        // silhouette that is not where the drawn one is.
+        val body = drawAirPocketsBody()
+
+        val iridescenceArgs = argumentsOf(body, ".draw(")
+        val normalMapArgs = argumentsOf(body, "drawNormalMap(")
+
+        val rect = iridescenceArgs.split(", ").take(4).joinToString(", ")
+        assertTrue(
+            rect.split(", ").size == 4 && normalMapArgs.contains(rect),
+            "the normal-map draw does not take the iridescence draw's rect verbatim.\n" +
+                "  iridescence: $iridescenceArgs\n  normal map:  $normalMapArgs"
+        )
+
+        // THE RECT IS STILL THE SHEET'S SHAPE AT THE CALL SITE, not just in `ventWidthFor`. The
+        // two size arguments must be different expressions: passing the height to both is the
+        // pre-sheet square, which compiles, draws, and is the exact regression the extraction
+        // above exists to make visible. Swapping them rotates every plume 90 degrees, which is a
+        // shape a viewer has no way to know is wrong.
+        val (w, h) = rect.split(", ").drop(2)
+        assertTrue(
+            w != h,
+            "the vent's iridescence quad is drawn `$w` by `$h` — the same expression on both " +
+                "axes is the square the sheet replaced"
+        )
+        assertTrue(
+            body.contains("val $w = ventWidthFor("),
+            "the vent's quad width `$w` does not come from DiveRenderer.ventWidthFor, so the " +
+                "rect the tests above pin is not the rect being drawn"
+        )
+        assertTrue(
+            body.contains("val $h = Framing.AIR_POCKET_SIZE_METRES"),
+            "the vent's quad height `$h` is no longer Framing.AIR_POCKET_SIZE_METRES — the world " +
+                "size denotes the HEIGHT and the width follows the art, not the other way round"
+        )
+
+        // The same TEXTURE, from one lookup. Two calls to `OxygenSprite.normalFrame(frame)` would
+        // still be correct today and would be two places to get the frame index wrong tomorrow.
+        assertEquals(
+            iridescenceArgs.split(", ").last().trim(),
+            normalMapArgs.split(", ").first().trim(),
+            "the two draws pass different textures — they must share one local"
+        )
+
+        // No angle, and the centre origin on both. A vent has no facing (the sheet is authored
+        // upright and the analytic path takes no angle either), so this is what keeps the normal
+        // map's quad on top of the albedo's rather than a parameter anyone is meant to tune.
+        assertTrue(
+            normalMapArgs.contains("0f, CENTRE_ORIGIN, CENTRE_ORIGIN"),
+            "the normal-map draw must pass the same zero angle and centre origin as the " +
+                "iridescence quad — got: $normalMapArgs"
+        )
+
+        assertTrue(
+            body.contains("IridescentMaterial.VENT"),
+            "drawAirPockets no longer draws with IridescentMaterial.VENT — re-read this test"
+        )
+    }
+
+    /**
+     * `drawAirPockets`' source, comments stripped and whitespace collapsed.
+     *
+     * Comments first, exactly as `DrawTest`, `AnglerfishDisguiseTest` and `MainCameraOwnershipTest`
+     * do it: that method's KDoc explains at length why `equalAreaQuad` is absent, and a scan that
+     * read the prose would report the explanation as the offence.
+     */
+    private fun drawAirPocketsBody(): String
+    {
+        val stripped = File(RENDERER_SOURCE).readText()
+            .lineSequence()
+            .filterNot { val t = it.trimStart(); t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") }
+            .map { it.substringBefore("//") }
+            .joinToString("\n")
+
+        val start = stripped.indexOf("private fun drawAirPockets")
+        assertTrue(start >= 0, "no `private fun drawAirPockets` in $RENDERER_SOURCE any more — re-read this test")
+
+        val rest = stripped.substring(start + 1)
+        val end = Regex("\\n    (private|internal|fun|val|const) ").find(rest)?.range?.first ?: rest.length
+        return rest.substring(0, end)
+            .replace(Regex("\\s+"), " ")
+            .replace("( ", "(")
+            .replace(" )", ")")
+    }
+
+    /** The text between the parentheses of the first call whose text begins with [marker]. */
+    private fun argumentsOf(body: String, marker: String): String
+    {
+        val at = body.indexOf(marker)
+        assertTrue(at >= 0, "no `$marker` call in drawAirPockets any more — re-read this test")
+
+        var depth = 0
+        val open = at + marker.length - 1
+        for (i in open until body.length)
+        {
+            if (body[i] == '(') depth++
+            if (body[i] == ')')
+            {
+                depth--
+                if (depth == 0) return body.substring(open + 1, i)
+            }
+        }
+        throw AssertionError("unbalanced parentheses after `$marker` in drawAirPockets")
+    }
+
     private val shallowestCameraDepth = 0f - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MAX_FRACTION
 
     private val deepestCameraDepth = Tuning.MAX_DEPTH - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MIN_FRACTION
 
     private val deepestPaintedDepth = deepestCameraDepth + Framing.VISIBLE_DEPTH_METRES
+
+    private companion object
+    {
+        const val RENDERER_SOURCE = "src/main/kotlin/render/DiveRenderer.kt"
+    }
 }

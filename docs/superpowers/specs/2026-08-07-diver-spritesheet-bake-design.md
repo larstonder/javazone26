@@ -314,7 +314,9 @@ copied from the bake rather than retyped.
 - The diver's final on-screen size. Note this is *not* fully free: §5's table shows 512 still fits
   the 2048 bucket but 7×6-style layouts do not, so a size change should be re-run through the grid
   search rather than assumed cheap.
-- Any other sprite set — pearls, air pockets and the anglerfish are still primitives.
+- ~~Any other sprite set — pearls, air pockets and the anglerfish are still primitives.~~
+  **Superseded 2026-08-28.** The bake now takes a sprite set argument and `oxygen` is baked;
+  see §11. The anglerfish and the vents are still primitives.
 
 ### Two things the render-wiring branch must settle first
 
@@ -367,3 +369,71 @@ Claims that were checked and held: row-major `getTexture` (`x = index % hCells`,
 hCells`); exactly-even UV subdivision with no inset; the 2 px guard's sufficiency and ordering;
 one-union-bbox genuinely preventing jitter; alpha-weighted normal averaging; and the frame
 42→1 / 1→2 pixel counts (31 977 and 206 572, exact).
+
+---
+
+## 11. Generalisation to multiple sprite sets — 2026-08-28
+
+The bake was diver-shaped: two module-level source directories, two hard-coded output names, and
+every validation gate unconditional. A second set was a rewrite rather than a data edit.
+
+**A sprite set is now data** (`tools/spritesheet/sets.py`). A `SpriteSet` is an ordered list of
+`Layer`s over one shared frame index; `Layer.kind` (`diffuse` / `normal`) selects the resampling
+pipeline, the `TextureFormat` the printed Kotlin claims, and which gates run. `SPRITE_SETS` in
+`build_spritesheet.py` is the registry, and `[SET]` on the command line selects one.
+
+Two properties of the diver turned out to be per-set data rather than structure:
+
+- **A set need not have both layers.** `check_pairing` and `check_alpha_agreement` compare
+  consecutive layers, so a one-layer set skips them rather than failing them.
+- **A duplicate tail frame is not universal.** `dropped_tail_frames` is per-set; the flag that
+  overrides it is a no-op where it is 0, rather than a lie.
+
+`SpriteSet.bbox_layer` keeps the §6 rule — the union box comes from a NORMAL layer wherever one
+exists, because Pillow truncates a 16-bit diffuse and yields a box one pixel narrow.
+
+### The oxygen set
+
+96 frames from `assets/oxygen_sprites/`, 2000×2000, **normals only**: the blob's colour comes from
+`shaders/iridescence.frag` at draw time, so a diffuse sheet would occupy a layer of a 15-layer
+texture array to be sampled by nothing.
+
+That the source *is* a normal map was verified rather than assumed — it reads as an iridescent
+blob to the eye. `resample.mean_normal_length` gives **0.9997** under the sRGB-linearised decode
+against **1.1606** raw (the diver's normals measure 0.998 / 1.170), mean X is −0.0056 over a
+bilaterally symmetric shape, and 0 of 96 frames fail `check_normal_encoding` individually. On the
+baked sheet, per-texel correlation between offset-from-centroid and decoded normal is **+0.824**
+in X and **−0.812** in Y with **100%** of normals +Z — a clean viewer-facing dome, both signs
+matching the shipped diver sheet.
+
+All 96 frames are baked. Unlike the diver there is no duplicate tail: mean |Δ| between frame 96
+and frame 1 is 1.75, and the 96→1 centroid step is 5.07 px against a 5.83 px loop mean.
+
+### Frame height is a VRAM decision, and smaller is not always cheaper
+
+§9's VRAM note said the grid search "already minimises the bucket, which is the right lever;
+there is no better one available from the bake side." That is right but incomplete, and the
+missing half inverts the naive answer. `getOrCreateTextureArrayFor` reuses an array only when
+format, filter, wrapping and `maxMipLevels` match **and `max(w, h) > arraySize / 2`**.
+
+Everything the game ships today lands in the 2048 bucket, so 2048/SRGBA8 (240 MiB) and
+2048/RGBA8 (240 MiB) are already allocated and a new sheet landing there is **free**. Measured
+from `DEFAULT_CAPACITIES` in the 0.13.0 bytecode:
+
+| bucket | capacity (SRGBA8/RGBA8) | eager cost | oxygen at |
+|---|---|---|---|
+| 1024 | 50 | +200 MiB | 96 px — 984×768, fails the half-size test |
+| 2048 | 15 | **+0, shared** | 160–216 px |
+| 4096 | 10 | +640 MiB | 224–384 px |
+| 8192 | 5 | +1280 MiB | 448–768 px |
+
+**216 px is the ceiling on free**: 2002×1944 still clears `> 2048/2`. 224 px tips the grid search
+to a 6×16 layout 3584 px tall. Above 768 px, 96 cells do not fit in 8192² at all. The set is baked
+at 216 px, 11×9, 3 unused cells.
+
+### Verification
+
+Re-baking `diver` after the refactor produces **byte-identical** committed sheets — the
+reproducibility guarantee doubles as the regression test. Five mutants of the new behaviour
+(hard-coded tail drop, bbox from the first layer, shared QA directory, unconditional unused-cell
+note, wrong format per kind) were each killed by the suite, which is 114 tests, up from 107.

@@ -22,21 +22,36 @@
 // Vertex attributes — the shared unit quad, 0..1 in both axes.
 in vec2 vertexPos;
 
-// Instance attributes. Kept to five, and every one of them is asserted against this file's
-// text by IridescenceShaderTest: a vertex input whose declared type disagrees with the type
-// the renderer BINDS is undefined behaviour that raises no GL error and logs nothing — it is
-// exactly the defect that makes Surface.drawQuad rasterise at alpha 0 on macOS (render/Draw.kt).
+// Instance attributes. Every one of them is asserted against this file's text by
+// IridescenceShaderTest: a vertex input whose declared type disagrees with the type the renderer
+// BINDS is undefined behaviour that raises no GL error and logs nothing — it is exactly the
+// defect that makes Surface.drawQuad rasterise at alpha 0 on macOS (render/Draw.kt).
 in vec3 surfacePos;   // (x, y) = the object's CENTRE in this surface's own space, z = depth key
 in vec2 size;         // full width and height, in this surface's own units
 in vec3 filmParams;   // (thickness, amplitude, sheen) — the material, see IridescentMaterial
 in vec2 bodyParams;   // (centreOpacity, rimOpacity) — the opaque/translucent split
 in uint color;        // packed sRGB RGBA, exactly as SurfaceConfigInternal.setDrawColor writes it
 
+// The optional normal-map sheet: where its frame sits in the texture bank, and which slice.
+// Read STRAIGHT OFF the frame Texture by IridescenceRenderer.draw — SpriteSheet.onUploaded has
+// already folded both the atlas-page offset and the per-cell offset into these four floats, so
+// recomputing a cell rect here would apply it twice. See that file's class doc.
+in vec2 uvMin;
+in vec2 uvMax;
+in uint texHandle;    // GL_UNSIGNED_INT, so the packed bits survive glVertexAttribIPointer intact
+
 out vec4 vBase;       // the draw colour, converted to LINEAR (the space the surface stores)
 out vec2 vUv;         // 0..1 across the quad — the fake normal is built from this
 out vec2 vPos;        // this fragment's position in the surface's own space, for the light bearing
 out vec3 vFilm;
 out vec2 vBody;
+
+// The texture-bank address, split exactly as the engine's texture.vert splits it.
+out vec2 vTexStart;
+out vec2 vTexSize;
+out float vTexIndex;          // the array LAYER, or 65534 (= TextureHandle.NONE) for "no texture"
+flat out uint vSamplerIndex;  // FLAT: an integer index has no meaningful interpolation, and
+                              // interpolating one is a compile error in GLSL 330 anyway
 
 uniform mat4 viewProjection;
 
@@ -53,12 +68,34 @@ vec4 unpackAndConvert(uint rgba)
     return vec4(linearRgb, sRgba.a);
 }
 
+// Byte-for-byte the engine's own two helpers (renderers/texture.vert). Copied rather than
+// rewritten because they are the decode half of a packing that lives in Kotlin bytecode:
+// TextureHandle.create-FfHxNlQ(a, b) is `(a << 16) | b`, getSamplerIndex-impl is `ishr 16;
+// iand 65535` and getTextureIndex-impl is `iand 65535`. High 16 bits pick WHICH bound
+// sampler2DArray, low 16 bits pick the LAYER inside it.
+uint getSamplerIndex(uint textureHandle)
+{
+    return (textureHandle >> uint(16)) & ((uint(1) << uint(16)) - uint(1));
+}
+
+float getTexIndex(uint textureHandle)
+{
+    return float(textureHandle & ((uint(1) << uint(16)) - uint(1)));
+}
+
 void main()
 {
     vBase = unpackAndConvert(color);
     vUv   = vertexPos;
     vFilm = filmParams;
     vBody = bodyParams;
+
+    // texStart/texSize rather than min/max, because that is the form the fragment shader wants
+    // and the form the engine's own texture.frag and normal_map.frag both consume.
+    vTexStart     = uvMin;
+    vTexSize      = uvMax - uvMin;
+    vSamplerIndex = getSamplerIndex(texHandle);
+    vTexIndex     = getTexIndex(texHandle);
 
     // THE ORIGIN IS THE CENTRE, HARDCODED, and that is deliberate rather than a missing
     // feature. Every object this renderer draws — a pearl, the anglerfish's lure, a ring

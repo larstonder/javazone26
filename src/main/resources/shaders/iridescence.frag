@@ -1,6 +1,15 @@
-// ONE IRIDESCENT SURFACE, TWO MATERIALS: the opaque pearl and the translucent air bubble.
-// See render/IridescentMaterial.kt for the two parameter sets and render/IridescenceRenderer.kt
-// for how the same program ends up on two surfaces in two different coordinate spaces.
+// ONE IRIDESCENT SURFACE, SEVERAL MATERIALS: the opaque pearl, the translucent air bubble and the
+// oxygen vent's animated blob. See render/IridescentMaterial.kt for the parameter sets and
+// render/IridescenceRenderer.kt for how the same program ends up on two surfaces in two different
+// coordinate spaces.
+//
+// TWO WAYS TO GET A SHAPE, and exactly one place where they differ. A pearl and a bubble are
+// round, so their normal and their silhouette are derived analytically from the quad's UV. A vent
+// is a 96-frame blob with no closed form, so it brings a baked normal-map SPRITE SHEET and takes
+// both from that: RGB decoded as `rgb*2-1` for the normal, ALPHA for the coverage. One texture
+// does the whole job because the analytic hemisphere's `z` IS a normal map's blue channel — see
+// the block in main(). Everything after that block reads `n` and `edge` and nothing else, so the
+// optics below are one implementation and not two.
 //
 // #version 330 core — macOS caps OpenGL at 4.1. See iridescence.vert's header.
 //
@@ -51,11 +60,59 @@ in vec2 vUv;
 in vec2 vPos;
 in vec3 vFilm;
 in vec2 vBody;
+in vec2 vTexStart;
+in vec2 vTexSize;
+in float vTexIndex;
+flat in uint vSamplerIndex;
 
 out vec4 fragColor;
 
 /** The torch, in THIS surface's own space. World metres on `main`, screen pixels on `hud`. */
 uniform vec2 lightPos;
+
+/**
+ * The whole texture bank, bound in one go by IridescenceRenderer.onRenderBatch. Sixteen is the
+ * engine's own cap (TextureBank.MAX_TEXTURE_SLOTS = 16, from the ConstantValue attribute) and is
+ * the size both renderers/texture.frag and lighting/normal_map.frag declare.
+ */
+uniform sampler2DArray textureArrays[16];
+
+/**
+ * The sentinel a handle carries when there is no texture: TextureHandle.NONE is create(0, 65534),
+ * i.e. layer 65534, which is verbatim the `#define NO_TEXTURE 65534` the engine's texture.frag
+ * branches on. A null `normalTex` therefore takes the same path, through the same number, as an
+ * engine draw with no texture.
+ */
+#define NO_TEXTURE 65534.0
+
+// Dynamic indexing of a sampler array needs GLSL 400; this file is 330 core because macOS caps
+// OpenGL at 4.1 (see the header). So the index has to be a compile-time constant in every branch,
+// which is why the engine ships this switch and why it is copied here VERBATIM rather than
+// paraphrased — the two files must sample identically or a vent and the diver beside it would
+// disagree about mip selection.
+vec4 sampleTextureArrayGrad(int index, vec3 texCoords, vec2 ddx, vec2 ddy)
+{
+    switch (index)
+    {
+        case 0:  return textureGrad(textureArrays[0],  texCoords, ddx, ddy);
+        case 1:  return textureGrad(textureArrays[1],  texCoords, ddx, ddy);
+        case 2:  return textureGrad(textureArrays[2],  texCoords, ddx, ddy);
+        case 3:  return textureGrad(textureArrays[3],  texCoords, ddx, ddy);
+        case 4:  return textureGrad(textureArrays[4],  texCoords, ddx, ddy);
+        case 5:  return textureGrad(textureArrays[5],  texCoords, ddx, ddy);
+        case 6:  return textureGrad(textureArrays[6],  texCoords, ddx, ddy);
+        case 7:  return textureGrad(textureArrays[7],  texCoords, ddx, ddy);
+        case 8:  return textureGrad(textureArrays[8],  texCoords, ddx, ddy);
+        case 9:  return textureGrad(textureArrays[9],  texCoords, ddx, ddy);
+        case 10: return textureGrad(textureArrays[10], texCoords, ddx, ddy);
+        case 11: return textureGrad(textureArrays[11], texCoords, ddx, ddy);
+        case 12: return textureGrad(textureArrays[12], texCoords, ddx, ddy);
+        case 13: return textureGrad(textureArrays[13], texCoords, ddx, ddy);
+        case 14: return textureGrad(textureArrays[14], texCoords, ddx, ddy);
+        case 15: return textureGrad(textureArrays[15], texCoords, ddx, ddy);
+        default: return vec4(0.0);
+    }
+}
 
 /**
  * The camera's view direction. Constant for every fragment in this game — that is the whole
@@ -105,7 +162,13 @@ const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
  */
 const float BAND_AA = 2.2;
 
-/** Softens the silhouette over this fraction of the radius. Antialiasing, nothing more. */
+/**
+ * Softens the silhouette over this fraction of the radius. Antialiasing, nothing more.
+ *
+ * ANALYTIC PATH ONLY. A sprite sheet's alpha is already antialiased by the bake, so the textured
+ * path uses it as it is — running a second ramp over an already-ramped value is what would make
+ * the vent's edge harder than the pearls' rather than matching it.
+ */
 const float EDGE_SOFTNESS = 0.06;
 
 /**
@@ -118,21 +181,125 @@ const float MIN_COS_THETA = 0.12;
 
 void main()
 {
-    // ---- The faked normal --------------------------------------------------------------
+    // ---- The normal and the silhouette -----------------------------------------------------
+    //
+    // TWO SOURCES, THREE OUTPUTS. Everything below this block reads exactly three things — `n`,
+    // the surface normal, `z`, its out-of-screen component, and `edge`, this fragment's coverage —
+    // and it does not care which source produced them. That is the whole shape of this change: a
+    // normal-mapped vent and an analytic pearl differ HERE and nowhere else, so the interference,
+    // the sheen, the band antialiasing and the opaque/translucent split are one implementation
+    // serving both.
+    //
+    // ONE TEXTURE COVERS ALL THREE, and that is not a coincidence. A tangent-space normal map
+    // stores the out-of-screen component in BLUE, which is precisely the `z` the analytic path
+    // computes; and the coverage the analytic path gets from a smoothstep over the radius is what
+    // an antialiased sprite already stores in ALPHA. So `rimness = 1 - z` below is the same
+    // quantity in both paths and needs no branch of its own, and there is no second silhouette
+    // texture and no second sampler.
+    //
+    // ---- Analytic: the pearls and the HUD air-ring bubbles ---------------------------------
     // A unit hemisphere over the quad: dead-on at the centre, grazing at the rim. This is the
     // substitute for the geometry a 2D sprite does not have, and it is what gives the
     // interference something to vary ACROSS. It also gives the object its round silhouette —
     // a square iridescent pearl reads as a rendering fault, and the light these same pearls
     // EMIT is already a disc (render/LightEmitter.kt).
+    //
+    // COMPUTED UNCONDITIONALLY AND THEN OVERRIDDEN, rather than sitting in an `else`. Three
+    // reasons, in order of weight:
+    //  - It keeps `float z = sqrt(...)` and `vec3 n = vec3(p, z);` as top-level statements in
+    //    their original form. `PearlNormalMapTest` parses those two lines OUT OF THIS FILE to
+    //    check that the pearl's LIT shape (render/PearlNormalMap.kt, a generated texture on
+    //    gi_normal_map) is still the same hemisphere as its DRAWN shape. Two copies of a
+    //    hemisphere is the price of a BatchRenderer drawing to one surface; that test is what
+    //    stops the copies drifting, and burying these lines in a nested scope would have made it
+    //    fail — correctly, since it can no longer tell you which of the two is right.
+    //  - The analytic path is what `normalTex = null` means, and null is the default.
+    //  - It costs a length, a smoothstep and a sqrt on textured fragments. Against a texture
+    //    fetch, nothing.
     vec2 p = vUv * 2.0 - 1.0;
     float r = length(p);
 
     float edge = 1.0 - smoothstep(1.0 - EDGE_SOFTNESS, 1.0, r);
-    if (edge <= 0.0)
-        discard; // the quad's corners: no colour and, importantly, no depth write
-
     float z = sqrt(max(1.0 - r * r, 0.0));
     vec3 n = vec3(p, z);
+
+    if (vTexIndex != NO_TEXTURE)
+    {
+        // ---- Baked: an oxygen vent's normal-map sprite sheet -------------------------------
+        //
+        // The branch is uniform across every 2x2 derivative quad — vTexIndex comes from a
+        // per-INSTANCE attribute and a fragment's derivative neighbours (helper invocations
+        // included) belong to the same primitive, hence the same instance — so calling dFdx in
+        // here is well defined. The engine's own texture.frag takes the identical liberty.
+        //
+        // No fract() and no tiling term: this renderer has no tiling attribute, so the engine's
+        // `coord = texCoord * texTiling; tiled = fract(coord)` collapses to `vUv`. What remains
+        // is the engine's mapping byte for byte — a Texture is a SUB-RECT of an array layer, so
+        // the quad's 0..1 has to be remapped into [vTexStart, vTexStart + vTexSize] and the
+        // gradients scaled by vTexSize or the wrong mip level is selected.
+        vec2 ddx = dFdx(vUv) * vTexSize;
+        vec2 ddy = dFdy(vUv) * vTexSize;
+        vec2 uv  = vTexStart + vTexSize * vUv;
+        vec4 texel = sampleTextureArrayGrad(int(vSamplerIndex), vec3(uv, floor(vTexIndex)), ddx, ddy);
+
+        // RAW decode, and NO sRGB conversion anywhere. The sheet is uploaded as
+        // TextureFormat.RGBA8 (linear) precisely so the sampler hands back the baked bytes: this
+        // is a vector, not a colour, and `rgb/255*2-1` on the file's own pixels measures mean
+        // length 1.0000 (same as sprites/diver-normal.png). Sampling it as SRGBA8, or applying a
+        // transfer function here, would bend every component through a 2.4 power and leave a
+        // normal that is neither unit-length nor pointing where it was baked to point.
+        vec3 decoded = texel.rgb * 2.0 - 1.0;
+
+        // ---- THE GREEN CHANNEL IS NEGATED, AND THAT IS NOT A SIGN ERROR --------------------
+        //
+        // This shader's own space has +y pointing DOWN the screen: `vUv` is 0 at the top of the
+        // quad and 1 at the bottom (world y IS depth on `main`, and screen y is down on `hud`), so
+        // the analytic hemisphere above has n.y = +1 at its BOTTOM edge. Every normal map in this
+        // game is baked in the opposite, OpenGL convention — green HIGH where a surface faces
+        // UP-screen. Measured on the committed sheets, mean green at the topmost against the
+        // bottommost opaque texel of each column:
+        //
+        //     sprites/oxygen-normal.png    216.4 top / 33.4 bottom   (n = 1917 columns)
+        //     sprites/diver-normal.png     195.7 top / 71.9 bottom   (n = 1577 columns)
+        //     backdrop/rock-top-normal.png 188   top / 98   bottom   (PearlNormalMap's own probe)
+        //
+        // The RED channel needs no flip and is measured as the control: 24.9 at the leftmost
+        // opaque texel against 221.0 at the rightmost, i.e. +x is right-screen in the bake exactly
+        // as it is in `p`.
+        //
+        // render/PearlNormalMap.kt applies the SAME negation in the other direction and its class
+        // doc has the two-build probe behind it — a wrongly signed y there was invisible in a
+        // still frame and measured 2.5x weaker once found, so this is precisely the kind of sign
+        // that must be measured rather than reasoned about. Getting it wrong here lights the vent
+        // from below when the torch is above it.
+        decoded.y = -decoded.y;
+
+        // Renormalise, as lighting/normal_map.frag does: bilinear filtering between two texels
+        // shortens the interpolated vector, and dot(n, h) below assumes unit length. (The raw
+        // decode is already unit to 4 decimal places — mean length 1.0000 over 217715 opaque
+        // texels of the vent sheet — which is the same measurement that proves the sheet must be
+        // uploaded as a LINEAR format; sampling it as SRGBA8 would bend every component through a
+        // 2.4 power and this length would not be 1.)
+        //
+        // The guard is for the degenerate texel (128, 128, 128), which decodes to exactly
+        // (0, 0, 0) and would make the division produce NaN — and a NaN here propagates through
+        // the film out to fragColor, where it is a hole in the sprite rather than a subtly wrong
+        // shade.
+        float len = length(decoded);
+        n = len > 1e-4 ? decoded / len : vec3(0.0, 0.0, 1.0);
+        z = n.z;
+
+        // THE ALPHA IS USED AS IT IS — deliberately not run through the analytic path's
+        // smoothstep. The bake already antialiases the silhouette (2 px of fully transparent
+        // margin, ~4% of texels at partial coverage), so a second ramp over an already-ramped
+        // value would eat the soft rim it exists to preserve and give the blob a harder edge than
+        // a pearl has.
+        edge = texel.a;
+    }
+
+    if (edge <= 0.0)
+        discard; // the quad's corners, or the sheet's transparent margin: no colour and,
+                 // importantly, no depth write
 
     // ---- The light bearing ---------------------------------------------------------------
     // Normalised IN-PLANE first, then elevated, so nothing below depends on the distance to
@@ -204,6 +371,9 @@ void main()
     //
     // The ring is the game's ONLY air warning (render/Hud.kt), so this deliberately keeps a
     // solid translucent BODY rather than hollowing the bubble out into an outline.
+    // `z` is the normal's out-of-screen component either way — the analytic hemisphere's sqrt or
+    // the sheet's decoded BLUE channel — so this line is untouched by the textured path and means
+    // the same thing in it: 0 facing the camera, 1 at a silhouette edge.
     float rimness = 1.0 - z;
     float alpha = vBase.a * mix(vBody.x, vBody.y, rimness) * edge;
 

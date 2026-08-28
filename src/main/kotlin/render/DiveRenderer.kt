@@ -20,7 +20,10 @@ import kotlin.math.sqrt
  *   backdrop  = [Backdrop]'s parallax silhouettes, albedo only (they are flat masks)
  *   pearl     = the iridescence shader over a small quad
  *   zones     = flat horizontal bands
- *   air vents = untextured quads, still waiting for their own art
+ *   air vents = the same iridescence shader, but shaped by [OxygenSprite]'s 96-frame baked
+ *               normal sheet instead of the analytic hemisphere — and that sheet goes to GI's
+ *               `gi_normal_map` as well, so a vent is the third object here submitting one
+ *               world rect to two surfaces
  *
  * EVERYTHING HERE IS IN WORLD METRES, +x right, +y down, and world y IS depth. There is no
  * coordinate maths left in this file at all: [CameraRig] writes `engine.gfx.mainCamera` once
@@ -396,7 +399,7 @@ object DiveRenderer
         else drawSurfaceLine(surface, worldLeft, worldRight)
 
         drawColumnWalls(surface, cam, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
-        drawAirPockets(surface, sim, cam)
+        drawAirPockets(surface, sim, cam, iridescence, normalMaps)
         drawPearls(surface, sim, cam, iridescence, normalMaps)
         drawAnglerfish(surface, sim, cam, iridescence, normalMaps)
         drawDiver(surface, sim, cam, normalMaps, aimDegrees)
@@ -1071,17 +1074,129 @@ object DiveRenderer
     }
 
     /**
+     * A VENT'S DRAWN WIDTH, from the height the world gives it.
+     *
+     * Extracted for the reason [bodyVerticalTiles] is: it is the one number in [drawAirPockets]
+     * that can be wrong without looking wrong. [OxygenSprite]'s cell is 182x216 — 0.843:1, TALLER
+     * than wide — so a vent that adopts the art is NARROWER than the 2.4 m square it replaced. A
+     * call site that handed [Framing.AIR_POCKET_SIZE_METRES] to both axes, which is exactly what
+     * this method did before the sheet existed, would stretch every frame of the plume sideways
+     * by 19%. Nobody spots that on an animated blob they have never seen undistorted, and no
+     * still frame shows it at all.
+     *
+     * It DELEGATES to [OxygenSprite.widthForHeight] rather than restating `height * FRAME_ASPECT`.
+     * The aspect is measured off the committed PNG in one place (`OxygenSpriteTest` re-derives it
+     * from the IHDR), and a second derivation here would be a second thing to keep in step with a
+     * re-bake — the same rule the copied argument lists in this file are written under.
+     */
+    internal fun ventWidthFor(heightMetres: Float) = OxygenSprite.widthForHeight(heightMetres)
+
+    /**
+     * The square a vent is culled against: the LARGER of its two sides, exactly as [drawCrest]
+     * does and for the same reason — [showsSquare] takes one size, and the only safe direction to
+     * be wrong in is to keep an object that is off frame.
+     *
+     * `max` rather than the bare height [drawDiver] passes, even though the two are the same
+     * number today. The diver's height is larger than his width by the geometry of a human figure;
+     * a vent's is larger by a ratio that lives in a PNG, and a re-bake at a wider frame would
+     * silently start clipping vents at the left and right edges of the screen. `max` costs one
+     * compare and cannot be invalidated by an art change.
+     *
+     * It also has to cover BOTH shapes this method draws: the textured rect above, and the
+     * `heightMetres` square the fallback keeps. It does, exactly — the fallback square IS the
+     * larger side on both axes.
+     */
+    internal fun ventCullSizeFor(heightMetres: Float) = max(heightMetres, ventWidthFor(heightMetres))
+
+    /**
      * Air vents. Drawn before pearls so a pearl sitting on top of one stays readable, and
      * dimmed rather than hidden once spent — knowing where a used vent was is what lets a
      * player plan the next dive around it.
+     *
+     * ## The live/spent distinction is still a DRAW COLOUR, and that is why [IridescentMaterial]
+     * carries none
+     *
+     * `setDrawColor` is unchanged from when this was a flat quad: `IridescenceRenderer.draw`
+     * packs the surface's current draw colour into the instance and the shader modulates by it,
+     * so [IridescentMaterial.VENT] describes a film and a substrate weight and never a hue. One
+     * vent per dive is gameplay (`dive/AirPocket.kt`), and a player has to be able to see at a
+     * glance which ones they have already spent.
+     *
+     * ## NO [IridescenceRenderer.equalAreaQuad] HERE, AND ITS ABSENCE IS DELIBERATE
+     *
+     * [drawPearlSurface] and `Hud.drawAirRing` both grow their quad by that factor because the
+     * ANALYTIC path inscribes a disc in the quad and loses `1 - pi/4` of its area. A vent does not
+     * take that path: its silhouette comes from the sheet's ALPHA, which already fills its cell to
+     * within the 2 px transparent margin the bake leaves on each side (measured — see
+     * [OxygenSprite]'s class doc, where that margin exists to stop the LINEAR filter reaching into
+     * the neighbouring frame). Applying the compensation to a shape that is already full would
+     * oversize the plume by about 12% in each axis and, worse, put the vent's drawn size out of
+     * step with `Tuning.AIR_POCKET_PICKUP_RADIUS` — art you can visibly swim into without getting
+     * the breath.
+     *
+     * ## The fallback is today's square, never a missing vent
+     *
+     * Two independent things can be absent, and both are ordinary rather than exceptional. The
+     * renderer is null on frame one (the engine defers `addRenderer`'s init by a frame) and would
+     * be null again if the shader failed to compile; the sheet is absent for the several frames
+     * the asynchronous upload takes, and [OxygenSprite.normalFrame] before that THROWS rather than
+     * returning null. Either way the vent degrades to the flat 2.4 m square it has always been —
+     * the same doctrine [drawDiver] and [drawPearlSurface] follow, because an exception in front
+     * of a queue is the one outcome the cabinet cannot have.
      */
-    private fun drawAirPockets(surface: Surface, sim: DiveSim, cam: Camera)
+    private fun drawAirPockets(
+        surface: Surface,
+        sim: DiveSim,
+        cam: Camera,
+        iridescence: IridescenceRenderer?,
+        normalMaps: NormalMapRenderer?
+    )
     {
-        val size = Framing.AIR_POCKET_SIZE_METRES
-        sim.airPockets.forEach { pocket ->
-            if (!cam.showsSquare(pocket.x, pocket.depth, size)) return@forEach
+        val height = Framing.AIR_POCKET_SIZE_METRES
+        val width = ventWidthFor(height)
+        val cullSize = ventCullSizeFor(height)
+
+        // Resolved ONCE for the whole frame, and sheetsReady() is called unconditionally rather
+        // than short-circuited behind the null test. It is not a pure predicate: it counts
+        // consecutive misses and logs exactly one WARN after ten seconds of them, so asking it
+        // only on the frames where the renderer happens to exist — or once per vent instead of
+        // once per frame — would make that budget depend on something it is not measuring.
+        //
+        // Kept as a nullable local rather than a Boolean so the branch below smart-casts; a
+        // Boolean flag would leave `iridescence` nullable at the call and buy nothing.
+        val sheetReady = OxygenSprite.sheetsReady()
+        val textured = if (sheetReady) iridescence else null
+
+        sim.airPockets.forEachIndexed { index, pocket ->
+            if (!cam.showsSquare(pocket.x, pocket.depth, cullSize)) return@forEachIndexed
+
             surface.setDrawColor(if (pocket.usedThisDive) airPocketSpentColor else airPocketColor)
-            surface.fillRectCentred(pocket.x, pocket.depth, size, size)
+
+            if (textured == null)
+            {
+                surface.fillRectCentred(pocket.x, pocket.depth, height, height)
+                return@forEachIndexed
+            }
+
+            // THE INDEX IS WHY TWO VENTS DO NOT THROB IN LOCKSTEP. One shared phase drives every
+            // vent and [OxygenSprite.phaseOffsetFor] spreads them by the golden ratio, so the
+            // Kelp's vent and the Twilight's — which can be on screen together on a 55 m view —
+            // are at different points of the same four-second loop. Driving them off the bare
+            // phase would read as one mechanism blinking rather than three columns of air.
+            val frame = OxygenSprite.currentFrameFor(index)
+            val normal = OxygenSprite.normalFrame(frame)
+
+            textured.draw(pocket.x, pocket.depth, width, height, IridescentMaterial.VENT, normal)
+
+            // The copied argument list. Same texture, same rect, same (absent) angle, same
+            // origin — see [drawDiver], whose doc has why deriving these twice is the shape of a
+            // shipped bug. The shader takes the vent's SHAPE from this texture's alpha, so a
+            // normal map that disagreed with it by even a fraction of a metre would light a
+            // silhouette that is not where the picture's is.
+            normalMaps?.drawNormalMap(
+                normal,
+                pocket.x, pocket.depth, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN
+            )
         }
     }
 

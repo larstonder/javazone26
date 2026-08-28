@@ -141,7 +141,29 @@ object Framing
      */
     const val DIVER_HEIGHT_METRES = 9f
     const val PEARL_SIZE_METRES = 1.2f
-    const val AIR_POCKET_SIZE_METRES = 2.4f
+
+    /**
+     * The vent's drawn HEIGHT — its width follows from the art through
+     * [OxygenSprite.widthForHeight], because the sheet's cells are 0.843:1 rather than square.
+     *
+     * SCALED 1.5x FROM 2.4 m on the owner's call, after seeing the animated blob on a real frame.
+     * Three things move with it and none of them needed a second edit, which is the point of it
+     * being one number: the `gi_normal_map` submission (same rect, copied argument list), the
+     * cull square ([DiveRenderer.ventCullSizeFor]), and the `O2` label, whose font size and
+     * offset are both fractions of this ([VentLabel.fontSizeFor]) so the label keeps its
+     * proportion on the blob instead of needing to be re-tuned alongside it.
+     *
+     * WHAT DOES NOT MOVE WITH IT IS `Tuning.AIR_POCKET_PICKUP_RADIUS`, and that is deliberate —
+     * it is GAMEPLAY, it is measured, and its KDoc records that growing it is free in the sweep
+     * and still wrong (a vent is consumed on contact, so extra reach makes it easier to BURN one
+     * by brushing past on a full breath). So this widens the gap between "the diver's silhouette
+     * is touching the plume" and "the breath is taken": the diver's own half-height is 4.5 m
+     * against a 4 m radius, and the vent's half-height goes 1.2 m -> 1.8 m, so the overlap window
+     * grows from 1.7 m to 2.3 m of centre distance. `OxygenSpriteTest` still passes because the
+     * vent's own corner reach (2.35 m) stays well inside the 4 m radius — the blob is entirely
+     * within the zone that picks it up, which is the invariant that actually matters.
+     */
+    const val AIR_POCKET_SIZE_METRES = 3.6f
 
     /** Where the camera would sit if it tracked the diver exactly. */
     fun targetCameraDepth(diverDepth: Float) = diverDepth - VISIBLE_DEPTH_METRES * DIVER_SCREEN_FRACTION

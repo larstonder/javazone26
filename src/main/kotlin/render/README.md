@@ -255,6 +255,7 @@ whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min`
 | File | Owns |
 |---|---|
 | `Hud.kt` | BANKED, HELD, the air bubble ring, the depth tape, the clock. Pure screen space: it is *handed* the diver's screen position and a pixels-per-metre scale and owns no camera. |
+| `VentLabel.kt` | The faint `O2` written across each oxygen vent. On the **HUD** surface (text, and GI must not decide how faint it is) but anchored to **world** positions through `worldPosToScreenPos`, so unlike `Hud.kt` it is handed the world camera. Its font size comes from the vent's own on-screen height, not from the screen's - so the label holds its proportion to the blob at every aspect and through every camera ease. |
 
 ### Dev tools
 

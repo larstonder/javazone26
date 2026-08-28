@@ -3,18 +3,21 @@ Placing resampled frames into the uniform grid.
 
 SpriteSheet subdivides UVs exactly evenly - uMin = u0 + x*(1/hCells)*(u1-u0), with no
 half-texel inset anywhere in the engine - so the inset has to be baked into the
-pixels. Content touches the union bbox on all four sides in the real art (frame 3's
-normal reaches x=803, frame 24 the left edge, all 41 the top, frame 35 the bottom),
-so without a guard the diver picks up a sliver of its neighbour under LINEAR
-filtering.
+pixels. Content touches the union bbox on all four sides in the real art (in the
+diver's: frame 3's normal reaches x=803, frame 24 the left edge, all 41 the top,
+frame 35 the bottom), so without a guard a frame picks up a sliver of its neighbour
+under LINEAR filtering. That is a property of taking a UNION box over a moving
+silhouette, not of any one sprite set - some frame is against each edge by
+construction.
 """
 import numpy as np
 
 from .geometry import Grid
 
-# 2 px in DESTINATION space, applied after scaling. At the bake's 5.16x downscale a
-# Lanczos kernel's support is sub-pixel here, and the GPU reaches +/-0.5 texel, so
-# 2 px leaves a full clear texel of margin.
+# 2 px in DESTINATION space, applied after scaling. Every set baked so far is a large
+# downscale - 5.16x for the diver, 8.22x for oxygen - so a Lanczos kernel's support is
+# sub-pixel here, and the GPU reaches +/-0.5 texel: 2 px leaves a full clear texel of
+# margin. A set added at close to 1:1 would want this re-checked rather than assumed.
 GUARD_PX = 2
 
 

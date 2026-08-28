@@ -36,11 +36,13 @@ import render.LightEmitter
 import render.MoteSprite
 import render.Motes
 import render.OpaqueWaterEffect
+import render.OxygenSprite
 import render.PearlNormalMap
 import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
 import render.Sky
+import render.VentLabel
 import render.WaterRenderer
 import render.WaterSurface
 import render.drawTextWithOutline
@@ -543,6 +545,19 @@ object ScreenText
     const val TITLE = "ÉN PUST TIL"
     const val LEADERBOARD_HEADING = "TODAY'S DIVERS"
 
+    /**
+     * The label written faintly across every oxygen vent — see [render.VentLabel] for where it
+     * is drawn and why it is on the HUD surface rather than in the world.
+     *
+     * "O2", WITH AN ASCII DIGIT, AND NOT "O₂". U+2082 SUBSCRIPT TWO is far outside the default
+     * font's baked U+0020..U+011F atlas, and a code point outside that atlas draws as nothing
+     * at all — no glyph and no x-advance, silently (see [DefaultFont]). The typographically
+     * correct form would therefore have shipped a vent labelled "O", with nothing anywhere
+     * saying so. It is in [all] below so `AttractScreenTest` sweeps it, which is what turns a
+     * later tidy-up to the subscript form into a failed build rather than a booth defect.
+     */
+    const val VENT_OXYGEN = "O2"
+
     // PRESS_START, PLAY_AGAIN and INITIALS_HELP used to live here as literals. They named
     // buttons that application.cfg can rebind, so the screen could lie; PLAY_AGAIN and
     // INITIALS_HELP also named a keyboard key AND a gamepad button in one breath, which is
@@ -616,6 +631,7 @@ object ScreenText
         SEPARATOR,
         TITLE,
         LEADERBOARD_HEADING,
+        VENT_OXYGEN,
         UNMAPPED_JOYSTICK_WARNING,
         PAUSED_TITLE,
         MENU_TITLE,
@@ -1436,12 +1452,18 @@ class EnPustTil : PulseEngineGame()
 
         logGamepadDiagnostics()
 
-        // The game's only loaded asset. Queued here rather than at field-init time for the same
+        // The diver's art. Queued here rather than at field-init time for the same
         // reason `sim` is: `engine` is not usable before onCreate. `AssetManager.load` only
         // appends to a queue — the GL upload happens some frames later — so DiveRenderer draws a
         // fallback rectangle until DiverSprite.sheetsReady() turns true, and complains in the log
         // if it never does.
         DiverSprite.load(engine)
+
+        // The oxygen vents' plume: one normal-map-only sheet, no diffuse, because a vent's colour
+        // comes from `setDrawColor` at the draw site (live vents and spent ones differ by nothing
+        // else). Same queue, same asynchronous upload, same degradation — DiveRenderer draws the
+        // flat 2.4 m square the vents shipped as until OxygenSprite.sheetsReady() turns true.
+        OxygenSprite.load(engine)
 
         // The column's own art: the tiling cliff face on both walls, and the parallax
         // silhouettes behind the water. Same queue and the same asynchronous upload, so both
@@ -1603,7 +1625,24 @@ class EnPustTil : PulseEngineGame()
         // lives in the pure, exhaustive `when` next to the states it talks about, so a seventh
         // state is a compile error there instead of silently getting "sprite frozen" here.
         if (lifecycle.spriteAnimates)
+        {
             DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
+
+            // The vents' plume, on the same clock and in the same gate. THE FIXED TICK IS THE
+            // POINT: OxygenSprite.loopPhase is the only thing that moves the sheet, so a frame
+            // where nobody calls this is a frame where all three vents are a still image — the
+            // failure is a silent one, since a normal-map-only sheet that never advances still
+            // draws a perfectly plausible blob.
+            //
+            // Same gate, but for a different reason than the diver's. The diver animates in IDLE
+            // because attract mode wants a diver kicking in place without DiveSim burning his
+            // air; a vent is scenery and simply has no run state to be out of step with (see
+            // OxygenSprite.loopPhase — it is deliberately NOT reset per run, unlike the diver's).
+            // What the two do share is PAUSED, the one state spriteAnimates is false for, and a
+            // paused game whose plumes kept breathing would read as a broken pause rather than a
+            // living world.
+            OxygenSprite.advanceLoop(engine.data.fixedDeltaTime)
+        }
 
         // CAMERA EASING RUNS ON THE FIXED TICK, NOT THE RENDER CLOCK. It used to be the other
         // way round, and CLAUDE.md used to describe that as deliberate presentation-side
@@ -2040,6 +2079,23 @@ class EnPustTil : PulseEngineGame()
             RunLifecycleState.PLAYING ->
             {
                 Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+
+                // THE VENTS' "O2" LABELS, AND WHY THEY ARE ISSUED FROM HERE.
+                //
+                // They are text, so they are on the HUD surface (GI multiplies `main`, and a
+                // "faint" label at the mercy of the torch is not a chosen value) — but they are
+                // pinned to WORLD positions, so they need the camera and the pixels-per-metre
+                // that were taken from THIS frame's matrix a few lines above. This method is the
+                // only place both of those exist at once. See VentLabel's class doc.
+                //
+                // Repeated per state alongside Hud.render rather than hoisted above the `when`,
+                // and for the same reason Hud.render is: IDLE and BRIEFING draw an attract screen
+                // over live water, and a scatter of labels behind the title, the call to action
+                // and the leaderboard is noise competing with the one thing those screens exist
+                // to say. The label is part of the in-run readout, so it appears exactly where
+                // the in-run readout does.
+                VentLabel.render(hud, sim, worldCamera, pixelsPerMetre, h)
+
                 Hud.renderControlLegend(hud, hintLegend, w, h)
             }
 
@@ -2054,6 +2110,7 @@ class EnPustTil : PulseEngineGame()
                 else
                 {
                     Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+                    VentLabel.render(hud, sim, worldCamera, pixelsPerMetre, h)
                     // Included deliberately. drawPauseScreen's own comment says a complete HUD
                     // behind the scrim - "a stopped clock and a full ring of bubbles" - is the
                     // clearest statement that the run is being HELD, not ended. A legend that
@@ -2066,12 +2123,14 @@ class EnPustTil : PulseEngineGame()
             RunLifecycleState.RUN_OVER ->
             {
                 Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+                VentLabel.render(hud, sim, worldCamera, pixelsPerMetre, h)
                 drawRunOverScreen(hud, w, h)
             }
 
             RunLifecycleState.ENTER_INITIALS ->
             {
                 Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
+                VentLabel.render(hud, sim, worldCamera, pixelsPerMetre, h)
                 drawInitialsEntryScreen(hud, w, h)
             }
         }
