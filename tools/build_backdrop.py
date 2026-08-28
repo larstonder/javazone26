@@ -790,7 +790,7 @@ def bake_rock_top(width: int, height: int, gain: float, ambient: np.ndarray) -> 
     }
 
 
-def bake_sandbank(gain: float, ambient: np.ndarray) -> dict:
+def bake_sandbank() -> dict:
     """
     The seabed at the foot of the trench: 2000x500, committed at its SOURCE SIZE.
 
@@ -804,16 +804,39 @@ def bake_sandbank(gain: float, ambient: np.ndarray) -> dict:
     geometry.CAPACITIES: a 1024-bucket output would allocate 209.7 MB per format, a
     4096-bucket output 671.1 MB.
 
-    IT INHERITS THE WALL'S GAIN AND AMBIENT, exactly as `bake_rock_top` does and for the
-    same reason (that function's decision 2). Solving a second gain against the sandbank's
-    own mean would give the seabed a different transfer function from the cliff it butts
-    against at BOTH frame edges, and a brightness step along a join between two lit
-    surfaces drawn edge to edge is a horizontal line across the picture. Inheriting
-    preserves the relative brightness the artist authored between the two renders - sand
-    stays brighter than stone, because it is brighter in the source - and introduces no
-    new tunable. `crop_body` is NOT a second precedent for this: it takes the wall's
-    already-lifted OUTPUT arrays and inherits the lift by construction, never through a
-    parameter.
+    NO LIFT. THIS USED TO INHERIT THE WALL'S GAIN AND AMBIENT (the design's §4.6), on the
+    reasoning `bake_rock_top` uses for the same inheritance (that function's decision 2):
+    solving a second gain against the sandbank's own mean would give the seabed a
+    different transfer function from the cliff it butts against at BOTH frame edges, and a
+    brightness step along a join between two lit surfaces drawn edge to edge is a
+    horizontal line across the picture. That reasoning is sound for the CREST and TOP,
+    which are cropped from or share statistics with the wall - it is wrong here, and
+    measurement is what overruled it, not taste.
+
+    The wall's gain (~3.639) was solved so the CLIFF's mean linear length lands on
+    `luminance_factor * wallColor` - the cliff source is dark. Applied to the sand source
+    (measured on `assets/sandbank/diffuse.png`: linear length min 0.5484, median 0.6904,
+    max 0.8413 over its opaque texels) that gain saturates every channel: the first baked
+    sheet, produced this way and committed, measured **99.999% pure (255,255,255)** over
+    all 830 173 opaque texels - every dune, every shading gradient, gone. The reflectance
+    GATE below did not catch it because saturated-white clears the floor trivially; it was
+    never a floor problem.
+
+    And the sand was never AT RISK of the floor problem the lift exists to solve: its
+    UNLIFTED minimum linear length is 0.5484, **27.4x** `reflectance.GI_REFLECTANCE_FLOOR`
+    (0.02). The lift's whole job is rescuing texels that would otherwise fall under that
+    floor - compare the wall's own unlifted min of 0.00334, `reflectance.py`'s module doc -
+    and a texel that starts 27x above the floor has nothing to be rescued from. So the
+    join-brightness argument that justifies inheriting the lift for the CREST and TOP
+    argues, applied honestly to a source this much brighter than the wall, for not lifting
+    the sand at all: the gain that keeps the join from stepping on a dark art is not the
+    gain that keeps the join from stepping on a bright one, because "no step" was never
+    what solve_gain optimises for - `luminance_factor * wallColor` is, and the sand was
+    never trying to reach that target in the first place.
+
+    `crop_body` is still not a precedent either way: it takes the wall's already-lifted
+    OUTPUT arrays and inherits the lift by construction, never through a parameter, so it
+    says nothing about whether an INDEPENDENT source like the sandbank should take one.
 
     NO `clear_wrap_border`, AND THAT IS DELIBERATE. The mechanism that function exists for
     is real here too - `texture.frag` resolves `uv = texStart + texSize * fract(texCoord *
@@ -850,28 +873,32 @@ def bake_sandbank(gain: float, ambient: np.ndarray) -> dict:
     alpha = diffuse[..., 3] / 255.0
     opaque = alpha > 0.5
 
+    # NO LIFT - see this function's docstring. `linear_to_srgb(srgb_to_linear(x)) == x` up
+    # to float rounding, so this round trip is not a no-op for tidiness: it puts the sand
+    # through the exact same sRGB<->linear path the wall's texels take, so the "measure
+    # what was actually WRITTEN" step below is measuring the real 8-bit output, not the
+    # source bytes copied past it.
     linear = srgb_to_linear(diffuse[..., :3] / 255.0)
-    lifted = reflectance.lift(linear, ambient, gain)
-    diffuse_out = np.dstack([to_u8(linear_to_srgb(lifted)), diffuse[..., 3]])
+    diffuse_out = np.dstack([to_u8(linear_to_srgb(linear)), diffuse[..., 3]])
 
     # Measure what was actually WRITTEN, after the 8-bit sRGB round trip - the shader sees
     # the quantised values, not the floats above.
     written = srgb_to_linear(diffuse_out[..., :3] / 255.0)
     lengths = reflectance.linear_length(written[opaque])
     below = int((lengths < reflectance.GI_REFLECTANCE_FLOOR).sum())
-    print(f"         reflectance: the WALL's gain {gain:.3f} and ambient "
-          f"(|.| {reflectance.linear_length(ambient):.5f}), so the join cannot step")
+    print(f"         reflectance: no lift applied (see this function's docstring); "
+          f"the gate below runs on the source's own unlifted linear length")
     print(f"         baked   linear length min {lengths.min():.5f} "
           f"median {np.median(lengths):.5f} max {lengths.max():.5f}; "
           f"{below} of {lengths.size} texels under the {reflectance.GI_REFLECTANCE_FLOOR} floor")
     print(f"         baked   mean luminance {reflectance.luminance(written[opaque]).mean():.5f}")
     if below:
         raise SourceError(
-            f"{below} baked SAND texels are still under the GI reflectance floor. The "
-            f"sandbank inherits the wall's lift (see this function's docstring), so the "
-            f"only lever is AMBIENT_FRACTION - which raises the cliff, the crest and the "
-            f"body too. If that is not acceptable, the inherit decision is what has to be "
-            f"reopened, not this threshold."
+            f"{below} baked SAND texels are under the GI reflectance floor with NO lift "
+            f"applied. The sandbank no longer inherits the wall's gain and ambient (see "
+            f"this function's docstring - the wall's gain saturated the sand to white), "
+            f"so there is no lever left in this function at all: the source art itself is "
+            f"too dark and needs repainting, or the no-lift decision has to be reopened."
         )
 
     # --- Normals ------------------------------------------------------------------------
@@ -989,10 +1016,11 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     # gain and ambient are inherited exactly rather than solved again. See crop_body.
     body = crop_body(rock["diffuse"], rock["normal"])
     layers = bake_silhouettes(silhouette_max)
-    # The WALL's gain and ambient, an explicit parameter pair, exactly as bake_rock_top
-    # receives them one line above. See bake_sandbank's docstring for why the seabed does
-    # not solve a gain of its own.
-    sand = bake_sandbank(rock["gain"], rock["ambient"])
+    # NO gain, NO ambient - unlike bake_rock_top one line above, which does take the
+    # wall's pair. See bake_sandbank's docstring: the sand's source measures 27.4x the GI
+    # reflectance floor unlifted, so the wall's gain (solved for a much darker source) had
+    # nothing to rescue and only saturated it to white.
+    sand = bake_sandbank()
 
     # The shared fingerprint, over the ROCK and SILHOUETTE sources only. The sandbank is
     # deliberately OUTSIDE it - see sand_meta below - so adding assets/sandbank/*.png here
