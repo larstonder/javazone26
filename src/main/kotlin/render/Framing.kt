@@ -35,6 +35,39 @@ object Framing
     const val VISIBLE_DEPTH_METRES = 60f
 
     /**
+     * The deepest world depth the FRAME is allowed to paint: 184.9296 m, the bottom edge of
+     * the sandbank's quad. [DiveCamera] clamps its own depth so that `depth + visibleDepth`
+     * never passes it, which is what stops the last stretch of the dive scrolling into a
+     * void below the seabed.
+     *
+     * ## WHY THE NUMBER LIVES HERE AND NOT ON `SandBank`
+     *
+     * [DiveCamera] is pure Kotlin with no engine imports, and that is what makes the whole
+     * camera unit-testable without a GL context. `SandBank` is an object full of engine
+     * `Texture` descriptors. Having the camera read `SandBank.QUAD_BOTTOM_DEPTH` would work
+     * — but only BY ACCIDENT: it is a `const val`, so the compiler folds the literal in and
+     * `SandBank` is never class-loaded. Demote it to `val` — a plausible, innocuous-looking
+     * edit — and `DiveCameraTest` starts trying to construct textures in a headless JVM.
+     *
+     * This file is already the home of "the set of numbers that say how much of the column a
+     * player can see", and how deep the frame may descend is exactly that kind of number.
+     * [DiveCamera] already reads [VISIBLE_DEPTH_METRES], [DIVER_MIN_FRACTION],
+     * [DIVER_MAX_FRACTION], [CAMERA_SMOOTHING] and [targetCameraDepth], so this adds no new
+     * dependency edge at all.
+     *
+     * `SandBank.QUAD_BOTTOM_DEPTH` stays DERIVED FROM THE ART, and `SandBankTest` asserts
+     * the two agree to 1e-3 m — that is what keeps the art the anchor while the camera reads
+     * a pure constant.
+     *
+     * IT MUST STAY `const val`, for the same reason every other constant in this file is:
+     * this file itself already depends on that mechanism ([VISIBLE_WIDTH_METRES] is
+     * `2f * RockFace.BODY_INNER_HALF_WIDTH`, and `RockFace` is as engine-typed as `SandBank`
+     * — headless-safe only because that whole chain folds at compile time). The point of
+     * putting the floor here is that the reliance does not spread to a second file.
+     */
+    const val SEA_FLOOR_DEPTH = 184.9296f
+
+    /**
      * The MOST water that may be visible horizontally: the play column plus exactly one cliff at
      * each side, 98.516 m.
      *

@@ -97,6 +97,35 @@ object DiverSprite
     const val FRAME_ASPECT = FRAME_TEXELS_WIDE.toFloat() / FRAME_TEXELS_TALL.toFloat()
 
     /**
+     * The deepest opaque texel row of ANY of the 41 frames, at the `alpha > 16` threshold
+     * the rest of this project measures with. Min 374, mean 378.8, max 381 — and it is the
+     * MAX that matters, because the seabed must clear the deepest fin the loop ever draws,
+     * not the average one. `DiverSpriteTest` re-derives it from the committed PNG.
+     */
+    const val LOWEST_OPAQUE_TEXEL_ROW = 381
+
+    /**
+     * How far the fins reach BELOW the sprite's centre, in world metres: 4.453125 m.
+     *
+     * It lives here rather than in [SandBank] because it is a fact about the DIVER's art,
+     * and `DiverSpriteTest` already re-derives this art's numbers from the committed PNG.
+     * [SandBank.QUAD_TOP_DEPTH] is placed so that at `Tuning.MAX_DEPTH` the fins land on the
+     * sandbank's mean crest, and `SandBankTest` asserts that relationship — see the design's
+     * §8 for why the assertion is a test rather than an expression in `Tuning`.
+     *
+     * `FRAME_TEXELS_TALL / 2` IS INTEGER DIVISION, and it is exact only because 384 is even.
+     * Both operands are `Int`, so this is the one sub-expression that truncates. It is
+     * correct today (384/2 = 192, the cell's true mid-row) and silently off by half a texel
+     * — 0.0117 m — the moment anyone re-bakes at an ODD cell height. Write it
+     * `FRAME_TEXELS_TALL / 2f` if that ever becomes possible; today it is left as `/ 2` so
+     * the constant stays exactly on a texel boundary. Do not "fix" it without checking the
+     * parity. Everything to the left is Float ([Framing.DIVER_HEIGHT_METRES] is a
+     * `const val Float`), so the outer expression never becomes an integer quotient.
+     */
+    const val FIN_REACH_METRES =
+        Framing.DIVER_HEIGHT_METRES * (LOWEST_OPAQUE_TEXEL_ROW + 1 - FRAME_TEXELS_TALL / 2) / FRAME_TEXELS_TALL
+
+    /**
      * Albedo. `SRGBA8` because the source frames carry `sRGB`/`gAMA` chunks and the bake preserves
      * that encoding — the GPU linearizes on sample, which is what the GI multiply expects.
      */

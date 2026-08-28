@@ -243,6 +243,61 @@ class CameraRigTest
     }
 
     /**
+     * THE BOUND THE WHOLE CAMERA-CLAMP PROOF RESTS ON, and it can fail: change
+     * [CameraRig.pixelsPerMetre] from `max` to `min` and this goes red immediately.
+     *
+     * `pixelsPerMetre` is `max(H/60, W/98.5156)`, so `H / pixelsPerMetre <= H / (H/60)` =
+     * 60 m at every aspect there is. `DiveCamera`'s floor clamp is proved safe over the
+     * whole `(V, d)` domain by `V <= 60`; without this bound that proof is an assumption.
+     *
+     * Swept rather than spot-checked at three aspects, because three sample aspects is
+     * exactly what let five versions of the rock's frame-edge bug through — see
+     * `RockFace.coverageOuterHalfWidth`'s doc.
+     *
+     * NOT WRITTEN HERE, DELIBERATELY: "visibleDepthMetres is the exact inverse of
+     * pixelsPerMetre on the height axis". The function is DEFINED as
+     * `H / pixelsPerMetre(W, H)`, so that assertion reduces to `H / (H/p) == p` and holds
+     * for whatever `pixelsPerMetre` returns, including a wrong value. A test that cannot
+     * fail is worse than no test.
+     */
+    @Test
+    fun `the visible depth never exceeds the design frame, at any aspect`()
+    {
+        val height = 1080f
+        var widest = 0f
+        var narrowest = Float.MAX_VALUE
+        var aspect = 1.0f
+        while (aspect <= 4.0f)
+        {
+            val width = height * aspect
+            val v = CameraRig.visibleDepthMetres(width, height)
+            assertTrue(
+                v <= Framing.VISIBLE_DEPTH_METRES + 1e-3f,
+                "at aspect $aspect the visible depth is $v m, past the ${Framing.VISIBLE_DEPTH_METRES} m " +
+                "ceiling DiveCamera's floor clamp is proved against"
+            )
+            assertTrue(v > 0f, "at aspect $aspect the visible depth is $v m")
+            if (v > widest) widest = v
+            if (v < narrowest) narrowest = v
+            aspect += 0.001f
+        }
+
+        // The bound is REACHED, not merely respected — otherwise a `visibleDepthMetres`
+        // that always returned 1 m would pass the loop above.
+        assertEquals(Framing.VISIBLE_DEPTH_METRES, widest, 1e-2f, "the design aspect must still show the full frame")
+        assertTrue(narrowest < 30f, "a 4:1 panel must show far less than the design frame; it showed $narrowest m")
+    }
+
+    /** The three aspects the design's own table quotes, so a change to the fit is legible in the diff. */
+    @Test
+    fun `the visible depth matches the design's worked aspects`()
+    {
+        assertEquals(60.000f, CameraRig.visibleDepthMetres(1440f, 1080f), 0.01f, "4:3")
+        assertEquals(55.415f, CameraRig.visibleDepthMetres(1920f, 1080f), 0.01f, "16:9")
+        assertEquals(27.708f, CameraRig.visibleDepthMetres(3840f, 1080f), 0.01f, "32:9")
+    }
+
+    /**
      * Screen position of a world point under the matrix the engine would build for [camera] at
      * interpolation factor [t], using the engine's own `interpolateFrom` and the operation order
      * of `DefaultCamera.updateViewMatrix` (Camera.kt:118-131).

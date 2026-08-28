@@ -4,6 +4,7 @@ import no.njoh.pulseengine.core.graphics.api.TextureFilter
 import no.njoh.pulseengine.core.graphics.api.TextureFormat
 import no.njoh.pulseengine.core.graphics.api.TextureWrapping
 import java.io.File
+import javax.imageio.ImageIO
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.min
@@ -392,6 +393,60 @@ class DiverSpriteTest
         assertEquals(0f, cos(h).toFloat(), 1e-4f, "the rest heading must have no sideways component")
         assertEquals(1f, sin(h).toFloat(), 1e-4f, "the rest heading must point straight UP the screen, which is how the sheet is drawn")
         assertEquals(0f, DiverSprite.bodyAngleFor(DiverSprite.REST_HEADING_DEGREES), 1e-4f)
+    }
+
+    /**
+     * PART 3 OF THE RING THAT REPLACES "derive MAX_DEPTH from the art".
+     *
+     * `dive/` may not import `render/`, so `Tuning.MAX_DEPTH` cannot be an expression over
+     * [SandBank.MEAN_CREST_DEPTH]. What is enforced instead is a three-part ring:
+     * `SandBankTest` asserts the crest and the fins agree with `Tuning.MAX_DEPTH` given the
+     * placement, and re-derives the crest row from the committed sandbank; THIS case
+     * re-derives the fin reach from the committed diver sheet. Take any one away and the
+     * ring opens — the first would pass against two stale constants.
+     *
+     * Measured over all 41 frames at the same `alpha > 16` threshold the rest of the
+     * project uses: lowest opaque row min 374, mean 378.76, MAX 381. The max, not the
+     * mean, because the sand must clear the DEEPEST fin the loop ever draws.
+     *
+     * The method validates against a figure derived independently, months earlier:
+     * `Tuning.PEARL_PICKUP_RADIUS`'s KDoc measured this same sheet for an unrelated purpose
+     * and records the crown at row 2, identical in all 41 frames — `9 * (192 - 2) / 384` =
+     * 4.453125 m, the same number to the digit from the other end of the sprite.
+     */
+    @Test
+    fun `the fin reach is the deepest opaque row of any frame, re-derived from the committed sheet`()
+    {
+        val image = ImageIO.read(File("src/main/resources/sprites/diver-diffuse.png"))
+        var lowest = -1
+        for (frame in 0 until DiverSprite.FRAME_COUNT)
+        {
+            val cellX = (frame % DiverSprite.HORIZONTAL_CELLS) * DiverSprite.FRAME_TEXELS_WIDE
+            val cellY = (frame / DiverSprite.HORIZONTAL_CELLS) * DiverSprite.FRAME_TEXELS_TALL
+            val argb = image.getRGB(
+                cellX, cellY, DiverSprite.FRAME_TEXELS_WIDE, DiverSprite.FRAME_TEXELS_TALL,
+                null, 0, DiverSprite.FRAME_TEXELS_WIDE
+            )
+            for (row in DiverSprite.FRAME_TEXELS_TALL - 1 downTo 0)
+            {
+                val opaque = (0 until DiverSprite.FRAME_TEXELS_WIDE).any { x ->
+                    (argb[row * DiverSprite.FRAME_TEXELS_WIDE + x] ushr 24) > 16
+                }
+                if (opaque)
+                {
+                    if (row > lowest) lowest = row
+                    break
+                }
+            }
+        }
+
+        assertEquals(
+            DiverSprite.LOWEST_OPAQUE_TEXEL_ROW, lowest,
+            "the committed diver sheet's deepest opaque row over all ${DiverSprite.FRAME_COUNT} " +
+            "frames is $lowest, not ${DiverSprite.LOWEST_OPAQUE_TEXEL_ROW} — re-bake the diver and " +
+            "the sandbank's placement (SandBank.QUAD_TOP_DEPTH) no longer puts his fins on the crest"
+        )
+        assertEquals(4.453125f, DiverSprite.FIN_REACH_METRES, 1e-6f)
     }
 
     private companion object

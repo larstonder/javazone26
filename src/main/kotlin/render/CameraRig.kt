@@ -112,6 +112,30 @@ object CameraRig
         surfaceWidth / Framing.VISIBLE_WIDTH_METRES
     )
 
+    /**
+     * How many world metres of depth the frame actually shows — the inverse of
+     * [pixelsPerMetre] on the height axis.
+     *
+     * Because `pixelsPerMetre` is `max(H/60, W/98.5156)`, this is `<= H / (H/60)` =
+     * **60 m, always**, by construction of the `max` rather than by measurement. That bound
+     * is the fact [DiveCamera]'s floor clamp is proved over. It equals
+     * [Framing.VISIBLE_DEPTH_METRES] exactly at or below the design aspect 1.6419, and is
+     * `98.5156 / aspect` above it: 55.415 m at 16:9, 41.24 m at 2.389, 27.708 m at 32:9.
+     *
+     * It is NOT in [CameraInvariants], which measures a visible depth from numbers the
+     * engine hands back (`worldBottom - worldTop`) rather than computing one from a surface
+     * size. Its entire value is that it checks the real framebuffer against the intent, so
+     * it must not start restating the intent.
+     *
+     * ONE DEGENERATE INPUT, LEFT ARITHMETICALLY HONEST ON PURPOSE: `visibleDepthMetres(0f,
+     * 0f)` is `0f / 0f` = **NaN**, which GLFW can produce because it reports a minimized
+     * window as 0x0. There is no guard here — a silent 60 would be worse than a NaN. The
+     * guard lives in `DiveCamera.clampToSandBankFloor`, where the NaN would otherwise
+     * poison the camera permanently.
+     */
+    fun visibleDepthMetres(surfaceWidth: Float, surfaceHeight: Float) =
+        surfaceHeight / pixelsPerMetre(surfaceWidth, surfaceHeight)
+
     /** Screen x that world x = 0 is pinned to: the horizontal centre of the frame. */
     fun originX(surfaceWidth: Float) = surfaceWidth * 0.5f
 
