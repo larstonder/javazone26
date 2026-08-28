@@ -569,14 +569,25 @@ class DiveRendererTest
     // THE SWEEP GETS SMALLER, AND THAT IS CORRECT RATHER THAN A LOSS OF COVERAGE: no strip
     // below 184.930 m can be painted any more, so those depths' colours are unreachable.
     // 184.930 m is also not a coincidence of this file picking V = 60 — it is the GLOBAL
-    // maximum of deepestPaintedDepth over every visible depth the camera could ever run at. The
-    // two clamp terms cross where MAX_DEPTH - V * DIVER_MIN_FRACTION equals
-    // SEA_FLOOR_DEPTH - V, i.e. at V = (SEA_FLOOR_DEPTH - MAX_DEPTH) / (1 - DIVER_MIN_FRACTION),
-    // about 29.33 m: below that the MAX_DEPTH-based term is smaller and the reach grows with V;
-    // at or above it clampToSandBankFloor's term is smaller and binds, pinning the reach at
-    // exactly SEA_FLOOR_DEPTH — equivalently SandBank.QUAD_BOTTOM_DEPTH, which SandBankTest
-    // holds to within 1e-3 m of Framing.SEA_FLOOR_DEPTH — no matter how much further V grows.
-    // This file's V = 60 sits well past that crossover.
+    // maximum of deepestPaintedDepth over every visible depth the camera could ever run at, and
+    // the reason is an ASYMMETRY between the two clamp terms that is easy to get backwards.
+    // `clampSoDiverStaysVisible` multiplies the CONSTANT `Framing.VISIBLE_DEPTH_METRES` (60),
+    // never the real visible depth its own caller was handed for the current aspect ratio —
+    // `DiveCameraTest`'s own `fractionOf` comment states the same fact for a different
+    // assertion: "clampSoDiverStaysVisible and Framing.targetCameraDepth both multiply the
+    // constant, never the actual frame." So the visibility term is pinned at
+    // MAX_DEPTH - 60 * DIVER_MIN_FRACTION = 151 m at every aspect, while the floor term,
+    // SEA_FLOOR_DEPTH - V, tracks the REAL V `clampToSandBankFloor` is actually passed (55.42 m
+    // at 16:9 down to 27.71 m at 32:9 — see CameraRig). The floor term is the one that shrinks
+    // as V grows, and it crosses the pinned 151 m at V = SEA_FLOOR_DEPTH - 151 = 33.9296 m:
+    // below that the floor term is still the larger of the two and the visibility clamp binds
+    // instead; at or above it the floor term is smaller and clampToSandBankFloor binds. This
+    // file's V = 60 sits well past that crossover, so the floor clamp is the one that binds
+    // here, and in that regime deepestPaintedDepth = deepestCameraDepth + V =
+    // (SEA_FLOOR_DEPTH - V) + V = SEA_FLOOR_DEPTH exactly — the V cancels — so 184.930 m
+    // (equivalently SandBank.QUAD_BOTTOM_DEPTH, which SandBankTest holds to within 1e-3 m of
+    // Framing.SEA_FLOOR_DEPTH) is the true ceiling at EVERY aspect this game can run at past
+    // 33.93 m, not just this file's V = 60.
     //
     // Nothing below 135 m (the abyss's midpoint) has a colour of its own — DepthBlend clamps
     // there — so extending the sweep further proves nothing new about the curve. It is derived
