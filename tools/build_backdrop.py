@@ -101,6 +101,7 @@ from spritesheet.resample import _alpha_weighted_resize, decode_normals
 REPO = pathlib.Path(__file__).resolve().parent.parent
 ROCK_DIR = REPO / "assets" / "rock"
 SILHOUETTE_DIR = REPO / "assets" / "silhouettes"
+SANDBANK_DIR = REPO / "assets" / "sandbank"
 OUT_DIR = REPO / "src" / "main" / "resources" / "backdrop"
 
 # Both HYPHENATED. The engine's `loadAll` auto-loader (Extensions.kt:446-448) keys on
@@ -132,6 +133,17 @@ ROCK_TOP_OUT = {
 ROCK_BODY_OUT = {
     "diffuse": "rock-body-diffuse.png",
     "normal": "rock-body-normal.png",
+}
+# The seabed at the foot of the trench. HYPHENATED before `normal`, same rule and same
+# reason as every output above: `_normal` with an UNDERSCORE trips the auto-loader
+# (Extensions.kt:446-448) into RGBA8 with TEN mip levels whatever the caller asked for.
+#
+# NO MIRROR PAIR. The sandbank is drawn as ONE quad exactly Framing.VISIBLE_WIDTH_METRES
+# wide, centred on x = 0, at uTiling = vTiling = 1 - there is no second side and no
+# repeat, so there is nothing to mirror. See the design's S3.2.
+SANDBANK_OUT = {
+    "diffuse": "sandbank-diffuse.png",
+    "normal": "sandbank-normal.png",
 }
 
 DEFAULT_ROCK_HEIGHT = 2048
@@ -216,6 +228,58 @@ def clear_wrap_border(rgba: np.ndarray) -> np.ndarray:
     out = np.array(rgba, copy=True)
     out[:, :BORDER_TEXEL_COLUMNS, 3] = 0
     return out
+
+
+def swizzle_yz(vectors: np.ndarray) -> np.ndarray:
+    """
+    Swap y and z on decoded normal vectors. `assets/sandbank/normal.png` needs it; nothing
+    else in this bake does.
+
+    THE DEFECT, AND IT IS INVISIBLE IN EVERY TEST AND IN EVERY STILL FRAME. Mean decoded
+    vector after the sRGB->linear decode `decode_normals` already performs, over texels
+    with alpha > 16, each vector normalised BEFORE averaging (averaging the raw components
+    and normalising afterwards weights the longer vectors more and moves x and z in the
+    third decimal):
+
+        assets/rock/normal.png       x +0.161  y +0.058  z +0.755   |v| 0.994   Z-dominant, correct
+        assets/rock/top_normal.png   x +0.191  y +0.072  z +0.675   |v| 0.996   Z-dominant, correct
+        assets/sandbank/normal.png   x -0.0082 y +0.9004 z +0.3813  |v| 0.9993  Y-DOMINANT - wrong for us
+
+    The sandbank row is stable to four decimals across three masks (alpha > 16,
+    alpha > 200, and alpha > 200 restricted to rows below 120), so it is a property of the
+    art and not of the crest band's partial coverage. The map is REAL, well-formed normal
+    data - unit length once decoded correctly - whose dominant axis is +y rather than +z,
+    which is exactly what exporting a seabed rendered TOP-DOWN gives, where a floor's
+    surface normal points along world +Y. We view that seabed edge-on, as a vertical
+    billboard, and the engine's normal maps are tangent-space with +Z out of the screen.
+
+    Ship it unswizzled and the seabed is lit like a WALL - which looks like a lighting bug
+    somewhere else entirely, and nothing downstream complains.
+
+    THE SIGN: NO NEGATION. This CONFIRMS a settled repo convention rather than discovering
+    one. `shaders/iridescence.frag:258` states it ("every normal map in this game is baked
+    in the opposite, OpenGL convention - green HIGH where a surface faces UP-screen") and
+    `render/PearlNormalMap.kt:174-214` settles it with a two-build capture probe at
+    EPT_DEPTH=140 (+0.322 as first shipped against +0.416 negated). The trap that makes
+    somebody re-derive the opposite: `pulseengine/shaders/lighting/global/
+    radiance_cascades.frag` - a JAR resource, in `pulse-engine-0.13.0-QUADFIX.jar` in this
+    workspace - dots normal.y straight against a rayDir built with `-sin` at :251, and
+    :289-290 has no flip. That inference is wrong, and PearlNormalMap is where it was
+    MEASURED wrong rather than argued wrong. Known-correct shipping art is the authority:
+    rock-top-normal.png reads mean y +0.547 per column over each column's own topmost 12
+    opaque rows, and the diver's crown reads +0.215..+0.237 against his fins' -0.085.
+
+    After the swizzle the sandbank's mean vector is x -0.008, y +0.381, z +0.900:
+    Z-dominant with a small upward tilt. KEEP THE TILT - do not project it out. The rock
+    headland's own tilt is +0.547 at the crest and +0.381 on the face, the same magnitude,
+    in art nobody has complained about; a floor drawn as a vertical billboard SHOULD tilt
+    upward so it catches light from above like a floor rather than like a wall.
+
+    Corroboration, with its own limitation: correlating N.L against the diffuse's baked-in
+    shading over a sweep of light directions gives r = +0.858 raw and +0.914 swizzled. That
+    confirms the swizzle and is BLIND to the sign - all four sign variants tie at 0.914.
+    """
+    return np.asarray(vectors, dtype=np.float64)[..., [0, 2, 1]]
 
 
 def pad_top_to_height(rgba: np.ndarray, height: int, fill_rgb: tuple) -> np.ndarray:
@@ -726,6 +790,119 @@ def bake_rock_top(width: int, height: int, gain: float, ambient: np.ndarray) -> 
     }
 
 
+def bake_sandbank(gain: float, ambient: np.ndarray) -> dict:
+    """
+    The seabed at the foot of the trench: 2000x500, committed at its SOURCE SIZE.
+
+    NO RESAMPLE. `TextureBank.getOrCreateTextureArrayFor` reuses an array only when
+    format, filter, wrapping AND maxMipLevels all match and `max(w, h) > arraySize / 2`
+    (geometry.reuses_array, whose lower bound is STRICT). max(2000, 500) = 2000, which is
+    > 1024 and <= 2048, so both sheets take free layers in the 2048 SRGBA8 and 2048 RGBA8
+    arrays the diver's sheets already forced into existence. There is therefore no size to
+    fit to, and running a scale-1 Lanczos pass anyway would put a filter between the
+    artist's texels and the committed ones for no gain. For the record, from
+    geometry.CAPACITIES: a 1024-bucket output would allocate 209.7 MB per format, a
+    4096-bucket output 671.1 MB.
+
+    IT INHERITS THE WALL'S GAIN AND AMBIENT, exactly as `bake_rock_top` does and for the
+    same reason (that function's decision 2). Solving a second gain against the sandbank's
+    own mean would give the seabed a different transfer function from the cliff it butts
+    against at BOTH frame edges, and a brightness step along a join between two lit
+    surfaces drawn edge to edge is a horizontal line across the picture. Inheriting
+    preserves the relative brightness the artist authored between the two renders - sand
+    stays brighter than stone, because it is brighter in the source - and introduces no
+    new tunable. `crop_body` is NOT a second precedent for this: it takes the wall's
+    already-lifted OUTPUT arrays and inherits the lift by construction, never through a
+    parameter.
+
+    NO `clear_wrap_border`, AND THAT IS DELIBERATE. The mechanism that function exists for
+    is real here too - `texture.frag` resolves `uv = texStart + texSize * fract(texCoord *
+    texTiling)`, and where a quad's edge cuts through a pixel the interpolated u
+    extrapolates just past 1.0, whose fract is ~0. But the sandbank is the one quad in this
+    game whose OUTERMOST COLUMNS ARE SUPPOSED TO BE OPAQUE and land exactly on the frame
+    edge (the quad is exactly Framing.VISIBLE_WIDTH_METRES wide, and that width is a
+    maximum at every aspect). Clearing them would put an alpha-0 column at the extreme
+    pixel of the screen - which is precisely the inverted hairline
+    Framing.VISIBLE_WIDTH_METRES records being measured at 16:9, 2.389 and 32:9, and why
+    that cap is 2 x BODY_INNER_HALF_WIDTH and not 2 x CREST_OUTER_HALF_WIDTH. The sand's
+    own extrapolated column draws sand where sand belongs.
+    """
+    diffuse = load_rgba(SANDBANK_DIR / "diffuse.png")
+    normal = load_rgba(SANDBANK_DIR / "normal.png")
+    require_matching_alpha("sandbank", diffuse, normal)
+
+    src_h, src_w = diffuse.shape[:2]
+    bucket = geometry.bucket_for(max(src_w, src_h))
+    reuses = geometry.reuses_array(max(src_w, src_h), 2048)
+    print(f"sandbank source {src_w}x{src_h}, committed at source size (no resample), "
+          f"bucket {bucket}, reuses existing 2048 array: {reuses}")
+    if not reuses:
+        raise SourceError(
+            f"the sandbank at {src_w}x{src_h} does not land in the 2048 texture arrays the "
+            f"diver's sheets already allocate, so it would allocate a "
+            f"{bucket}x{bucket}x4x{geometry.CAPACITIES[bucket]} array PER FORMAT "
+            f"({2 * geometry.array_bytes(bucket) / 1e6:.1f} MB). Re-cut the source art."
+        )
+
+    # --- Albedo -------------------------------------------------------------------------
+    # The alpha channel is carried through as the source's own uint8 bytes rather than
+    # round-tripped through a float: there is no resample, so there is nothing to change it.
+    alpha = diffuse[..., 3] / 255.0
+    opaque = alpha > 0.5
+
+    linear = srgb_to_linear(diffuse[..., :3] / 255.0)
+    lifted = reflectance.lift(linear, ambient, gain)
+    diffuse_out = np.dstack([to_u8(linear_to_srgb(lifted)), diffuse[..., 3]])
+
+    # Measure what was actually WRITTEN, after the 8-bit sRGB round trip - the shader sees
+    # the quantised values, not the floats above.
+    written = srgb_to_linear(diffuse_out[..., :3] / 255.0)
+    lengths = reflectance.linear_length(written[opaque])
+    below = int((lengths < reflectance.GI_REFLECTANCE_FLOOR).sum())
+    print(f"         reflectance: the WALL's gain {gain:.3f} and ambient "
+          f"(|.| {reflectance.linear_length(ambient):.5f}), so the join cannot step")
+    print(f"         baked   linear length min {lengths.min():.5f} "
+          f"median {np.median(lengths):.5f} max {lengths.max():.5f}; "
+          f"{below} of {lengths.size} texels under the {reflectance.GI_REFLECTANCE_FLOOR} floor")
+    print(f"         baked   mean luminance {reflectance.luminance(written[opaque]).mean():.5f}")
+    if below:
+        raise SourceError(
+            f"{below} baked SAND texels are still under the GI reflectance floor. The "
+            f"sandbank inherits the wall's lift (see this function's docstring), so the "
+            f"only lever is AMBIENT_FRACTION - which raises the cliff, the crest and the "
+            f"body too. If that is not acceptable, the inherit decision is what has to be "
+            f"reopened, not this threshold."
+        )
+
+    # --- Normals ------------------------------------------------------------------------
+    # sRGB-decode, THEN swizzle, THEN renormalise. A permutation preserves norm, so the
+    # renormalise cannot change anything the swizzle did; it is here because bake_rock's
+    # normals block does it, it costs nothing, and it is the one line that guarantees no
+    # zero-length vector can reach the renderer whatever a future edit puts above it.
+    vectors = swizzle_yz(decode_normals(normal[..., :3]))
+    length = np.linalg.norm(vectors, axis=-1, keepdims=True)
+    unit = np.where(length > 1e-6, vectors / np.maximum(length, 1e-6), np.array([0.0, 0.0, 1.0]))
+    normal_out = np.dstack([to_u8((unit + 1.0) * 0.5), normal[..., 3]])
+
+    # Read back the way the SHADER will: RGBA8 is handed to it unchanged, so the decode is
+    # the plain (v+1)/2 inverse and must NOT linearize a second time. Each vector is
+    # normalised BEFORE averaging - the same method the docstring's table uses, and the
+    # reason its numbers are reproducible.
+    baked_v = (normal_out[..., :3] / 255.0) * 2.0 - 1.0
+    sampled = baked_v[opaque]
+    mean_length = float(np.linalg.norm(sampled, axis=-1).mean())
+    mean_unit = (sampled / np.linalg.norm(sampled, axis=-1, keepdims=True)).mean(axis=0)
+    print(f"         normals mean |v| {mean_length:.4f}, mean unit vector "
+          f"x {mean_unit[0]:+.4f} y {mean_unit[1]:+.4f} z {mean_unit[2]:+.4f} "
+          f"(must be Z-DOMINANT with POSITIVE y - see swizzle_yz)")
+
+    return {
+        "diffuse": diffuse_out,
+        "normal": normal_out,
+        "size": (src_w, src_h),
+    }
+
+
 def bake_silhouettes(max_dim: int) -> list:
     out = []
     for index in (1, 2, 3):
@@ -743,7 +920,8 @@ def bake_silhouettes(max_dim: int) -> list:
     return out
 
 
-def kotlin_snippet(rock_w: int, rock_h: int, top_w: int, top_h: int, body_w: int, body_h: int) -> str:
+def kotlin_snippet(rock_w: int, rock_h: int, top_w: int, top_h: int, body_w: int, body_h: int,
+                    sand_w: int, sand_h: int) -> str:
     """
     The call site to copy verbatim. Argument order is (format, maxMipLevels) and
     maxMipLevels is 1, never 0 - the same two silent-and-fatal facts the diver's bake
@@ -773,12 +951,21 @@ Kotlin - copy verbatim:
         filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
         format = TextureFormat.RGBA8, maxMipLevels = 1)
 
+    Texture("/backdrop/sandbank-diffuse.png", "sandbank_diffuse",   // NO mirror, NO tiling:
+        filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,   // one quad,
+        format = TextureFormat.SRGBA8, maxMipLevels = 1)            // uTiling = vTiling = 1
+    Texture("/backdrop/sandbank-normal.png", "sandbank_normal",
+        filter = TextureFilter.LINEAR, wrapping = TextureWrapping.CLAMP_TO_EDGE,
+        format = TextureFormat.RGBA8, maxMipLevels = 1)
+
     const val ROCK_TEXELS_WIDE = {rock_w}
     const val ROCK_TEXELS_TALL = {rock_h}      // == the 2048 array size, so vMax is exactly 1.0
     const val TOP_TEXELS_WIDE  = {top_w}       // == ROCK_TEXELS_WIDE, so the texels match at the join
     const val TOP_TEXELS_TALL  = {top_h}       // decides how tall the cliff is, in metres
     const val BODY_TEXELS_WIDE = {body_w}      // == 2 * (OPAQUE_TEXEL_COLUMNS - BORDER_TEXEL_COLUMNS)
     const val BODY_TEXELS_TALL = {body_h}      // == ROCK_TEXELS_TALL, so the body keeps the wall's v phase
+    const val SANDBANK_TEXELS_WIDE = {sand_w}   // the quad is Framing.VISIBLE_WIDTH_METRES across
+    const val SANDBANK_TEXELS_TALL = {sand_h}   // the height follows: WIDTH * TALL / WIDE
 
 FILTER, WRAPPING AND maxMipLevels MUST MATCH THE DIVER'S SHEETS EXACTLY.
 TextureBank.getOrCreateTextureArrayFor reuses an array only when format, filter,
@@ -802,7 +989,14 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     # gain and ambient are inherited exactly rather than solved again. See crop_body.
     body = crop_body(rock["diffuse"], rock["normal"])
     layers = bake_silhouettes(silhouette_max)
+    # The WALL's gain and ambient, an explicit parameter pair, exactly as bake_rock_top
+    # receives them one line above. See bake_sandbank's docstring for why the seabed does
+    # not solve a gain of its own.
+    sand = bake_sandbank(rock["gain"], rock["ambient"])
 
+    # The shared fingerprint, over the ROCK and SILHOUETTE sources only. The sandbank is
+    # deliberately OUTSIDE it - see sand_meta below - so adding assets/sandbank/*.png here
+    # would rewrite all thirteen files below for a metadata change alone.
     fingerprint = hashlib.sha256()
     for path in sorted(ROCK_DIR.glob("*.png")) + sorted(SILHOUETTE_DIR.glob("*.png")):
         fingerprint.update(path.read_bytes())
@@ -812,6 +1006,26 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
         "ept:rock_top_size": "x".join(str(n) for n in top["size"]),
         "ept:silhouette_max": silhouette_max,
         "ept:source_sha256": fingerprint.hexdigest()[:16],
+    }
+
+    # THE SANDBANK GETS ITS OWN DICT, AND ITS OWN FINGERPRINT OVER ITS OWN SOURCE
+    # DIRECTORY. It must NOT join the shared one and must not touch the shared one's glob.
+    #
+    # Read the ALL-THIRTEEN comment below and it is not arguing for one dict in general: it
+    # is arguing that the BODY has no claim to a dict of its own, because the body is a
+    # crop of the wall and therefore carries the wall's provenance. The sandbank is
+    # independent art from a separate source directory that no existing output derives
+    # from, so it has the claim the body lacks - and joining the shared glob would change
+    # `ept:source_sha256`, which changes the metadata, which rewrites all thirteen
+    # committed PNGs, spending the exact "a re-bake is a no-op" property that comment is
+    # written to protect in order to cite it. With this, re-baking rewrites two files and
+    # only two.
+    sand_fingerprint = hashlib.sha256()
+    for path in sorted(SANDBANK_DIR.glob("*.png")):
+        sand_fingerprint.update(path.read_bytes())
+    sand_meta = {
+        "ept:sandbank_size": "x".join(str(n) for n in sand["size"]),
+        "ept:source_sha256": sand_fingerprint.hexdigest()[:16],
     }
 
     for key, name in ROCK_OUT.items():
@@ -824,14 +1038,20 @@ def bake(rock_height: int, silhouette_max: int, period_override, luminance_facto
     # means either diverging from the other twelve or touching the shared dict and rewriting
     # every one of them - and a metadata-only rewrite still loses the "a re-bake is a no-op"
     # property that makes an unchanged bake produce no git diff.
+    #
+    # The SANDBANK is deliberately NOT in this set, and has a dict and a fingerprint of its
+    # own - see sand_meta above. A future tidy-up that "unifies the metadata" has to argue
+    # past that reason rather than merely notice the asymmetry.
     for key, name in ROCK_BODY_OUT.items():
         write_png(OUT_DIR / name, body[key], meta)
     for index, rgba in layers:
         write_png(OUT_DIR / f"silhouette-{index}.png", rgba, meta)
+    for key, name in SANDBANK_OUT.items():
+        write_png(OUT_DIR / name, sand[key], sand_meta)
     print(f"\nwrote {OUT_DIR}/{{{', '.join(ROCK_OUT.values())}, "
           f"{', '.join(ROCK_TOP_OUT.values())}, {', '.join(ROCK_BODY_OUT.values())}, "
-          f"silhouette-1..3.png}}")
-    print(kotlin_snippet(*rock["size"], *top["size"], *body["size"]))
+          f"silhouette-1..3.png, {', '.join(SANDBANK_OUT.values())}}}")
+    print(kotlin_snippet(*rock["size"], *top["size"], *body["size"], *sand["size"]))
     return 0
 
 
