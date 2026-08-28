@@ -41,6 +41,7 @@ import render.PearlNormalMap
 import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
+import render.SandBank
 import render.Sky
 import render.VentLabel
 import render.WaterRenderer
@@ -1471,6 +1472,13 @@ class EnPustTil : PulseEngineGame()
         // until their textures land, and both complain in the log if they never do.
         RockFace.load(engine)
         Backdrop.load(engine)
+
+        // The seabed at the foot of the trench. Queued HERE, beside the rock and the backdrop,
+        // and not after the draw code lands: `drawSandBank` running against textures nobody
+        // queued would leave `SandBank.ready()` false forever and, after 600 frames, spend its
+        // one WARN on a self-inflicted false alarm — which is how a real one gets ignored later.
+        // Loading art nothing draws yet is harmless; drawing art nothing loaded is not.
+        SandBank.load(engine)
 
         // The GENERATED assets: the round emitter every point light in DiveLighting shapes its
         // light from, the dab a mote is DRAWN with, and the hemisphere normal that tells GI a

@@ -333,6 +333,27 @@ object DiveRenderer
     internal val silhouetteColor = Color(0.10f, 0.13f, 0.17f)
 
     /**
+     * The colour the sand's flat skirt is filled with, below [SandBank.QUAD_BOTTOM_DEPTH] —
+     * sampled from the BAKED diffuse's own bottom row, so the fill continues the art rather
+     * than stepping away from it. `SandBankTest` asserts both that it matches the committed
+     * PNG and that it clears [GI_REFLECTANCE_FLOOR].
+     *
+     * Pure white, not "near white": the sandbank bake (task-2-report.md) inherits the WALL's
+     * gain and ambient rather than solving its own (see `bake_sandbank`'s docstring — a second
+     * gain would step the brightness at the join where sand meets cliff at both frame edges),
+     * and the sand's source is bright enough that the wall's gain (3.639) saturates it. The
+     * bake's own console output confirms this is not an isolated bottom-row artefact: baked
+     * linear length ranges 1.71191..1.73205 (sqrt(3), i.e. exactly (1,1,1)) over all 830173
+     * opaque texels, mean luminance 1.00000. So the source's bottom row — (0.6933, 0.6645,
+     * 0.6217) sRGB — clips to (1, 1, 1) after the lift, same as the rest of the sheet.
+     *
+     * NO NORMAL MAP GOES WITH IT, matching the rock's backing fill: a flat fill has no relief
+     * to describe, and submitting a normal-mapped rect for it would put a lit-looking gradient
+     * on a region whose whole job is to be indistinguishable from the art's last row.
+     */
+    internal val sandSkirtColor = Color(1.000f, 1.000f, 1.000f)
+
+    /**
      * Thickness of the waterline, in metres. Was `pixelsPerMetre(h) * 0.4f` — i.e. 0.4 m, in a
      * form that had to be multiplied out at the draw site. Named now that a size in this file is
      * simply a size.
