@@ -1431,7 +1431,7 @@ class EnPustTil : PulseEngineGame()
 
         IridescenceRenderer.addTo(engine.gfx.mainSurface)
         engine.config.fixedTickRate = 60f
-        camera.snapTo(sim.depth)
+        camera.snapTo(sim.depth, visibleDepthMetres())
 
         // SNAP, not apply, and the difference is the whole of frame 1. `topLeftWorldPosition`
         // and the view matrix behind it are computed in GraphicsImpl.initFrame at the top of
@@ -1667,7 +1667,7 @@ class EnPustTil : PulseEngineGame()
         // Note this runs unconditionally, outside the `simulationAdvances` gate above: a paused
         // or attract-mode frame still has to be drawn with a valid camera, and easing toward a
         // sim depth that is not changing is a no-op that costs four float stores.
-        camera.update(engine.data.fixedDeltaTime, sim.depth)
+        camera.update(engine.data.fixedDeltaTime, sim.depth, visibleDepthMetres())
         CameraRig.apply(engine, camera.depth)
     }
 
@@ -1844,7 +1844,7 @@ class EnPustTil : PulseEngineGame()
             // a pin applied afterwards would leave the camera at the surface easing 140 m down
             // through the first second of the run. `EnPustTilDepthPinTest` asserts this order.
             applyDepthPin()
-            camera.snapTo(sim.depth)
+            camera.snapTo(sim.depth, visibleDepthMetres())
             // Pushed through immediately, for the same reason as in onCreate: this runs on the
             // render clock, so without it the frame drawn right after a restart would use the
             // camera the PREVIOUS run ended at — a full-frame jump from the abyss back to the
@@ -1897,7 +1897,7 @@ class EnPustTil : PulseEngineGame()
             // it is ever persisted. See UpdateGameOrderingTest.
             sim = DiveSim(seed = dailySeed)
             applyDepthPin()
-            camera.snapTo(sim.depth)
+            camera.snapTo(sim.depth, visibleDepthMetres())
             CameraRig.snap(engine, camera.depth)
             DiveLighting.resetAim()
             DiverSprite.restartLoop()
@@ -2177,6 +2177,23 @@ class EnPustTil : PulseEngineGame()
      * hands back (:85) — so unlike that method, reading one does not clobber the other. Their
      * components are copied into locals anyway, which is free and removes the question.
      */
+    /**
+     * How many world metres of depth the frame is showing THIS frame — the argument
+     * [DiveCamera]'s floor clamp needs.
+     *
+     * Read off `mainSurface.config`, NOT `engine.window`. They are the same number today, but
+     * `config` is what that surface's own projection was built from, so it is the only value
+     * that cannot disagree with what is actually being rendered — reading the window instead is
+     * one half of the mechanism that shipped in `6ea1f53`'s bug (see `CameraRig.apply` and
+     * `CameraRig`'s class doc). `config` is readable from the render clock as well as the fixed
+     * tick, which is what lets one helper serve all four call sites.
+     */
+    private fun visibleDepthMetres(): Float
+    {
+        val config = engine.gfx.mainSurface.config
+        return CameraRig.visibleDepthMetres(config.width.toFloat(), config.height.toFloat())
+    }
+
     private fun checkCameraInvariants()
     {
         secondsSinceCameraCheck += engine.data.deltaTime
