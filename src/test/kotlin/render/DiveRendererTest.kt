@@ -481,10 +481,10 @@ class DiveRendererTest
      * lies inside that strip, and that no strip the camera can ever reach is coloured from
      * outside the range the sweep covers. That is what lets the sweep's bounded loop stand for
      * the whole frame — and it is not decoration. Written with the sweep's hand-picked 200 m
-     * bound still in place, it went red immediately: the camera's lag clamp lets it sit 9 m off
-     * the sea floor, so the bottom of the frame reaches 211 m and eleven metres of painted
-     * water had never been checked by anything. See [deepestPaintedDepth], which both tests now
-     * derive.
+     * bound still in place, it went red immediately: the camera's lag clamp let it sit 9 m off
+     * the sea floor, so the bottom of the frame reached 211 m and eleven metres of painted
+     * water had never been checked by anything. The floor clamp has since cut that back to
+     * 184.930 m — see [deepestPaintedDepth], which both tests derive.
      *
      * The floor assertion below is kept as the direct statement of risk 4.2's property and is,
      * measured, redundant with the sweep. No single-edit mutation of today's production code
@@ -553,17 +553,36 @@ class DiveRendererTest
     // --- How deep the frame can actually reach ------------------------------------------
     //
     // Derived rather than picked, because picking is how the sweep above ended up bounded at a
-    // round 200 m while the strip walk could paint 211 m. What decides it is DiveCamera's own
-    // clamp, not targetCameraDepth: `clampSoDiverStaysVisible` lets the camera sit anywhere
-    // from diverDepth - VISIBLE_DEPTH_METRES * DIVER_MAX_FRACTION to
+    // round 200 m while the strip walk could paint 211 m. TWO clamps decide it now, and the
+    // FLOOR CLAMP IS THE ONE THAT BINDS.
+    //
+    // `DiveCamera.clampSoDiverStaysVisible` lets the camera sit anywhere from
+    // diverDepth - VISIBLE_DEPTH_METRES * DIVER_MAX_FRACTION to
     // diverDepth - VISIBLE_DEPTH_METRES * DIVER_MIN_FRACTION, and the diver's own depth is
-    // clamped to [0, MAX_DEPTH] by DiveSim. So the deepest the camera can ever be is 9 m above
-    // the sea floor, and the bottom of the frame is a further VISIBLE_DEPTH_METRES below that.
+    // clamped to [0, MAX_DEPTH] by DiveSim — which on its own would put the camera 9 m above
+    // MAX_DEPTH, at 151 m, and the bottom of the frame at 211 m (the value this file used to
+    // sweep to, back when that clamp was the whole story). `clampToSandBankFloor` runs FIRST
+    // and cuts that back: the frame's bottom edge may not pass Framing.SEA_FLOOR_DEPTH
+    // (184.930 m, the sandbank's own bottom edge), so at VISIBLE_DEPTH_METRES = 60 the camera
+    // stops at 124.930 m and the deepest painted depth is 184.930 m.
+    //
+    // THE SWEEP GETS SMALLER, AND THAT IS CORRECT RATHER THAN A LOSS OF COVERAGE: no strip
+    // below 184.930 m can be painted any more, so those depths' colours are unreachable.
+    // 184.930 m is also not a coincidence of this file picking V = 60 — it is the GLOBAL
+    // maximum of deepestPaintedDepth over every visible depth the camera could ever run at. The
+    // two clamp terms cross where MAX_DEPTH - V * DIVER_MIN_FRACTION equals
+    // SEA_FLOOR_DEPTH - V, i.e. at V = (SEA_FLOOR_DEPTH - MAX_DEPTH) / (1 - DIVER_MIN_FRACTION),
+    // about 29.33 m: below that the MAX_DEPTH-based term is smaller and the reach grows with V;
+    // at or above it clampToSandBankFloor's term is smaller and binds, pinning the reach at
+    // exactly SEA_FLOOR_DEPTH — equivalently SandBank.QUAD_BOTTOM_DEPTH, which SandBankTest
+    // holds to within 1e-3 m of Framing.SEA_FLOOR_DEPTH — no matter how much further V grows.
+    // This file's V = 60 sits well past that crossover.
     //
     // Nothing below 135 m (the abyss's midpoint) has a colour of its own — DepthBlend clamps
-    // there — so extending the sweep past 200 m proves nothing new about the curve. It is
-    // derived anyway so that raising MAX_DEPTH or widening the camera's lag bounds moves the
-    // sweep with them instead of silently leaving painted depths unchecked.
+    // there — so extending the sweep further proves nothing new about the curve. It is derived
+    // anyway so that raising MAX_DEPTH, widening the camera's lag bounds, or moving the sea
+    // floor moves the sweep with them instead of silently leaving painted depths unchecked. The
+    // `minOf` below is the third thing that can move it.
 
     @Test
     fun `every per-zone colour table in Look has exactly one entry per Zone`()
@@ -824,9 +843,19 @@ class DiveRendererTest
 
     private val shallowestCameraDepth = 0f - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MAX_FRACTION
 
-    private val deepestCameraDepth = Tuning.MAX_DEPTH - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MIN_FRACTION
+    // Mirrors DiveCamera's own two clamps — clampToSandBankFloor then clampSoDiverStaysVisible
+    // — rather than restating the old pre-floor number. See the "How deep the frame can
+    // actually reach" comment block above for the full derivation and the crossover math; the
+    // short version is that the floor term is the one that binds at this file's V = 60, so
+    // `minOf` picks it. Both terms are still expressed so that a future MAX_DEPTH or
+    // DIVER_MIN_FRACTION change that swung the crossover back the other way would move this
+    // value with it instead of leaving a stale winner hard-coded.
+    private val deepestCameraDepth = minOf(
+        Tuning.MAX_DEPTH - Framing.VISIBLE_DEPTH_METRES * Framing.DIVER_MIN_FRACTION,  // 151.0
+        Framing.SEA_FLOOR_DEPTH - Framing.VISIBLE_DEPTH_METRES                          // 124.930
+    )
 
-    private val deepestPaintedDepth = deepestCameraDepth + Framing.VISIBLE_DEPTH_METRES
+    private val deepestPaintedDepth = deepestCameraDepth + Framing.VISIBLE_DEPTH_METRES  // 184.930
 
     private companion object
     {
