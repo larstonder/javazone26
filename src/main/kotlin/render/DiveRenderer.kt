@@ -338,20 +338,24 @@ object DiveRenderer
      * than stepping away from it. `SandBankTest` asserts both that it matches the committed
      * PNG and that it clears [GI_REFLECTANCE_FLOOR].
      *
-     * Pure white, not "near white": the sandbank bake (task-2-report.md) inherits the WALL's
-     * gain and ambient rather than solving its own (see `bake_sandbank`'s docstring — a second
-     * gain would step the brightness at the join where sand meets cliff at both frame edges),
-     * and the sand's source is bright enough that the wall's gain (3.639) saturates it. The
-     * bake's own console output confirms this is not an isolated bottom-row artefact: baked
-     * linear length ranges 1.71191..1.73205 (sqrt(3), i.e. exactly (1,1,1)) over all 830173
-     * opaque texels, mean luminance 1.00000. So the source's bottom row — (0.6933, 0.6645,
-     * 0.6217) sRGB — clips to (1, 1, 1) after the lift, same as the rest of the sheet.
+     * THIS WAS PURE WHITE ONCE, AND THAT WAS A BAKE DEFECT, NOT A MEASUREMENT. The first
+     * committed `sandbank-diffuse.png` inherited the cliff wall's reflectance lift
+     * (`bake_sandbank`'s old signature took the wall's `gain`/`ambient` — see the design's
+     * §4.6), and that gain (~3.639, solved for the much darker cliff) saturated the sand's
+     * far brighter source to (255, 255, 255) over 99.999% of its 830173 opaque texels —
+     * every dune gone, every shading gradient gone. The unlifted source was never at risk
+     * of the floor problem the lift exists to solve (its darkest opaque texel measures a
+     * linear length of 0.5484, **27.4x** [GI_REFLECTANCE_FLOOR]), so `bake_sandbank` no
+     * longer takes a gain or ambient at all — see its docstring in `tools/build_backdrop.py`
+     * for the full measurement. The value below is the CORRECTED bake's own bottom row,
+     * which — because there is no lift left to move it — now equals the SOURCE art's own
+     * bottom row exactly: (0.6933, 0.6645, 0.6217) sRGB.
      *
      * NO NORMAL MAP GOES WITH IT, matching the rock's backing fill: a flat fill has no relief
      * to describe, and submitting a normal-mapped rect for it would put a lit-looking gradient
      * on a region whose whole job is to be indistinguishable from the art's last row.
      */
-    internal val sandSkirtColor = Color(1.000f, 1.000f, 1.000f)
+    internal val sandSkirtColor = Color(0.6933f, 0.6645f, 0.6217f)
 
     /**
      * Thickness of the waterline, in metres. Was `pixelsPerMetre(h) * 0.4f` — i.e. 0.4 m, in a
