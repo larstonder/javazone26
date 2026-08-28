@@ -423,6 +423,12 @@ object DiveRenderer
         if (water != null) drawWaterSurface(surface, water, worldLeft, worldTop, worldRight, worldBottom)
         else drawSurfaceLine(surface, worldLeft, worldRight)
 
+        // The seabed, between the water surface (which is at the far end of the column and can
+        // never overlap it) and the walls. BEFORE the walls on purpose: they are opaque, and
+        // their ragged silhouette has to sit OVER the sand's ends, which is what makes the
+        // trench read as sand BETWEEN two cliffs rather than as a strip laid across them.
+        drawSandBank(surface, cam, normalMaps, worldBottom)
+
         drawColumnWalls(surface, cam, normalMaps, worldLeft, worldTop, worldRight, worldBottom)
         drawAirPockets(surface, sim, cam, iridescence, normalMaps)
         drawPearls(surface, sim, cam, iridescence, normalMaps)
@@ -1020,6 +1026,66 @@ object DiveRenderer
                 0f, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN
             )
         }
+    }
+
+    /**
+     * The seabed at the foot of the trench — see [SandBank], which owns the geometry.
+     *
+     * ONE quad, exactly [SandBank.WIDTH_METRES] across at `uTiling = vTiling = 1`, plus a flat
+     * skirt continuing its bottom row down to the frame's edge ([SandBank.skirtDepth]).
+     *
+     * THE SKIRT IS DRAWN FIRST AND THE ART OVER IT, copying the SHAPE of [drawBackdrop] but not
+     * its reason. That function's argument is that alpha compositing is not idempotent, so a
+     * second pass in the same colour over an overlap doubles the layer's alpha and leaves a
+     * darker band — and it depends on the silhouettes being TRANSLUCENT (their alpha runs 0.10
+     * to 0.24). It does not transfer: the sand's skirt and the sand's last row are both fully
+     * OPAQUE, and compositing opaque over opaque IS idempotent, so an overlap here would be
+     * invisible. The order is kept anyway for the cheaper reason: two draw orders in this file
+     * for the same shape of problem is one more thing to get wrong — and if a real frame ever
+     * forces the one-texel skirt bleed [SandBank.skirtDepth] describes, the overlap becomes real
+     * and the alpha argument with it.
+     *
+     * With the camera clamp in place the skirt branch is UNREACHABLE. See [SandBank.skirtDepth].
+     */
+    private fun drawSandBank(surface: Surface, cam: Camera, normalMaps: NormalMapRenderer?, worldBottom: Float)
+    {
+        if (!SandBank.ready()) return
+
+        val width = SandBank.WIDTH_METRES
+        val height = SandBank.HEIGHT_METRES
+        val centreX = 0f
+        val centreY = SandBank.QUAD_TOP_DEPTH + height * 0.5f
+
+        val skirtTop = SandBank.skirtDepth(worldBottom)
+        if (skirtTop < worldBottom)
+        {
+            surface.setDrawColor(sandSkirtColor)
+            surface.fillRect(-width * 0.5f, skirtTop, width, worldBottom - skirtTop)
+        }
+
+        // The engine's own view test, padded by nothing: this is a quad on `main`, so its
+        // rasterised extent is exactly the rect below. A square of the LARGER side strictly
+        // contains it, so the test can only ever be conservative — 98.5 m on a side against a
+        // 24.6 m quad, which costs one skipped quad for the whole dive above about 100 m.
+        if (!cam.showsSquare(centreX, centreY, max(width, height))) return
+
+        // drawTexture MODULATES by the surface's current draw colour, and the skirt above just
+        // set it. Same line and same reason as drawColumnWalls.
+        surface.setDrawColor(1f, 1f, 1f, 1f)
+        surface.drawTexture(
+            SandBank.diffuse,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            0f, 0f, 0f, 1f, 1f, 1f, 1f
+        )
+
+        // The copied argument list. Same rect, same angle, same origin, same tiling — written
+        // twice and never derived twice. `drawNormalMap` takes no uv arguments at all, so there
+        // is no second-derivation route that could even be made to work.
+        normalMaps?.drawNormalMap(
+            SandBank.normal,
+            centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN,
+            1f, 1f
+        )
     }
 
     /**

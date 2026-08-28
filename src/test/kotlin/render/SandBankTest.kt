@@ -391,6 +391,59 @@ class SandBankTest
         assertEquals(SandBank.QUAD_BOTTOM_DEPTH, SandBank.skirtDepth(300f), 1e-4f, "a frame reaching past the art must start the skirt at the art's bottom edge")
     }
 
+    /**
+     * THE DRAW ORDER, AND BOTH HALVES OF IT ARE LOAD-BEARING.
+     *
+     * After `drawBackdrop`, because the parallax silhouettes are behind everything in the water.
+     * Before `drawColumnWalls`, because the walls are opaque and their ragged silhouette must sit
+     * OVER the sand's ends — that is what makes the trench read as sand BETWEEN two cliffs rather
+     * than as a strip laid across them. Consequently also before the diver, so he is drawn on top
+     * of the seabed, which is what "he rests on the sand" means on screen.
+     *
+     * Asserted against the source because nothing in a headless JVM can issue a draw call.
+     */
+    @Test
+    fun `the sandbank is drawn after the backdrop and before the walls`()
+    {
+        val source = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+        val backdrop = source.indexOf("drawBackdrop(surface, cam,")
+        val sand = source.indexOf("drawSandBank(surface, cam,")
+        val walls = source.indexOf("drawColumnWalls(surface, cam,")
+        val diver = source.indexOf("drawDiver(surface, sim,")
+
+        assertTrue(backdrop in 0 until sand, "drawSandBank must be called after drawBackdrop — the silhouettes are behind everything in the water")
+        assertTrue(sand in 0 until walls, "drawSandBank must be called before drawColumnWalls — the opaque walls' ragged edge has to sit OVER the sand's ends")
+        assertTrue(sand < diver, "drawSandBank must be called before drawDiver, or the diver is behind the seabed he is standing on")
+    }
+
+    /**
+     * A NORMAL-MAPPED SPRITE IS ONE WORLD RECT SUBMITTED TWICE, and the second call's arguments
+     * must be a COPIED ARGUMENT LIST rather than a second derivation. Get it wrong and the
+     * lighting slides off the sand by however far the two derivations disagree — which reads as
+     * bad art rather than as a bug, and which no still frame at one depth reliably shows.
+     * `NormalMapRenderer.drawNormalMap` takes no uv arguments at all, so there is no
+     * second-derivation route that could even be made to work.
+     */
+    @Test
+    fun `the sandbank's normal map is submitted on the same rect as its albedo`()
+    {
+        val body = File("src/main/kotlin/render/DiveRenderer.kt").readText()
+            .substringAfter("private fun drawSandBank(")
+            .substringBefore("\n    }")
+
+        assertTrue(
+            body.contains("centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN"),
+            "drawSandBank's albedo call must use the plain (centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN) tuple"
+        )
+        val occurrences = Regex("centreX, centreY, width, height, 0f, CENTRE_ORIGIN, CENTRE_ORIGIN")
+            .findAll(body).count()
+        assertEquals(
+            2, occurrences,
+            "the rect must appear EXACTLY twice in drawSandBank — once as albedo on `main` and once " +
+            "on gi_normal_map, as a copied argument list. Found $occurrences."
+        )
+    }
+
     /** IEC 61966-2-1 sRGB -> linear, the transfer the GPU applies to an SRGBA8 sample. */
     private fun srgbToLinear(c: Float): Float =
         if (c <= 0.04045f) c / 12.92f else Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
