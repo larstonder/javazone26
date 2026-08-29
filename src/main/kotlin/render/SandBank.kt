@@ -95,6 +95,33 @@ object SandBank
      * pixels of open water under him on a 1080p 16:9 panel. Going ONTO the sand is fine; going
      * BENEATH it is not, and that is what the mean buys. If the gap ever reads as floating, this
      * constant alone is the lever and everything else follows from it.
+     *
+     * THIS ANCHOR ASSUMES AN UNROTATED SPRITE, AND ORDINARY PLAY IS MOSTLY NOT THAT.
+     * `DiverSprite.FIN_REACH_METRES` is measured from the deepest opaque texel row of an
+     * UNROTATED cell, but `DiveRenderer.drawDiver` draws the body rotated to
+     * `DiverSprite.bodyAngleFor(beamHeading)`, and neither this placement nor `SandBankTest`
+     * accounts for that rotation.
+     *
+     * At 0° and 180° (head-down, head-up) it is exact — the crown sits at texel row 2 and the
+     * fins at row 381, both exactly `FIN_REACH_METRES` = 4.453125 m from centre, so a vertical
+     * diver still lands on the crest to the digit. At ±90° — a diver swimming HORIZONTALLY along
+     * the bottom at 160 m, which is ordinary play, not an edge case — the fin is no longer the
+     * lowest point of his silhouette at all: rotated 90°, the sprite's rendered WIDTH becomes the
+     * vertical extent, so the lowest point is at most
+     * `DiverSprite.widthForHeight(Framing.DIVER_HEIGHT_METRES) / 2` = 2.953125 / 2 = 1.4766 m
+     * from centre — not the 4.453125 m this constant was solved against. He floats roughly
+     * 4.453125 − 1.4766 ≈ 2.98 m, i.e. about 3 m, above the mean crest for as long as he swims
+     * level — roughly 58 screen pixels on a 1080p 16:9 panel.
+     *
+     * THERE IS NO CHEAP FIX, AND THIS CONSTANT IS NOT THE LEVER FOR IT — do not lower the
+     * placement to close the horizontal gap. Doing so would push the vertical case (exact today)
+     * BELOW the crest instead: the two orientations need different placements, and this file has
+     * only the one number. A real fix needs the reach used here to vary with the same heading
+     * `drawDiver` rotates by, which is a runtime quantity (`DiveLighting`'s smoothed torch aim)
+     * and cannot live in a compile-time placement constant at all. Neither the design spec nor
+     * any test currently mentions rotation, and Task 8's verification frame happened to show an
+     * upright diver — so every capture on record so far is the best case, not a representative
+     * one.
      */
     const val QUAD_TOP_DEPTH = 160.30069f
     const val MEAN_CREST_DEPTH = QUAD_TOP_DEPTH + CREST_OFFSET_METRES           // 164.4531

@@ -336,6 +336,15 @@ class SandBankTest
      * [SandBank.QUAD_BOTTOM_DEPTH] from the art. The design's §7.2 is why there are two names —
      * `DiveCamera` must never reference an object holding engine `Texture`s. THIS is the
      * assertion that keeps the camera's floor honest to the art after a re-bake.
+     *
+     * NOT THE ONLY TEST COUPLING THIS PAIR. `DiveCameraTest`'s
+     * `the frame never paints past the sandbank's bottom edge, at any visible depth or diver depth`
+     * sweep compares the camera's clamped depth against [SandBank.QUAD_BOTTOM_DEPTH] at
+     * `EPS = 1e-5f` — a hundred times tighter than the `1e-3f` here. Today both constants are the
+     * same float32 value, so neither tolerance is marginal; but this test's `1e-3f` would pass a
+     * re-placement that rounds `QUAD_TOP_DEPTH` to fewer decimals, and that same rounding could
+     * fail the sweep's `1e-5f` — a correct-code red in `DiveCameraTest`, with nothing wrong in
+     * `DiveCamera` itself, from an edit made here.
      */
     @Test
     fun `the camera's sea floor and the art's quad bottom are the same depth`()
@@ -360,11 +369,21 @@ class SandBankTest
      * `MEAN_CREST_DEPTH = Tuning.MAX_DEPTH + FIN_REACH_METRES` — this substitutes to
      * `(a + b) - b == a`, an identity no edit anywhere can falsify. Do not re-invert it.
      *
-     * THE TOLERANCE IS THE LITERAL'S PRECISION, NOT SLACK. `QUAD_TOP_DEPTH` is a decimal
-     * placement literal, so the chain evaluates to 164.4531236 against `160 + 4.453125` =
-     * 164.453125 — a gap of 1.4e-6 m. The smallest REAL breakage is a one-texel shift in the
-     * measured crest row, which moves the left-hand side by `HEIGHT_METRES / 500` = 0.04926 m:
-     * fifty times this tolerance. Every other breakage moves it by metres.
+     * THE TOLERANCE IS THE LITERAL'S PRECISION, NOT SLACK — AND NOT, BY ITSELF, A SAFETY MARGIN
+     * AGAINST A RE-BAKE. `QUAD_TOP_DEPTH` is a decimal placement literal, so the chain evaluates
+     * to 164.4531236 against `160 + 4.453125` = 164.453125 — a gap of 1.4e-6 m, which is all this
+     * `1e-3f` actually checks: agreement between literals that were fitted to each other by hand,
+     * never a re-measurement of the art. That re-measurement is `the mean crest row is re-derived
+     * from the committed diffuse's alpha` above, and ITS tolerance — not this one — is the real
+     * ceiling on what a re-bake can get away with: ±1 texel row, i.e. `HEIGHT_METRES / 500` =
+     * 0.04926 m. So "fifty times below the smallest real breakage" is only true in the instant
+     * right after a re-bake's literal has been re-fit by hand; a re-bake that shifts the true mean
+     * crest by LESS than one row leaves `MEAN_CREST_TEXEL_ROW` looking correct to that test and
+     * moves the fins 0–0.04926 m off the real crest with nothing here, or there, going red. The
+     * granularity this whole art→placement pipeline can actually detect is one texel, not 1e-3 m.
+     * Imperceptible in practice — this note is about what is checked, not a call to alarm. Every
+     * OTHER kind of breakage (a re-placement, a change to `Tuning.MAX_DEPTH` or `FIN_REACH_METRES`
+     * with no matching update here) still moves this assertion by metres and is caught easily.
      */
     @Test
     fun `the sandbank's mean crest and the diver's fins put him on the floor at MAX_DEPTH`()

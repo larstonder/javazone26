@@ -1066,7 +1066,10 @@ object DiveRenderer
         // The engine's own view test, padded by nothing: this is a quad on `main`, so its
         // rasterised extent is exactly the rect below. A square of the LARGER side strictly
         // contains it, so the test can only ever be conservative — 98.5 m on a side against a
-        // 24.6 m quad, which costs one skipped quad for the whole dive above about 100 m.
+        // 24.6 m quad. The square's top edge is `centreY - 49.258` = 123.357 m; at steady state
+        // `worldBottom` = `Framing.targetCameraDepth(diverDepth) + V` = `diverDepth + 36` (V = 60),
+        // so the quad first enters the frame at a diver depth of about 87 m — not the ~100 m an
+        // earlier version of this comment said, which was never checked against the constants.
         if (!cam.showsSquare(centreX, centreY, max(width, height))) return
 
         // drawTexture MODULATES by the surface's current draw colour, and the skirt above just
