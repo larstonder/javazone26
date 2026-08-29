@@ -34,7 +34,7 @@ best source in the repo.
 | 3 | `mainSurface.setBackgroundColor(Color.BLANK)` (`:1188`) | The world surface is **transparent where nothing is drawn**. That one line is what lets a sky exist behind it. |
 | 4 | `WaterRenderer.addTo(mainSurface)` then `IridescenceRenderer.addTo(mainSurface)` (`:1235`, `:1237`) | Batch renderers flush in the order they were **added**, not called, and every one writes depth - including for fragments at alpha 0. Reverse these two and each pearl punches a hole through the sea. `SurfaceRendererOrderTest` fails the build on both halves. |
 | 5 | `engine.config.fixedTickRate = 60f`, `camera.snapTo`, `CameraRig.snap` (`:1238-1251`) | **`snap`, not `apply`.** Frame 1 runs no fixed step, so the engine's interpolator reads only its un-refreshed snapshot - which is the identity camera. Measured at 2400x1800: frame 1 drawn with `viewMatrix = identity` while `scale` already read 30. |
-| 6 | `DiverSprite.load` / `RockFace.load` / `Backdrop.load` (`:1266-1273`) | File-backed assets. `AssetManager.load` only queues; the GL upload lands several frames later. |
+| 6 | `DiverSprite.load` / `RockFace.load` / `Backdrop.load` / `SandBank.load` (`:1461`, `:1473-1474`, `:1481`) | File-backed assets. `AssetManager.load` only queues; the GL upload lands several frames later. `SandBank` is queued HERE rather than with the draw code, so `ready()`'s one WARN is never spent on a self-inflicted false alarm. |
 | 7 | `LightEmitter.load` / `MoteSprite.load` / `PearlNormalMap.load` (`:1291-1293`) | Generated textures. No file behind them, so all three must be **filled before they are queued**. |
 | 8 | `DiveLighting.setup(engine)` (`:1295`) | Creates the empty scene, adds `EntityRendererImpl` + `GlobalIlluminationSystem`, sets GI's resolution and AO radius, and attaches `ColorGradingEffect` (UNCHARTED2) and `BloomEffect` to `mainSurface`. Must come after the world's renderers (step 4). |
 | 9 | `IridescenceRenderer.addTo(hudSurface)` (`:1313`) | The second instance of the same program. One shader, two surfaces, two coordinate spaces. |
@@ -58,8 +58,10 @@ best source in the repo.
    NOT `simulationAdvances`: also true in `IDLE`, so the diver's kick animates on the attract
    screen while the sim itself stays frozen (task 9 - a motionless diver behind a fresh attract
    arrival reads as dead, not idle).
-5. `camera.update(dt, sim.depth)` then `CameraRig.apply(engine, camera.depth)` - **outside** both
-   gates above, because a paused or attract frame still has to be drawn with a valid camera.
+5. `camera.update(dt, sim.depth, visibleDepthMetres())` then `CameraRig.apply(engine, camera.depth)` -
+   **outside** both gates above, because a paused or attract frame still has to be drawn with a valid
+   camera. `visibleDepthMetres()` is what `DiveCamera`'s sandbank floor clamp needs; it reads
+   `mainSurface.config`, not `engine.window`, for the same reason screen-space code does (§2).
 
 **Camera easing runs on the fixed tick, not the render clock.** `updateViewMatrix` interpolates
 every camera parameter from a snapshot taken at the top of each fixed step, so a render-clock
@@ -217,11 +219,12 @@ whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min`
 
 | File | Owns |
 |---|---|
-| `DiveRenderer.kt` | The world on `mainSurface`: zone bands, backdrop, sea quad, walls, air pockets, pearls, anglerfish, diver, motes. Holds `GI_REFLECTANCE_FLOOR` (`:205`) and the zone colour ramps. |
+| `DiveRenderer.kt` | The world on `mainSurface`: zone bands, backdrop, sea quad, sandbank, walls, air pockets, pearls, anglerfish, diver, motes. Holds `GI_REFLECTANCE_FLOOR` (`:205`) and the zone colour ramps. |
 | `Draw.kt` | `fillRect`, `fillRectCentred`, `showsSquare`, `drawTextWithOutline`, `textOutlineOffset`. Every solid rectangle in the game goes through here. |
 | `DepthBlend.kt` | Smooth per-zone interpolation anchored on zone **midpoints**, so nothing steps at a boundary. Zero allocation. |
 | `RockFace.kt` | The cliff: one edge tile per side (never tiled horizontally), a mirrored body behind it, and a crest above the waterline. The geometry that makes "exactly one cliff sprite at each end" structural. |
 | `Backdrop.kt` | Three parallax silhouette ridges, alpha masks tinted by `DiveRenderer.silhouetteColor`. Vertical parallax only, because there is no horizontal camera. |
+| `SandBank.kt` | The seabed at the foot of the trench: one quad, exactly `Framing.VISIBLE_WIDTH_METRES` across, never tiled. `QUAD_TOP_DEPTH` is the single chosen placement and everything geometric is derived from the art outward - do not re-invert that, or `SandBankTest`'s relationship assertion becomes an identity. Its `skirtDepth` branch is unreachable with the camera clamp in place, on purpose. |
 | `Motes.kt` | Marine snow as a **stateless hashed lattice**, not a particle system: culled by construction, infinite, deterministic, zero-allocation. Drawn on `main` so GI darkens it, and it emits nothing - a mote is an overlay the water is seen through, and only the torch makes one legible in the deep. |
 
 ### Lighting
@@ -320,7 +323,8 @@ of them by decompiling `pulse-engine-0.13.0.jar` after a bug that produced no me
 | **`SpriteSheet` constructor argument order** | It is `(..., format, maxMipLevels, hCells, vCells)`, *not* the field declaration order. Passing `(..., cols, rows, 0)` builds a zero-length texture array; it only surfaces two stages later as an AIOOBE from `getTexture(0)`. | `DiverSpriteTest.the sheets are declared with the argument order the engine actually has` |
 | **`maxMipLevels = 0`** | `glTexStorage3D` with `levels = 0` is `GL_INVALID_VALUE`, so no storage is allocated and every later upload fails too. `1` means "one level, no mips". | same test, which reads `maxMipLevels` back off the asset |
 | **Asynchronous sprite upload** | `SpriteSheet.textures` is populated in `onUploaded`, several frames after `engine.asset.load`; `getTexture` before that *throws*. Everything drawing an asset must gate: `DiverSprite.sheetsReady()`, `RockFace`/`Backdrop`'s ready flags, `LightEmitter.emitter()` / `MoteSprite.sprite()` falling back to `Texture.BLANK`, `PearlNormalMap.normals()` returning null. | `DiverSpriteTest`, `BackdropTest.no layer is ready before the engine has uploaded it`, `LightEmitterTest` |
-| **`diver-normal.png` must keep its hyphen** | The engine's `loadAll` auto-loader keys on the substring `_normal` and, when it matches, forces `RGBA8` with 10 mip levels. Mip generation averages across cell boundaries, so adjacent frames of the loop would bleed into each other. | `DiverSprite.kt:51`; the same note is repeated in `PearlNormalMap.kt:280` |
+| **`diver-normal.png` / `oxygen-normal.png` / `sandbank-normal.png` must keep their hyphen** | The engine's `loadAll` auto-loader keys on the substring `_normal` and, when it matches, forces `RGBA8` with 10 mip levels. Mip generation averages across cell boundaries, so adjacent frames of the loop would bleed into each other. | `DiverSprite.kt:51`; the same note is repeated in `PearlNormalMap.kt:280`; `SandBankTest.neither committed filename contains an underscore before normal` |
+| **A normal map baked in the wrong axis** | `assets/sandbank/normal.png` is world-space Y-up (a seabed rendered top-down), so shipping it unswizzled lights the floor like a wall. Silent in every test and in every still frame; nothing downstream complains. `tools/build_backdrop.py`'s `swizzle_yz` does the y-z swap, with no sign flip - `+y = up` is settled by `iridescence.frag:258` and `PearlNormalMap.kt`'s capture probe. | `SandBankTest.the committed normals are unit length, Z-dominant and face up`, which separates all three failures (swizzle dropped / sign flipped / sRGB decode dropped) |
 | **A light's falloff must live in ALPHA, not colour** | `drawLight` takes the emitter's shape from the texture's alpha, and `Texture.BLANK` means "no texture" - so the whole quad emits, corners included. But GI samples a light's *colour* where a ray **hits** it, i.e. on its rim, so an RGB ramp reaching zero at the rim scales all escaping light to zero. | `LightEmitterTest.the generated colour is flat, because GI samples a light's colour on its rim` |
 | **A light emitter's SIZE, not just its shape** | A light cannot avoid illuminating its own body, and the emitter quad is a region that rasterises into the scene. At body scale you see the emitter instead of the light. `DIVER_LIGHT_SIZE_METRES` is deliberately decoupled from the diver's height and must not be re-tied. | `DiveLightingTest.the torch emits from a quad far smaller than the diver, not from one the size of him` |
 | **Renderer attach order on one surface** | Batch renderers flush in **add** order and all of them write depth, including at alpha 0. Whichever was added first wins the depth test wherever two overlap. | `SurfaceRendererOrderTest` |
