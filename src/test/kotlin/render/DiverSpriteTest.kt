@@ -222,6 +222,96 @@ class DiverSpriteTest
         )
     }
 
+    // --- The kick's animation speed -------------------------------------------------------------
+
+    /**
+     * [DiverSprite.advanceLoop] gained a speed multiplier so the swim loop can run faster for the
+     * 0.35 s a kick burst lasts. **The default must be bit-for-bit the old behaviour**, because
+     * every other caller — attract mode, and the paused/idle path — still calls the single-argument
+     * form and none of them should have to know the parameter exists.
+     *
+     * `dt * 1f == dt` exactly in IEEE-754, so this is a real equality rather than a tolerance.
+     */
+    @Test
+    fun `advanceLoop's default multiplier is exactly the old single-argument behaviour`()
+    {
+        DiverSprite.restartLoop()
+        repeat(97) { DiverSprite.advanceLoop(1f / 60f) }
+        val implicit = DiverSprite.currentFrame
+
+        DiverSprite.restartLoop()
+        repeat(97) { DiverSprite.advanceLoop(1f / 60f, 1f) }
+        val explicit = DiverSprite.currentFrame
+
+        assertEquals(explicit, implicit, "advanceLoop(dt) and advanceLoop(dt, 1f) must be the same call")
+        DiverSprite.restartLoop()
+    }
+
+    /**
+     * The multiplier scales the RATE, and it does so by scaling `dt` rather than the phase — which
+     * is what keeps [DiverSprite.advancePhase]'s frame-rate independence and its wrap intact.
+     *
+     * The two step sizes are chosen to be exactly representable so this can assert an exact frame
+     * rather than a fuzzy one: 0.25 s at 24 fps is frame 6 on the nose, and 0.25 s at 1.5x is
+     * 0.375 s of loop, i.e. frame 9. A multiplier applied to the phase instead of to `dt` would
+     * give the same answer here for one step and then diverge — so the twelve-minute wrap case
+     * below is the other half of the assertion.
+     */
+    @Test
+    fun `the speed multiplier advances the loop proportionally faster`()
+    {
+        DiverSprite.restartLoop()
+        DiverSprite.advanceLoop(0.25f)
+        assertEquals(6, DiverSprite.currentFrame, "0.25 s at 24 fps is frame 6")
+
+        DiverSprite.restartLoop()
+        DiverSprite.advanceLoop(0.25f, 1.5f)
+        assertEquals(9, DiverSprite.currentFrame, "0.25 s played at 1.5x is 0.375 s of loop, i.e. frame 9")
+
+        DiverSprite.restartLoop()
+    }
+
+    /**
+     * The kick's multiplier must not be able to break the two guarantees the loop already had:
+     * the phase stays inside `[0, CYCLE_SECONDS)` for the length of an unattended booth day, and
+     * [DiverSprite.frameIndex] never reaches the grid's unused 42nd cell (whose contents the bake
+     * never wrote — it would flash as a blank frame).
+     *
+     * Run at the kick rate for twelve simulated minutes, which is far longer than any real burst,
+     * precisely because the failure this guards is an accumulator that grows without bound.
+     */
+    @Test
+    fun `the kick multiplier cannot push the loop out of its frame range`()
+    {
+        DiverSprite.restartLoop()
+        repeat(60 * 60 * 12) {
+            DiverSprite.advanceLoop(1f / 60f, DiverSprite.KICK_CYCLE_MULTIPLIER)
+            val frame = DiverSprite.currentFrame
+            assertTrue(
+                frame in 0 until DiverSprite.FRAME_COUNT,
+                "the loop reached frame $frame, outside 0 until ${DiverSprite.FRAME_COUNT}"
+            )
+        }
+        DiverSprite.restartLoop()
+    }
+
+    /**
+     * The one thing the constant's VALUE has to satisfy: it must speed the loop up. A multiplier
+     * of 1 would make the kick invisible in the art, and anything below 1 would have the diver
+     * slow down at the exact moment he is working hardest — the opposite of what was asked for.
+     * The 1.5 itself is a taste decision (see the constant's doc) and is pinned here only so a
+     * casual edit has to be a deliberate one.
+     */
+    @Test
+    fun `the kick plays the swim loop faster, not slower`()
+    {
+        assertTrue(
+            DiverSprite.KICK_CYCLE_MULTIPLIER > 1f,
+            "a kick must speed the loop up; ${DiverSprite.KICK_CYCLE_MULTIPLIER} would slow it down or freeze it"
+        )
+        assertEquals(1.5f, DiverSprite.KICK_CYCLE_MULTIPLIER, 1e-6f, "1.5x by design decision — see the constant's doc")
+    }
+
     /** A fresh run opens on the loop's authored first frame, not wherever the last player left it. */
     @Test
     fun `a new run restarts the loop at its first frame`()

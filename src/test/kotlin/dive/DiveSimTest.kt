@@ -403,7 +403,13 @@ class DiveSimTest {
     fun `hitting the column edge kills horizontal momentum`() {
         val sim = DiveSim(seed = 1L)
         sim.pearls.forEach { it.collected = true }
-        run(sim, 6f, idle.copy(horizontal = 1f, kick = true))
+        // Was 6f, and had to grow when kick became one boost per click rather than a hold.
+        // Nothing about the wall changed: 6 s of CONTINUOUSLY boosted lateral swimming covered the
+        // 40 m to the column edge with room to spare, whereas one 0.35 s burst plus unboosted
+        // cruising (Buoyancy.lateralSpeed(0f, 1f, 1f) = 6 m/s) covers about 38.5 m in the same
+        // time and stops just short of the wall it is here to hit. The assertions below are
+        // unchanged — only the time allowed to reach the fixture is.
+        run(sim, 10f, idle.copy(horizontal = 1f, kick = true))
         assertEquals(Tuning.COLUMN_HALF_WIDTH, sim.x, 0.001f)
         assertEquals(0f, sim.vx, 0.001f, "velocity must not persist into a wall")
     }

@@ -309,6 +309,34 @@ object DiverSprite
     const val CYCLE_SECONDS = FRAME_COUNT / CYCLE_FPS
 
     /**
+     * How much faster the one loop plays while a kick burst is active: 1.5x, i.e. 36 fps and a
+     * 1.14 s cycle for the 0.35 s the burst lasts.
+     *
+     * READ THE PARAGRAPH ABOVE BEFORE TOUCHING THIS. [CYCLE_FPS]'s doc says the rate is "NOT
+     * MODULATED by speed or by load", and that is still true and still the rule — an earlier
+     * draft ramped the rate CONTINUOUSLY with effort and that is explicitly not wanted. This is
+     * not that. `DiveSim.kicking` is a boolean that is true for a fixed 0.35 s window opened by
+     * a discrete button press, so there are exactly two rates and no threshold anything can
+     * stutter across: the loop is at 24 fps or at 36 fps, it changes only when the player
+     * clicks, and it changes back on a timer rather than on a measurement of the diver's speed.
+     *
+     * ## Why it lives here and not in `dive/Tuning.kt`
+     *
+     * The burst's LENGTH and its multipliers are simulation (`Tuning.KICK_BURST_SECONDS`,
+     * `KICK_SPEED_MULT`, `KICK_AIR_MULT`) — they decide where the diver ends up. This number
+     * decides only how the ART plays over that window, changes nothing about the run, and could
+     * be set to 1f without altering a single simulated value. `Tuning` is the tunable set for the
+     * MODEL and presentation must never leak into `dive/`, so it belongs with [CYCLE_FPS] — the
+     * other constant that says how fast this loop plays — rather than beside the burst length it
+     * happens to share a window with.
+     *
+     * A DESIGN DECISION, NOT A MEASUREMENT, exactly like [CYCLE_FPS]: 1.5 was chosen by the
+     * project owner. Nothing was timed or fitted to arrive at it, and nothing depends on its
+     * value — it is safe to change on taste alone.
+     */
+    const val KICK_CYCLE_MULTIPLIER = 1.5f
+
+    /**
      * The loop phase [dt] seconds later, wrapped into `[0, CYCLE_SECONDS)`.
      *
      * THE PHASE IS ACCUMULATED ELAPSED SECONDS, NOT A FRAME COUNTER. That is what makes it
@@ -419,9 +447,23 @@ object DiverSprite
      * same gate that ticks the simulation (`simulationAdvances`): the sprite must also animate
      * in IDLE, where the sim stays frozen. See [loopPhase]'s doc for why these are two gates
      * and not a second, ungated clock.
+     *
+     * [speedMultiplier] scales the loop's rate for this tick and nothing else. It exists for the
+     * kick burst — the caller passes [KICK_CYCLE_MULTIPLIER] while `DiveSim.kicking` is true, so
+     * the swim loop surges with the boost instead of drifting on at cruise pace through the one
+     * moment the diver is visibly working. It defaults to `1f`, which is bit-for-bit the old
+     * behaviour (`dt * 1f == dt`), so the attract-mode and paused callers need not care.
+     *
+     * IT SCALES `dt`, NOT THE PHASE. That is what preserves [advancePhase]'s two guarantees: the
+     * argument is still elapsed seconds, so the loop stays frame-rate independent (a multiplier
+     * applied at 240 fps and at 60 fps advances the same amount per wall-clock second), and the
+     * accumulator is still wrapped every step, so it can never grow into the range where a Float
+     * ULP exceeds a frame's worth of time. Multiplying the PHASE instead would break both — it
+     * would rescale the whole cycle position and jump the diver to a different frame the instant
+     * a kick started, rather than simply playing on faster from where he was.
      */
-    fun advanceLoop(dt: Float)
+    fun advanceLoop(dt: Float, speedMultiplier: Float = 1f)
     {
-        loopPhase = advancePhase(loopPhase, dt)
+        loopPhase = advancePhase(loopPhase, dt * speedMultiplier)
     }
 }

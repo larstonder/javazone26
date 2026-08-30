@@ -25,6 +25,7 @@ import render.BoothStatus
 import render.CameraInvariants
 import render.CameraRig
 import render.ControlHints
+import render.ControllerFamily
 import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
@@ -37,6 +38,7 @@ import render.MoteSprite
 import render.Motes
 import render.OpaqueWaterEffect
 import render.OxygenSprite
+import render.PadAxis
 import render.PearlNormalMap
 import render.RockFace
 import render.RunLifecycle
@@ -261,8 +263,15 @@ fun parseGamepadButton(raw: String?, fallback: GamepadButton): GamepadButton
  * A configured button's name as it should appear on screen. Thin, but it is the seam that
  * keeps [render.ControlHints] engine-free: that object takes `String` labels and never a
  * `GamepadButton`, so it needs no pulseengine import and can be tested with no GL context.
+ *
+ * [family] is the pad's silkscreened legend, detected in `refreshControlHints` from
+ * `glfwGetGamepadName` (see [ControllerFamily] for the evidence that `Gamepad.id` is the raw
+ * GLFW joystick index). It DEFAULTS to [ControllerFamily.GENERIC], which is this function's
+ * behaviour before families existed — the enum's own name — so an unrecognised booth encoder
+ * and any caller that does not care about the legend are both byte-identical to before.
  */
-fun gamepadButtonLabel(button: GamepadButton): String = ControlHints.labelFor(button.name)
+fun gamepadButtonLabel(button: GamepadButton, family: ControllerFamily = ControllerFamily.GENERIC): String =
+    ControlHints.labelFor(button.name, family)
 
 /**
  * A warning message for `createGame` to log if the key was present in application.cfg, in
@@ -306,9 +315,10 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
 
 /**
  * Warnings for configured-button collisions that are ALWAYS a mistake, regardless of
- * `RunLifecycle`'s state — currently just `kickButton == bleedButton` (by
- * [GamepadButton.code]). One warning string per problem, ready to log; empty when nothing
- * collides.
+ * `RunLifecycle`'s state. Three of them: `kickButton == bleedButton`,
+ * `exitButtonA == exitButtonB`, and `pauseButton` landing on either gameplay button — all
+ * compared by [GamepadButton.code]. One warning string per problem, ready to log; empty when
+ * nothing collides.
  *
  * WHY ONLY THIS ONE PAIR, when application.cfg configures four buttons and there are six
  * possible pairs among them. This function used to warn on ALL SIX — "any two of the four
@@ -343,6 +353,27 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
  * they are not interchangeable. Colliding them is never safe and is exactly the plausible
  * booth copy-paste (four adjacent lines, one mis-edited) this function exists to catch.
  *
+ * THE TWO CHECKS ADDED WITH THE PAD'S PAUSE AND EXIT (2026-08-30), and deliberately only
+ * these two — the paragraphs above are the standing argument for why a false alarm on the
+ * booth status line is worse than no alarm, and the pad keys open six more pairs that are
+ * all harmless:
+ *  - `exitButtonA == exitButtonB` is the one collision that silently REMOVES a protection.
+ *    The exit hold is an AND across two buttons on one pad specifically so a single stuck
+ *    contact cannot shut the cabinet down for the day (see the exit-hold comment in
+ *    `updateGame`); pointed at one button — or at two aliases of one, which is why this is
+ *    `.code` like the rest — the AND collapses to `x && x` and the whole reason for the
+ *    second key is gone, with the config file still LOOKING like it names two buttons.
+ *  - `pauseButton` on `kickButton` or `bleedButton` is live-at-the-same-time in the way the
+ *    restart keys are not: `RunLifecycle.update`'s `PLAYING` branch reads `pauseEdge`, and
+ *    kick/bleed are read on exactly that state, so one physical button would kick the diver
+ *    and open the pause screen in the same frame, mid-run, in front of the queue.
+ * `pauseButton` colliding with `restartButton`/`restartButtonAlt` is NOT checked: a restart
+ * edge and a pause edge are consumed in disjoint states (`RUN_OVER`/`IDLE` versus
+ * `PLAYING`/`PAUSED`), the same disjointness that makes kick-versus-restart safe above.
+ * `exitButtonA`/`exitButtonB` colliding with anything OTHER than each other is not checked
+ * either: exit is read only while `PAUSED`, which no other button in this map can reach,
+ * and it needs both of them held for [render.RunLifecycle.EXIT_HOLD_SECONDS] regardless.
+ *
  * Compared on [GamepadButton.code], not name or `.ordinal`, so an alias does not evade
  * the check: `GamepadButton` has entries that name-compare as different buttons but are
  * the SAME physical input on this hardware (`A`/`CROSS`, `X`/`SQUARE`, `DPAD_LEFT`/`LAST`,
@@ -358,15 +389,36 @@ fun gamepadButtonCollisionWarnings(
     kickButton: GamepadButton,
     bleedButton: GamepadButton,
     restartButton: GamepadButton,
-    restartButtonAlt: GamepadButton
+    restartButtonAlt: GamepadButton,
+    pauseButton: GamepadButton,
+    exitButtonA: GamepadButton,
+    exitButtonB: GamepadButton
 ): List<String>
 {
+    // ACCUMULATES rather than returning at the first hit, which is what the single-check
+    // version did when there was only one check to return from. A technician who
+    // copy-pasted one block of the button map has plausibly broken more than one line of
+    // it, and reporting only the first problem would send them back to the cabinet for a
+    // second round — these warnings are read off a booth log after the fact, not from an
+    // interactive prompt that could be re-run. One `ArrayList` at startup, not per frame.
+    val warnings = ArrayList<String>(0)
+
     // restartButton/restartButtonAlt are read but not compared — see the class doc for
     // why every collision involving them is safe by this codebase's own design and would
     // be a false alarm.
     if (kickButton.code == bleedButton.code)
-        return listOf("application.cfg: kickButton and bleedButton both resolve to the same physical button ($kickButton, code ${kickButton.code}) - kick and bleed would always fire together. Check for a copy-paste.")
-    return emptyList()
+        warnings.add("application.cfg: kickButton and bleedButton both resolve to the same physical button ($kickButton, code ${kickButton.code}) - kick and bleed would always fire together. Check for a copy-paste.")
+
+    if (exitButtonA.code == exitButtonB.code)
+        warnings.add("application.cfg: exitButtonA and exitButtonB both resolve to the same physical button ($exitButtonA, code ${exitButtonA.code}) - the exit hold needs TWO buttons held together precisely so one stuck contact cannot shut the cabinet down, and this collapses it back to one. Give them different buttons.")
+
+    if (pauseButton.code == kickButton.code)
+        warnings.add("application.cfg: pauseButton and kickButton both resolve to the same physical button ($pauseButton, code ${pauseButton.code}) - a player's kick would open the pause screen mid-run. Check for a copy-paste.")
+
+    if (pauseButton.code == bleedButton.code)
+        warnings.add("application.cfg: pauseButton and bleedButton both resolve to the same physical button ($pauseButton, code ${pauseButton.code}) - a player's bleed would open the pause screen mid-run. Check for a copy-paste.")
+
+    return warnings
 }
 
 /**
@@ -476,7 +528,10 @@ fun parseDepthPin(raw: String?, maxDepth: Float): Float?
  * the first anyone would know is a photograph of the cabinet.
  *
  * `É` (U+00C9 = 201) sits comfortably inside the range, which is why `"ÉN PUST TIL"` was
- * fine and made this look like a mystery rather than a bounds check.
+ * fine and made this look like a mystery rather than a bounds check. (That string is no
+ * longer the title - see [ScreenText.TITLE] - but it is left standing here because it is
+ * the worked example that explains the bounds, and the rule it demonstrates is unchanged:
+ * accented Norwegian is safe, general punctuation is not.)
  *
  * PRACTICAL RULE FOR EVERY DRAWN STRING IN THIS FILE:
  *   - Norwegian is safe. Æ Ø Å æ ø å are U+00C5..U+00F8, inside the atlas.
@@ -543,7 +598,13 @@ object ScreenText
      */
     const val SEPARATOR = "  ·  "
 
-    const val TITLE = "ÉN PUST TIL"
+    // Renamed from "ÉN PUST TIL" on 2026-08-30: the booth audience is international and
+    // the game should not greet them in Norwegian. PLAYER-FACING ONLY - every Kotlin
+    // identifier, the main class `EnPustTilKt`, GAME_NAME and application.cfg's `gameName`
+    // deliberately still say EnPustTil, so CLAUDE.md's booth capture and recovery
+    // procedures (which are keyed on `pgrep -f EnPustTilKt`) keep working verbatim. Do not
+    // "finish" this rename in the days before a booth without re-reading those procedures.
+    const val TITLE = "ONE MORE BREATH"
     const val LEADERBOARD_HEADING = "TODAY'S DIVERS"
 
     /**
@@ -992,6 +1053,24 @@ class EnPustTil : PulseEngineGame()
      */
     private val lifecycleEdges = LifecycleInputEdges()
 
+    /**
+     * Pause's own edges, a SECOND instance rather than a second button offered to
+     * [lifecycleEdges]. Two reasons, and the first is correctness rather than tidiness:
+     * [LifecycleInputEdges.commit] returns ONE boolean for every source it was given, so
+     * folding pause in would mean a pause press also read as start/restart/confirm — the
+     * pad's Create button would advance your initials. The second is the class's whole
+     * point: sources are per-`(padId, code)`, so a stuck `pauseButton` still cannot mask a
+     * live restart button, and the reverse, exactly as a stuck START cannot mask A today.
+     *
+     * The cost of the extra instance is two more parallel-list slots per connected pad; its
+     * stuck/chatter counters are deliberately NOT added to the booth status line, which
+     * reports the START-path counters that decide whether the cabinet can be STARTED at all
+     * — a stuck pause button is a nuisance, a stuck start button is a dead cabinet, and
+     * merging the two numbers would blunt the one that matters (see `LifecycleInputEdges`'
+     * `stuckCount`/`chatterCount` docs on why one number for two repairs is the wrong shape).
+     */
+    private val pauseEdges = LifecycleInputEdges()
+
     // Score persistence — registered as an engine Service in onCreate below, which
     // gives it onCreate (load from disk)/onDestroy (final save) hooks driven by the
     // engine's own lifecycle. See ScoreRepository's class doc for the verified call
@@ -1019,6 +1098,13 @@ class EnPustTil : PulseEngineGame()
     private var bleedButton = DEFAULT_BLEED_BUTTON
     private var restartButton = DEFAULT_RESTART_BUTTON
     private var restartButtonAlt = DEFAULT_RESTART_BUTTON_ALT
+    // Pause and exit reached the pad on 2026-08-30 (docs/superpowers/specs/
+    // 2026-08-30-controller-parity-design.md). They are config for the same reason the four
+    // above are: the booth encoder's real codes are not known until one is enumerated, and a
+    // technician at the cabinet has Notepad and no toolchain.
+    private var pauseButton = DEFAULT_PAUSE_BUTTON
+    private var exitButtonA = DEFAULT_EXIT_BUTTON_A
+    private var exitButtonB = DEFAULT_EXIT_BUTTON_B
     private var stickDeadzone = DEFAULT_STICK_DEADZONE
 
     /**
@@ -1044,6 +1130,26 @@ class EnPustTil : PulseEngineGame()
     // for why this is a separate field from arcadeHints rather than folded into it. Starts
     // false; once a real detection sets it true, it never goes false again this process.
     private var arcadeEverDetected: Boolean = false
+
+    /**
+     * The legend printed on the pad currently in the player's hands, driving what
+     * [gamepadButtonLabel] renders — `CROSS kick` on a DualSense rather than `A kick`. See
+     * [refreshControlHints], which is the ONLY writer, for how the name is read and why it is
+     * read there. GENERIC until a pad is actually identified, which is what every screen
+     * showed before families existed.
+     */
+    private var controllerFamily: ControllerFamily = ControllerFamily.GENERIC
+
+    /**
+     * The pad id [controllerFamily] was derived from, or -1 before any pad has been named.
+     * This is the gate that keeps `glfwGetGamepadName`'s `String` allocation off the
+     * per-frame path — see [refreshControlHints]. It is NOT cleared on disconnect, on
+     * purpose: a chattering connector would otherwise re-read (and strobe) every frame, and
+     * a booth cabinet does not swap pads mid-day. The cost is a stale legend if a DIFFERENT
+     * device is later plugged into the same slot, which is a wrong word on a screen against
+     * a flickering one in front of a queue.
+     */
+    private var familyPadId: Int = -1
 
     // The five composed hints. ControlHints builds Strings, and CLAUDE.md forbids per-frame
     // allocation in the render path (the one written exemption is HUD numeric formatting, which
@@ -1247,10 +1353,16 @@ class EnPustTil : PulseEngineGame()
         val bleedButtonRawString = engine.config.getString("bleedButton")
         val restartButtonRawString = engine.config.getString("restartButton")
         val restartButtonAltRawString = engine.config.getString("restartButtonAlt")
+        val pauseButtonRawString = engine.config.getString("pauseButton")
+        val exitButtonARawString = engine.config.getString("exitButtonA")
+        val exitButtonBRawString = engine.config.getString("exitButtonB")
         kickButton = parseGamepadButton(kickButtonRawString, DEFAULT_KICK_BUTTON)
         bleedButton = parseGamepadButton(bleedButtonRawString, DEFAULT_BLEED_BUTTON)
         restartButton = parseGamepadButton(restartButtonRawString, DEFAULT_RESTART_BUTTON)
         restartButtonAlt = parseGamepadButton(restartButtonAltRawString, DEFAULT_RESTART_BUTTON_ALT)
+        pauseButton = parseGamepadButton(pauseButtonRawString, DEFAULT_PAUSE_BUTTON)
+        exitButtonA = parseGamepadButton(exitButtonARawString, DEFAULT_EXIT_BUTTON_A)
+        exitButtonB = parseGamepadButton(exitButtonBRawString, DEFAULT_EXIT_BUTTON_B)
         // stickDeadzone = 0 (the natural way to write "disable the deadzone") is all-digit
         // and therefore an Integer under the same coercion, not a Float — see
         // resolveDeadzone's doc. getInt checked first for the same reason dailySeed's is.
@@ -1262,7 +1374,7 @@ class EnPustTil : PulseEngineGame()
         // falls back to the compiled default with NO signal anywhere, and the reasonable
         // conclusion for a technician is "the config file doesn't work" — precisely the
         // failure Task 7 exists to prevent.
-        Logger.warn { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt deadzone=$stickDeadzone" }
+        Logger.warn { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt pause=$pauseButton exit=$exitButtonA+$exitButtonB deadzone=$stickDeadzone" }
 
         // Per-key, and now checked against ALL THREE coercion shapes (see
         // gamepadButtonConfigWarning's GENERALISED paragraph) — the summary line above
@@ -1273,11 +1385,14 @@ class EnPustTil : PulseEngineGame()
         gamepadButtonConfigWarning("bleedButton", bleedButtonRawString, engine.config.getInt("bleedButton"), engine.config.getFloat("bleedButton"), bleedButton, DEFAULT_BLEED_BUTTON)?.let { Logger.warn { it } }
         gamepadButtonConfigWarning("restartButton", restartButtonRawString, engine.config.getInt("restartButton"), engine.config.getFloat("restartButton"), restartButton, DEFAULT_RESTART_BUTTON)?.let { Logger.warn { it } }
         gamepadButtonConfigWarning("restartButtonAlt", restartButtonAltRawString, engine.config.getInt("restartButtonAlt"), engine.config.getFloat("restartButtonAlt"), restartButtonAlt, DEFAULT_RESTART_BUTTON_ALT)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("pauseButton", pauseButtonRawString, engine.config.getInt("pauseButton"), engine.config.getFloat("pauseButton"), pauseButton, DEFAULT_PAUSE_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("exitButtonA", exitButtonARawString, engine.config.getInt("exitButtonA"), engine.config.getFloat("exitButtonA"), exitButtonA, DEFAULT_EXIT_BUTTON_A)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("exitButtonB", exitButtonBRawString, engine.config.getInt("exitButtonB"), engine.config.getFloat("exitButtonB"), exitButtonB, DEFAULT_EXIT_BUTTON_B)?.let { Logger.warn { it } }
 
         // A plausible booth copy-paste (kickButton = bleedButton, or any two of these four
         // landing on the same physical button) makes the game partly or fully unplayable
         // with no signal anywhere else — see gamepadButtonCollisionWarnings's doc.
-        gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt)
+        gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt, pauseButton, exitButtonA, exitButtonB)
             .forEach { Logger.warn { it } }
 
         // AFTER the button map resolves and BEFORE the first renderGame. A cache seeded at
@@ -1634,7 +1749,21 @@ class EnPustTil : PulseEngineGame()
         // state is a compile error there instead of silently getting "sprite frozen" here.
         if (lifecycle.spriteAnimates)
         {
-            DiverSprite.advanceLoop(engine.data.fixedDeltaTime)
+            // A kick runs the fin loop faster, so the stroke the player just threw reads as a
+            // stroke rather than as the same idle fin cycle with more speed under it.
+            //
+            // GATED ON simulationAdvances AS WELL AS ON sim.kicking, and that second gate is
+            // not redundant. `DiveSim.kicking` is derived from `kickBurstRemaining`, and the
+            // burst timer is only wound down BY A TICK — while `resetDive` clears it, that
+            // runs when the NEXT run starts, not when this one ends. So a run that ends
+            // mid-burst (a blackout, or surfacing on the stroke that banked the haul) leaves
+            // the timer frozen above zero, and `kicking` reads true for as long as the sim is
+            // stopped. This gate is what stops the attract-mode diver from finning at 1.5x
+            // through RUN_OVER, initials entry and IDLE until somebody starts another run —
+            // spriteAnimates is deliberately TRUE in all of those (see the comment above), so
+            // without it the stale flag would be read every one of those frames.
+            val kickCycle = if (lifecycle.simulationAdvances && sim.kicking) DiverSprite.KICK_CYCLE_MULTIPLIER else 1f
+            DiverSprite.advanceLoop(engine.data.fixedDeltaTime, kickCycle)
 
             // The vents' plume, on the same clock and in the same gate. THE FIXED TICK IS THE
             // POINT: OxygenSprite.loopPhase is the only thing that moves the sheet, so a frame
@@ -1725,6 +1854,9 @@ class EnPustTil : PulseEngineGame()
         // screen drawn from this frame's state rather than the next one's.
         refreshControlHints()
         lifecycleEdges.begin(engine.data.deltaTime)
+        // Pause's own instance, fed from the same pad walk below — see pauseEdges' doc for
+        // why it is a second LifecycleInputEdges and not a fifth button offered to the first.
+        pauseEdges.begin(engine.data.deltaTime)
         // Indexed, not `.forEach { pad -> ... }` — `Iterable<T>.forEach` on a `List`
         // allocates one `Iterator` per call, and this runs every update frame. Same
         // no-per-frame-allocation reasoning as readInput's pad lookup (see
@@ -1754,8 +1886,21 @@ class EnPustTil : PulseEngineGame()
             // for a call whose result is thrown away.
             if (restartButtonAlt.code != restartButton.code)
                 lifecycleEdges.offer(pad.id, restartButtonAlt.code, pad.isPressed(restartButtonAlt))
+
+            // Pause, on its own instance, keyed on .code for the identical alias reason as
+            // the two offers above: a technician who writes `pauseButton = CROSS` and a
+            // technician who writes `A` have named the same physical contact, and .ordinal
+            // would give one jammed button two source keys and two stuck counters.
+            pauseEdges.offer(pad.id, pauseButton.code, pad.isPressed(pauseButton))
         }
         lifecycleEdges.offerKeyboardEdge(engine.input.wasClicked(Key.SPACE))
+        // ESCAPE goes in as pause's KEYBOARD source, never OR-ed into the pad levels above.
+        // That collapse is the exact defect the long comment at the top of this block
+        // records: one jammed pad button holding a single boolean true forever, with every
+        // other source — including the keyboard's own perfectly good edge — unable to change
+        // an OR that is already true. wasClicked is already a one-frame pulse, which is what
+        // offerKeyboardEdge takes.
+        pauseEdges.offerKeyboardEdge(engine.input.wasClicked(Key.ESCAPE))
         val actionPressed = lifecycleEdges.commit()
 
         // Initials entry (ENTER_INITIALS only — harmless to compute unconditionally
@@ -1766,36 +1911,78 @@ class EnPustTil : PulseEngineGame()
         // for the up/down source.
         val (cycleUp, cycleDown) = readInitialsCycle()
 
-        // PAUSE AND EXIT ARE KEYBOARD-ONLY, AND THAT IS THE WHOLE POINT.
+        // PAUSE AND EXIT USED TO BE KEYBOARD-ONLY, AND THAT WAS ONCE THE WHOLE POINT.
         //
-        // No gamepad button reaches either of these, unlike every other lifecycle input in
-        // this file (which deliberately scans EVERY connected gamepad — see
-        // LifecycleInputEdges' class doc). Three reasons, in increasing order of severity:
+        // The paragraph that stood here argued at length that no gamepad button may reach
+        // either action. The owner has since asked for the game to be playable ENTIRELY on a
+        // controller (docs/superpowers/specs/2026-08-30-controller-parity-design.md), which
+        // overrides that reasoning rather than refuting it — the risks it named are all
+        // still real, so what follows is what replaces the protection it provided. The
+        // original three arguments, kept because each one shaped the answer:
         //
-        //  1. The cabinet has a joystick and two buttons, and both buttons are already
-        //     spoken for twice over — A/B are kick and bleed during a run, and START/A are
-        //     start-and-confirm outside one. There is no third button to spend, and
-        //     overloading one of the two would mean a player's kick could open a menu.
-        //  2. Pause is the one lifecycle action a player benefits from ABUSING. A pause
-        //     reachable from the stick is a free think about a dive you are losing, on a
-        //     leaderboard the whole queue can see.
-        //  3. Exit lives on this screen. Putting a "shut the cabinet down" path behind a
-        //     booth encoder button is precisely the class of failure RunLifecycle was
-        //     written to fix — a held or bumped button destroying a run — except the blast
-        //     radius is the whole day rather than one run. The encoder may also be unmapped
-        //     and noisy (see logGamepadDiagnostics); a phantom press must never be able to
-        //     reach an action this final.
+        //  1. "There is no third button to spend." True of the ARCADE ENCODER, which has a
+        //     joystick and two buttons; false of a console pad, which is what a visitor
+        //     hands themselves and what the parity request is about. pauseButton defaults to
+        //     BACK and exitButtonA/B to the two bumpers — four inputs the cabinet's own
+        //     encoder is unlikely to even have, so the booth configuration is unchanged in
+        //     practice while a pad gains the two actions.
+        //  2. "Pause is the one lifecycle action a player benefits from ABUSING." Still
+        //     true, and NOT solved here — it is accepted. Pause is on a system button, away
+        //     from kick and bleed, and gamepadButtonCollisionWarnings refuses to let it be
+        //     configured onto either of them, which is as far as code can go. The rest is a
+        //     staffed booth watching a queue.
+        //  3. "A phantom press must never reach an action this final." This one IS solved,
+        //     by making exit a TWO-BUTTON hold rather than a single button: see exitHeld
+        //     below. One stuck contact can no longer end the day.
         //
-        // A keyboard is present at the booth for technicians only, which is exactly the
-        // population this screen is for, and Esc/Q are inert on the cabinet's own controls.
+        // PAUSE IS AN EDGE, PER SOURCE, and no longer a raw ESCAPE level. It comes from
+        // pauseEdges — its own LifecycleInputEdges instance, fed pauseButton from every
+        // connected pad plus ESCAPE's own wasClicked — so a jammed pause button on the
+        // encoder cannot hold the signal true forever and cannot mask the keyboard's edge.
+        // RunLifecycle.update re-edges whatever it is handed (see its class doc), so feeding
+        // it a one-frame pulse instead of a level is safe: it is the same shape
+        // InitialsEntry's confirmPressed already receives, and the second edge is a
+        // redundant guard rather than the only one.
+        val pausePressed = pauseEdges.commit()
+
+        // EXIT IS A LEVEL, AND ON THE PAD IT IS TWO BUTTONS AND-ED TOGETHER ON ONE PAD.
         //
-        // Levels, not edges, for both — matching every other lifecycle input in this file
-        // (Key.wasClicked exists, Gamepad has no equivalent, so this codebase has exactly
-        // one convention and RunLifecycle does the edge detection). For the exit key the
-        // level is not merely conventional but required: RunLifecycle measures how long it
-        // has been held, and an edge carries no duration.
-        val pausePressed = engine.input.isPressed(Key.ESCAPE)
-        val exitHeld = engine.input.isPressed(Key.Q)
+        // A level, not an edge, and that is required rather than conventional: RunLifecycle
+        // measures how long exit has been held (EXIT_HOLD_SECONDS, 1.5 s) and an edge
+        // carries no duration. Duration is most of what makes exit safe.
+        //
+        // WHY TWO BUTTONS. A single pad button would mean ONE STUCK CONTACT SHUTS THE
+        // CABINET DOWN FOR THE DAY — precisely the risk the keyboard-only decision above
+        // existed to avoid, and the encoder can be both unmapped and noisy (see
+        // logGamepadDiagnostics). An AND buys most of that protection back for nothing: a
+        // phantom exit now needs a phantom pause edge to reach PAUSED at all, THEN two
+        // simultaneous stuck contacts on the SAME pad, held together for a second and a half.
+        //
+        // WHY THE COMBINATION CANNOT INCLUDE pauseButton, which is the obvious design and
+        // does not function: pause is edge-detected, and while PAUSED a pause edge means
+        // RESUME. Pressing it to begin an exit hold would leave PAUSED before the hold ever
+        // accumulated, so the exit could never fire. exitButtonA/B are therefore bound to
+        // nothing else in the game.
+        //
+        // BOTH BUTTONS ON THE SAME PAD, never one on each of two pads — hence the per-pad
+        // AND inside the loop rather than two independent scans. Two devices cooperating to
+        // close the cabinet is not a gesture anyone performs on purpose.
+        //
+        // RunLifecycle needs no change for any of this: RunLifecycle.kt's
+        // `exitHeldSeconds = if (exitHeld) exitHeldSeconds + dt else 0f` already resets the
+        // hold the moment EITHER button is released, because releasing one makes this whole
+        // expression false.
+        //
+        // Indexed, not `.any { }` — this is the per-frame update path, and the extension
+        // allocates one Iterator per call. Same reasoning as the pad loop above and
+        // gamepadIdBuffer's doc.
+        var padExitHeld = false
+        for (i in lifecyclePads.indices)
+        {
+            val pad = lifecyclePads[i]
+            if (pad.isPressed(exitButtonA) && pad.isPressed(exitButtonB)) { padExitHeld = true; break }
+        }
+        val exitHeld = engine.input.isPressed(Key.Q) || padExitHeld
 
         lifecycle.update(
             dt = engine.data.deltaTime,
@@ -2475,8 +2662,8 @@ class EnPustTil : PulseEngineGame()
         // Token right-aligned, verb left-aligned - INWARD, unlike the leaderboard's outward
         // columns. See BriefingLayout.COLUMN_GAP.
         drawBriefingRow(hud, 0, ControlHints.swim(arcadeHints), ScreenText.BRIEFING_VERB_SWIM, centreX, gap, h)
-        drawBriefingRow(hud, 1, ControlHints.kick(arcadeHints, gamepadButtonLabel(kickButton)), ScreenText.BRIEFING_VERB_KICK, centreX, gap, h)
-        drawBriefingRow(hud, 2, ControlHints.bleed(arcadeHints, gamepadButtonLabel(bleedButton)), ScreenText.BRIEFING_VERB_BLEED, centreX, gap, h)
+        drawBriefingRow(hud, 1, ControlHints.kick(arcadeHints, gamepadButtonLabel(kickButton, controllerFamily)), ScreenText.BRIEFING_VERB_KICK, centreX, gap, h)
+        drawBriefingRow(hud, 2, ControlHints.bleed(arcadeHints, gamepadButtonLabel(bleedButton, controllerFamily)), ScreenText.BRIEFING_VERB_BLEED, centreX, gap, h)
 
         // Amber, not white: this is the one thing a player must know that nothing else on
         // screen ever says. Same literal drawPauseScreen uses for its exit bar - deliberately
@@ -2570,12 +2757,29 @@ class EnPustTil : PulseEngineGame()
         val padX = pad?.getAxis(GamepadAxis.LEFT_X)?.deadzone() ?: 0f
         val padY = pad?.getAxis(GamepadAxis.LEFT_Y)?.deadzone() ?: 0f
 
+        // THE D-PAD, which this game read nowhere at all until 2026-08-30. On a console pad
+        // that was a missing convenience; at the booth it is a cabinet-killer, because a
+        // generic USB arcade encoder's joystick commonly enumerates as a HAT rather than as
+        // analog axes — the cabinet then starts perfectly (restartButton is a button, and
+        // buttons work) and the diver never moves. See PadAxis' class doc for the full
+        // argument and for why the resolution lives there rather than inline here.
+        //
+        // THE SIGN CONVENTION IS +y DOWN, matching keyY below (`axis(Key.UP, Key.DOWN)`
+        // returns -1 for UP) and matching LEFT_Y as this engine reports it — world y IS
+        // depth in this project (CLAUDE.md's coordinate table), so DOWN is positive. Getting
+        // this backwards makes the diver swim up when the player presses down, and no test
+        // catches it, so DPAD_UP is the NEGATIVE direction on purpose.
+        val dpadLeft = pad?.isPressed(GamepadButton.DPAD_LEFT) ?: false
+        val dpadRight = pad?.isPressed(GamepadButton.DPAD_RIGHT) ?: false
+        val dpadUp = pad?.isPressed(GamepadButton.DPAD_UP) ?: false
+        val dpadDown = pad?.isPressed(GamepadButton.DPAD_DOWN) ?: false
+
         val keyX = axis(Key.LEFT, Key.RIGHT)
         val keyY = axis(Key.UP, Key.DOWN)
 
         return DiveInput(
-            horizontal = if (padX != 0f) padX else keyX,
-            vertical   = if (padY != 0f) padY else keyY,
+            horizontal = PadAxis.resolve(padX, dpadLeft, dpadRight, keyX),
+            vertical   = PadAxis.resolve(padY, dpadUp, dpadDown, keyY),
             kick       = (pad?.isPressed(kickButton) ?: false) || engine.input.isPressed(Key.Z),
             bleed      = (pad?.isPressed(bleedButton) ?: false) || engine.input.isPressed(Key.X)
         )
@@ -2604,37 +2808,139 @@ class EnPustTil : PulseEngineGame()
      * folding the latch into [arcadeHints] itself would make that correction never happen and
      * pin every dev machine that has never owned a pad to permanent arcade labels too.
      * [arcadeEverDetected] starts `false` and is unaffected by that bias.
+     *
+     * THE CONTROLLER FAMILY IS DETECTED HERE AND NOWHERE ELSE, for the same reason the hint
+     * cache is rebuilt here and nowhere else. `glfwGetGamepadName` ALLOCATES A `String` on
+     * every call, and this function runs every frame, so the read is gated on the DECIDING
+     * PAD'S ID CHANGING ([familyPadId]) rather than on this function being entered — one
+     * allocation per hot-plug, not sixty a second. A pad id is the cheapest identity there
+     * is; two different devices cannot occupy one GLFW joystick slot at the same time, and a
+     * technician who swaps the pad between two runs gets a new id or a re-enumeration, which
+     * is exactly when the legend should change.
+     *
+     * A DISCONNECT DOES NOT RESET THE FAMILY, deliberately, and this is [arcadeEverDetected]'s
+     * latch argument applied to the same hardware: a LOOSE CONNECTOR is a realistic booth
+     * failure (see `LifecycleInputEdges.chatterCount`), and letting the family fall back to
+     * GENERIC on every dropped frame would strobe the attract screen between `CROSS kick` and
+     * `A kick` at 60 Hz in front of the queue. The last pad genuinely seen keeps the legend.
+     *
+     * WHICH PAD DECIDES: [activePadId] — the pad whose button started the run — when one is
+     * latched, otherwise the lowest-id connected pad. Same precedence [selectGameplayPad]
+     * uses and for the same reason: index 0 is not guaranteed to be the pad in the player's
+     * hands, so once one has identified itself by starting a run, that is the one whose
+     * legend the screen should be printing.
+     *
+     * `glfwGetJoystickName` is the fallback for `glfwGetGamepadName` returning null, which it
+     * does for a joystick GLFW has no SDL gamepad mapping for — the booth encoder's own
+     * failure mode ([logGamepadDiagnostics]). An unrecognised name is a NON-EVENT: it resolves
+     * to [ControllerFamily.GENERIC], i.e. today's labels byte for byte.
      */
     private fun refreshControlHints()
     {
         arcadeEverDetected = arcadeEverDetected ||
             engine.input.gamepads.isNotEmpty() || unmappedGamepadCount() > 0
         val arcade = arcadeEverDetected
-        if (arcade == arcadeHints && hintPlayAgain.isNotEmpty()) return
+
+        var familyChanged = false
+        val decidingPad = decidingPadId()
+        if (decidingPad >= 0 && decidingPad != familyPadId)
+        {
+            familyPadId = decidingPad
+            val detected = ControllerFamily.familyFor(
+                GLFW.glfwGetGamepadName(decidingPad) ?: GLFW.glfwGetJoystickName(decidingPad)
+            )
+            familyChanged = detected != controllerFamily
+            controllerFamily = detected
+            Logger.warn { "GAMEPAD: pad $decidingPad names the legend - family=$controllerFamily" }
+        }
+
+        if (!familyChanged && arcade == arcadeHints && hintPlayAgain.isNotEmpty()) return
         arcadeHints = arcade
         rebuildControlHints()
     }
 
+    /**
+     * The connected pad whose silkscreened legend the screens should print, or -1 when
+     * nothing is connected. See [refreshControlHints] for the precedence argument.
+     *
+     * Allocation-free: an indexed loop and an `Int` sentinel rather than `Int?` and
+     * `minByOrNull { }`, because the caller is on the per-frame update path even though the
+     * name read it guards is not. `activePadId` is unwrapped to -1 up front so the
+     * comparison in the loop is `Int == Int` and never boxes.
+     */
+    private fun decidingPadId(): Int
+    {
+        val pads = engine.input.gamepads
+        val active = activePadId ?: -1
+        var lowest = -1
+        for (i in pads.indices)
+        {
+            val id = pads[i].id
+            if (id == active) return id
+            if (lowest < 0 || id < lowest) lowest = id
+        }
+        return lowest
+    }
+
     private fun rebuildControlHints()
     {
-        val startLabel = gamepadButtonLabel(restartButton)
+        // controllerFamily, not GENERIC: refreshControlHints has already resolved it for
+        // this frame's hardware, and it is the only reason this cache is rebuilt on a
+        // hot-plug that did not change arcadeHints.
+        val startLabel = gamepadButtonLabel(restartButton, controllerFamily)
         hintPressStart = ControlHints.pressStart(arcadeHints, startLabel)
         hintPlayAgain = ControlHints.playAgain(arcadeHints, startLabel)
         hintInitialsHelp = ControlHints.initialsHelp(arcadeHints, startLabel)
-        hintLegend = ControlHints.legend(arcadeHints, gamepadButtonLabel(kickButton), gamepadButtonLabel(bleedButton))
+        hintLegend = ControlHints.legend(arcadeHints, gamepadButtonLabel(kickButton, controllerFamily), gamepadButtonLabel(bleedButton, controllerFamily))
         hintBriefingSkip = hintPressStart + ScreenText.BRIEFING_SKIP_SUFFIX
     }
 
     /**
-     * Initials-entry cycling input: stick up/down (any connected gamepad — same "any
-     * button" reasoning as [LifecycleInputEdges], since this is menu navigation, not
+     * Initials-entry cycling input: stick or D-pad up/down (any connected gamepad — same
+     * "any button" reasoning as [LifecycleInputEdges], since this is menu navigation, not
      * gameplay) OR the UP/DOWN keys, so keyboard development keeps working. Level
      * readings, same as [readInput] — [score.InitialsEntry] does its own edge-tracking.
+     *
+     * THE D-PAD USES THE SAME BUTTONS AND THE SAME SENSE AS [readInput]: `DPAD_UP` is the
+     * negative direction, because `LEFT_Y` reports up as negative and the letter that this
+     * screen must move to when a player pushes up is the same one the diver would rise
+     * toward. Resolved through [PadAxis] rather than by two hand-written comparisons so the
+     * both-directions-at-once tie-break (a stuck encoder contact) cannot differ between the
+     * two readers — a diver frozen sideways and initials that cycle on their own are the
+     * same defect wearing different clothes.
+     *
+     * `analog` is `.deadzone()`d rather than compared against `±stickDeadzone` inline: that
+     * IS the same test (`deadzone()` zeroes exactly the readings the comparisons rejected),
+     * written once, and it is the shape [PadAxis.resolve] documents itself as taking.
+     *
+     * THE KEYBOARD IS OR-ED IN AFTERWARDS, NOT PASSED TO [PadAxis.resolve], which is a
+     * deliberate difference from [readInput]. `resolve` is first-live-source-wins for ONE
+     * device; here there are N pads, and threading the keyboard through each of them would
+     * let a resting pad hand back the keyboard's value N times over — harmless, but it
+     * would read as if precedence meant something it does not. This reader has always
+     * OR-ed, and menu navigation has no proportional value to protect.
+     *
+     * Indexed, not the two `.any { }` calls this replaced: `Iterable<T>.any` allocates an
+     * Iterator per call and this runs on the per-frame update path (CLAUDE.md), so one
+     * indexed pass over the pads is both cheaper and one scan instead of two.
      */
     private fun readInitialsCycle(): Pair<Boolean, Boolean>
     {
-        val padUp = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) < -stickDeadzone }
-        val padDown = engine.input.gamepads.any { it.getAxis(GamepadAxis.LEFT_Y) > stickDeadzone }
+        var padUp = false
+        var padDown = false
+        val pads = engine.input.gamepads
+        for (i in pads.indices)
+        {
+            val pad = pads[i]
+            val cycle = PadAxis.resolve(
+                analog = pad.getAxis(GamepadAxis.LEFT_Y).deadzone(),
+                negativePressed = pad.isPressed(GamepadButton.DPAD_UP),
+                positivePressed = pad.isPressed(GamepadButton.DPAD_DOWN),
+                keyboard = 0f
+            )
+            if (cycle < 0f) padUp = true
+            if (cycle > 0f) padDown = true
+        }
         val up = padUp || engine.input.isPressed(Key.UP)
         val down = padDown || engine.input.isPressed(Key.DOWN)
         return up to down
@@ -2836,5 +3142,21 @@ class EnPustTil : PulseEngineGame()
         // in updateGame for why that is skipped rather than merely tolerated.
         val DEFAULT_RESTART_BUTTON = GamepadButton.START
         val DEFAULT_RESTART_BUTTON_ALT = GamepadButton.A
+
+        // BACK is Create on a DualSense and View on an Xbox pad - the button whose whole
+        // job on a console is "the other system button", and the one a player is least
+        // likely to hit reaching for kick. It is deliberately not START: START is
+        // DEFAULT_RESTART_BUTTON, and pause is edge-detected on the same states restart
+        // reads, so one button would mean the press that ends a run also pauses it.
+        val DEFAULT_PAUSE_BUTTON = GamepadButton.BACK
+
+        // The exit hold is an AND across BOTH of these on ONE pad, held for
+        // RunLifecycle.EXIT_HOLD_SECONDS - see the exit-hold comment in updateGame for why
+        // it is two buttons rather than one, and why neither of them can be the pause
+        // button. The bumpers are the natural pair: nothing else in this game binds them,
+        // they exist on every console pad and on most encoders, and holding both at once is
+        // a two-handed deliberate act rather than something a sleeve can do.
+        val DEFAULT_EXIT_BUTTON_A = GamepadButton.LEFT_BUMPER
+        val DEFAULT_EXIT_BUTTON_B = GamepadButton.RIGHT_BUMPER
     }
 }

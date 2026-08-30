@@ -33,19 +33,122 @@ class ControlHintsTest
     }
 
     @Test
-    fun `every gamepad button name produces a drawable, non-empty label`()
+    fun `every gamepad button name produces a drawable, non-empty label on every controller`()
     {
         // This is what makes "derive the hint from live config" safe. A technician can bind
         // any of these ~20 names in application.cfg; none of them may vanish into the atlas
-        // gap or come out blank.
+        // gap or come out blank. The family loop is the same guarantee for the legend a
+        // console pad swaps in: a label is chosen by hardware the build never sees, so every
+        // reachable combination has to be drawable, not just the ones someone thought of.
+        for (family in ControllerFamily.entries)
+        {
+            for (button in GamepadButton.entries)
+            {
+                val label = ControlHints.labelFor(button.name, family)
+                assertTrue(label.isNotBlank(), "$family ${button.name} produced a blank label")
+                assertTrue(
+                    DefaultFont.undrawableCodePointsIn(label).isEmpty(),
+                    "$family ${button.name} -> \"$label\" is not drawable"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the family label table renders each console's own legend`()
+    {
+        // The table from the controller-parity design, asserted whole. The PlayStation column
+        // is the reason the feature exists (a PS5 pad on the owner's desk was told to press
+        // A); the XBOX column is nearly the identity and is asserted anyway, because "nearly"
+        // is exactly the kind of table someone later fills in with symbols.
+        val expected = listOf(
+            //          enum      GENERIC    PLAYSTATION  XBOX
+            Triple("A", "A", listOf("CROSS", "A")),
+            Triple("B", "B", listOf("CIRCLE", "B")),
+            Triple("X", "X", listOf("SQUARE", "X")),
+            Triple("Y", "Y", listOf("TRIANGLE", "Y")),
+            Triple("START", "START", listOf("OPTIONS", "MENU")),
+            Triple("BACK", "BACK", listOf("CREATE", "VIEW"))
+        )
+        for ((name, generic, console) in expected)
+        {
+            assertEquals(generic, ControlHints.labelFor(name, ControllerFamily.GENERIC), "GENERIC $name")
+            assertEquals(console[0], ControlHints.labelFor(name, ControllerFamily.PLAYSTATION), "PLAYSTATION $name")
+            assertEquals(console[1], ControlHints.labelFor(name, ControllerFamily.XBOX), "XBOX $name")
+        }
+    }
+
+    @Test
+    fun `a button no family renames is unchanged everywhere`()
+    {
+        // The other half of the table's last row. A shoulder button, a stick click and a d-pad
+        // direction have no console-specific legend worth printing, and the underscore-to-space
+        // rendering must survive the family branch rather than being reimplemented inside it.
+        for (family in ControllerFamily.entries)
+        {
+            assertEquals("RIGHT BUMPER", ControlHints.labelFor("RIGHT_BUMPER", family), "$family")
+            assertEquals("LEFT THUMB", ControlHints.labelFor("LEFT_THUMB", family), "$family")
+            assertEquals("DPAD UP", ControlHints.labelFor("DPAD_UP", family), "$family")
+            assertEquals("GUIDE", ControlHints.labelFor("GUIDE", family), "$family")
+        }
+    }
+
+    @Test
+    fun `GENERIC is byte-identical to the label this game printed before families existed`()
+    {
+        // The booth's own USB encoder is GENERIC, and its screens must not move by one
+        // character for a feature that exists for consoles. The old implementation is written
+        // out longhand here on purpose: comparing against ControlHints' own constant would
+        // pass no matter what that constant became.
         for (button in GamepadButton.entries)
         {
-            val label = ControlHints.labelFor(button.name)
-            assertTrue(label.isNotBlank(), "${button.name} produced a blank label")
-            assertTrue(
-                DefaultFont.undrawableCodePointsIn(label).isEmpty(),
-                "${button.name} -> \"$label\" is not drawable"
-            )
+            val before = button.name.replace('_', ' ')
+            assertEquals(before, ControlHints.labelFor(button.name, ControllerFamily.GENERIC), button.name)
+            assertEquals(before, ControlHints.labelFor(button.name), "${button.name} (default family)")
+        }
+    }
+
+    @Test
+    fun `every family legend is an ASCII word, never a PlayStation glyph`()
+    {
+        // CROSS/CIRCLE/SQUARE/TRIANGLE are stand-ins, not a naming preference. The real symbols
+        // are U+2715 / U+25CB / U+25A1 / U+25B3, far above the default font's U+011F ceiling,
+        // and would render as nothing at all - no glyph, no x-advance, no warning. The atlas
+        // sweep above already catches that; this states the RULE, so the failure message names
+        // the reason instead of leaving the next person to rediscover it from a blank screen.
+        for (family in ControllerFamily.entries)
+        {
+            for (button in GamepadButton.entries)
+            {
+                val label = ControlHints.labelFor(button.name, family)
+                assertTrue(
+                    label.all { it == ' ' || it in 'A'..'Z' || it in '0'..'9' },
+                    "$family ${button.name} -> \"$label\" is not an ASCII word - the default " +
+                    "font draws only U+0020..U+011F, so a symbol here vanishes silently"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `all() covers every family legend and the composites that carry it`()
+    {
+        // ControlHints.all() is the sweep of record for these strings; a legend that never
+        // reaches it is a string the font check never sees. Every label a console pad can put
+        // on screen has to be in there ON ITS OWN and inside each hint that embeds it, because
+        // the join is where a separator or a stray character would appear.
+        val all = ControlHints.all()
+        for (family in ControllerFamily.entries)
+        {
+            for (name in listOf("A", "B", "X", "Y", "START", "BACK"))
+            {
+                val label = ControlHints.labelFor(name, family)
+                assertTrue(all.contains(label), "$family $name -> \"$label\" missing from all()")
+                assertTrue(all.contains(ControlHints.pressStart(true, label)), "pressStart $label")
+                assertTrue(all.contains(ControlHints.playAgain(true, label)), "playAgain $label")
+                assertTrue(all.contains(ControlHints.initialsHelp(true, label)), "initialsHelp $label")
+                assertTrue(all.contains(ControlHints.legend(true, label, label)), "legend $label")
+            }
         }
     }
 

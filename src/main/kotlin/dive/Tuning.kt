@@ -20,9 +20,68 @@ object Tuning
     const val SINK_FORCE_PER_MASS = 0.06f
     const val K_DRAG = 200f
 
-    // Kick
+    // Kick — ONE BOOST PER CLICK, not a hold. The two multipliers below are unchanged and are
+    // still applied exactly as they always were; what changed is WHEN. A rising edge on
+    // DiveInput.kick opens a burst window of KICK_BURST_SECONDS during which both apply, and
+    // when it closes both revert to 1f even if the button is still down. See DiveSim.updateKick.
     const val KICK_SPEED_MULT = 3f
     const val KICK_AIR_MULT = 3f
+
+    /**
+     * How long one click's boost lasts. A stroke, not a jet.
+     *
+     * 0.35 s is a little over one time constant of the velocity ramp at zero mass
+     * (`1 / Buoyancy.responseRate(0f)` = 0.286 s), so a single kick reaches ~71% of the boosted
+     * target and then decays back toward the unboosted one — the diver visibly surges and glides
+     * rather than snapping between two speeds. Shorter and the ramp eats the whole burst so the
+     * boost is barely felt; much longer and holding the button again approximates the old
+     * continuous kick, which is exactly what this change removes.
+     *
+     * It is deliberately shorter than [KICK_COOLDOWN_SECONDS], so two bursts can never overlap
+     * and there is always a dead gap between them — see that constant.
+     */
+    const val KICK_BURST_SECONDS = 0.35f
+
+    /**
+     * Minimum time between the START of one burst and the start of the next — NOT time measured
+     * from the end of a burst. Measuring from the start is what makes the duty cycle a fixed,
+     * checkable fraction (KICK_BURST_SECONDS / KICK_COOLDOWN_SECONDS = 0.778) no matter how the
+     * player mashes: the burst is 0.35 s of the 0.45 s window and the remaining 0.1 s is a dead
+     * gap in which no boost is possible at all.
+     *
+     * That gap is the whole point. Kick used to be continuous while held, and the risk in making
+     * it a burst is that a player simply mashes the button back to the old behaviour. With this
+     * ceiling they cannot: mashing every single tick still cannot exceed 78% duty, so the kick
+     * stays a decision with an air price rather than a flight mode. `DiveSimTest.mashing the kick
+     * button every tick cannot approximate the old hold-to-fly behaviour` asserts it.
+     */
+    const val KICK_COOLDOWN_SECONDS = 0.45f
+
+    /**
+     * Hard ceilings on each velocity axis, in m/s. **These change nothing that is reachable
+     * today** — they are a guarantee and a regression guard, not a behaviour change.
+     *
+     * The movement model already bounds speed implicitly: [DiveSim.updateMovement] eases velocity
+     * TOWARD a `Buoyancy` target by a factor in (0, 1), so velocity always stays between its
+     * previous value and that target and can never overshoot it. Both targets are largest at zero
+     * mass with a full stick and the kick boost applied — carried mass only ever shrinks them,
+     * because the drag divisor grows faster than the sink term
+     * (`d/dm[(33 + 0.06m)/(1 + m/200)] < 0` at every mass) — so the numbers below ARE
+     * `Buoyancy.verticalSpeed(0f, 1f, KICK_SPEED_MULT)` = 33 and
+     * `Buoyancy.lateralSpeed(0f, 1f, KICK_SPEED_MULT)` = 18.
+     *
+     * They are written as products of this file's own constants rather than as literals so that
+     * raising [SWIM_THRUST] or [KICK_SPEED_MULT] carries the ceiling with it; `dive/Buoyancy.kt`
+     * owns the actual formula, and `TuningTest.the speed ceilings are the buoyancy model's own
+     * maxima` re-derives both from it (and sweeps mass) so the two cannot silently part company.
+     *
+     * **The axes are clamped INDEPENDENTLY, never as a combined magnitude.** A magnitude clamp at
+     * 33 would still be a change: swimming diagonally today gives vx = 18 and vy = 33 at once, a
+     * magnitude of 37.6, and capping that would make diagonal swimming slower than it is now —
+     * a gameplay change nobody asked for.
+     */
+    const val MAX_VERTICAL_SPEED = SWIM_THRUST * KICK_SPEED_MULT
+    const val MAX_LATERAL_SPEED = LATERAL_THRUST * KICK_SPEED_MULT
 
     // Ballast
     const val BLEED_RATE = 8f

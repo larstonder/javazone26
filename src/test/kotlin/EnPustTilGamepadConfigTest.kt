@@ -144,14 +144,14 @@ class EnPustTilGamepadConfigTest
         // booth boot.
         assertEquals(
             emptyList(),
-            gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A)
+            gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
         )
     }
 
     @Test
     fun `kickButton and bleedButton on the same button is a collision`()
     {
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.A, GamepadButton.START, GamepadButton.A)
+        val warnings = gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.A, GamepadButton.START, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
         assertEquals(true, warnings.any { it.contains("kickButton") && it.contains("bleedButton") })
     }
 
@@ -161,7 +161,7 @@ class EnPustTilGamepadConfigTest
         // THE .code FIX. Comparing by name or ordinal would miss this: A and CROSS are
         // different GamepadButton entries (different .name, different .ordinal) but the
         // same physical input (same .code) - verified from the jar's static initialiser.
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.CROSS, GamepadButton.START, GamepadButton.START)
+        val warnings = gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.CROSS, GamepadButton.START, GamepadButton.START, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
         assertEquals(true, warnings.any { it.contains("kickButton") && it.contains("bleedButton") })
     }
 
@@ -172,7 +172,7 @@ class EnPustTilGamepadConfigTest
         // and it is a reasonable deliberate choice (force both onto a button already known
         // to work) - not a mistake to flag. See the class doc for the RunLifecycle.update
         // source citation backing this.
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.X, GamepadButton.B, GamepadButton.A, GamepadButton.A)
+        val warnings = gamepadButtonCollisionWarnings(GamepadButton.X, GamepadButton.B, GamepadButton.A, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
         assertEquals(emptyList(), warnings)
     }
 
@@ -183,7 +183,172 @@ class EnPustTilGamepadConfigTest
         // signal kickButton would collide with is not consulted while a run is in
         // progress, which is the only time kick matters. Verified against RunLifecycle.kt
         // source, not assumed - see the class doc.
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.START, GamepadButton.B, GamepadButton.START, GamepadButton.A)
+        val warnings = gamepadButtonCollisionWarnings(GamepadButton.START, GamepadButton.B, GamepadButton.START, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
         assertEquals(emptyList(), warnings)
+    }
+
+    // --- pauseButton / exitButtonA / exitButtonB (2026-08-30, controller parity) ---------
+    //
+    // The three keys that put pause and exit on the pad. Their compiled defaults live in
+    // EnPustTil's PRIVATE companion, so they cannot be referenced from here - the literals
+    // below are those values written out, and `the compiled defaults for the new keys are
+    // real GamepadButton names` is what stops this file and application.cfg's own BUTTON
+    // MAP comment from documenting a name the enum does not have.
+
+    @Test
+    fun `the compiled defaults for the new keys are real GamepadButton names`()
+    {
+        // application.cfg tells a technician to write these three words. If any of them
+        // were not an entry, parseGamepadButton would silently hand back the fallback and
+        // the documented "# pauseButton = BACK" line would be a lie that never logged.
+        assertEquals(GamepadButton.BACK, parseGamepadButton("BACK", GamepadButton.A))
+        assertEquals(GamepadButton.LEFT_BUMPER, parseGamepadButton("LEFT_BUMPER", GamepadButton.A))
+        assertEquals(GamepadButton.RIGHT_BUMPER, parseGamepadButton("RIGHT_BUMPER", GamepadButton.A))
+    }
+
+    @Test
+    fun `a remapped pause or exit button is honoured, in the technician's casing`()
+    {
+        // Same "standing at a booth with a screwdriver" allowance the restart keys get.
+        assertEquals(GamepadButton.START, parseGamepadButton(" start ", GamepadButton.BACK))
+        assertEquals(GamepadButton.LEFT_THUMB, parseGamepadButton("left_thumb", GamepadButton.LEFT_BUMPER))
+        assertEquals(GamepadButton.RIGHT_THUMB, parseGamepadButton("Right_Thumb", GamepadButton.RIGHT_BUMPER))
+    }
+
+    @Test
+    fun `a typo in pauseButton falls back to BACK rather than leaving pause unreachable`()
+    {
+        assertEquals(GamepadButton.BACK, parseGamepadButton("BAKC", GamepadButton.BACK))
+    }
+
+    @Test
+    fun `a typo in either exit key falls back rather than leaving the cabinet unclosable`()
+    {
+        assertEquals(GamepadButton.LEFT_BUMPER, parseGamepadButton("LEFT_BUMBER", GamepadButton.LEFT_BUMPER))
+        assertEquals(GamepadButton.RIGHT_BUMPER, parseGamepadButton("", GamepadButton.RIGHT_BUMPER))
+    }
+
+    @Test
+    fun `gamepadButtonConfigWarning names the new keys so the right line can be found`()
+    {
+        // The warning is read off a booth log with the file open in Notepad; naming the key
+        // is the whole reason it is passed in rather than composed from the button alone.
+        val pause = gamepadButtonConfigWarning("pauseButton", rawString = "BAKC", rawInt = null, rawFloat = null, resolved = GamepadButton.BACK, default = GamepadButton.BACK)
+        assertEquals(true, pause != null && pause.contains("pauseButton") && pause.contains("BAKC"))
+
+        val exitA = gamepadButtonConfigWarning("exitButtonA", rawString = "L1", rawInt = null, rawFloat = null, resolved = GamepadButton.LEFT_BUMPER, default = GamepadButton.LEFT_BUMPER)
+        assertEquals(true, exitA != null && exitA.contains("exitButtonA") && exitA.contains("L1"))
+
+        // The Int shape: `exitButtonB = 5` is a plausible edit for someone reading raw
+        // codes off the EPT_DEV overlay, and it coerces to Integer before getString ever
+        // sees it - the exact gap the rawInt parameter closes.
+        val exitB = gamepadButtonConfigWarning("exitButtonB", rawString = null, rawInt = 5, rawFloat = null, resolved = GamepadButton.RIGHT_BUMPER, default = GamepadButton.RIGHT_BUMPER)
+        assertEquals(true, exitB != null && exitB.contains("exitButtonB") && exitB.contains("5"))
+    }
+
+    @Test
+    fun `gamepadButtonConfigWarning stays silent when the new keys are simply absent`()
+    {
+        // Day one, nobody has touched the file. Three more untouched keys must not add
+        // three more lines to a log that is meant to be read.
+        assertEquals(null, gamepadButtonConfigWarning("pauseButton", null, null, null, GamepadButton.BACK, GamepadButton.BACK))
+        assertEquals(null, gamepadButtonConfigWarning("exitButtonA", null, null, null, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER))
+        assertEquals(null, gamepadButtonConfigWarning("exitButtonB", null, null, null, GamepadButton.RIGHT_BUMPER, GamepadButton.RIGHT_BUMPER))
+    }
+
+    @Test
+    fun `both exit buttons on one physical button is a collision - the AND would collapse`()
+    {
+        // THE PROTECTION THIS PROTECTS. Exit is two buttons held together specifically so
+        // one stuck contact cannot shut the cabinet down for the day; pointed at one
+        // button the expression becomes `x && x` and that is gone, with the file still
+        // looking like it names two buttons.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER
+        )
+        assertEquals(true, warnings.any { it.contains("exitButtonA") && it.contains("exitButtonB") })
+    }
+
+    @Test
+    fun `two exit aliases of one button collide too - X and SQUARE are one contact`()
+    {
+        // The .code comparison, not name or ordinal: X and SQUARE are different entries
+        // with the same physical code, so `exitButtonA = X` / `exitButtonB = SQUARE` is
+        // exactly as collapsed as writing X twice, and only .code sees it.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.X, GamepadButton.SQUARE
+        )
+        assertEquals(true, warnings.any { it.contains("exitButtonA") && it.contains("exitButtonB") })
+    }
+
+    @Test
+    fun `pauseButton on kickButton is a collision - a kick would open the pause screen`()
+    {
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.A, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(true, warnings.any { it.contains("pauseButton") && it.contains("kickButton") })
+    }
+
+    @Test
+    fun `pauseButton on bleedButton is a collision, aliases included`()
+    {
+        // CIRCLE is B's alias. Both halves of this test matter: that the bleed pair is
+        // checked at all (an earlier draft checked only kick), and that it is checked by
+        // .code so `bleedButton = B` / `pauseButton = CIRCLE` cannot slip past.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.CIRCLE, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(true, warnings.any { it.contains("pauseButton") && it.contains("bleedButton") })
+    }
+
+    @Test
+    fun `pauseButton on either restart key is NOT reported - the signals are never live at once`()
+    {
+        // A pause edge is consumed in PLAYING/PAUSED; a restart edge in RUN_OVER/IDLE. Same
+        // disjointness that makes kick-versus-restart safe, so warning here would be the
+        // cried-wolf noise gamepadButtonCollisionWarnings was narrowed to avoid.
+        assertEquals(
+            emptyList(),
+            gamepadButtonCollisionWarnings(
+                GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
+                GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+            )
+        )
+    }
+
+    @Test
+    fun `an exit button sharing a gameplay button is NOT reported - exit is only read while PAUSED`()
+    {
+        // Neither kick nor bleed is read in PAUSED, and exit is read nowhere else, so an
+        // encoder with few buttons may legitimately double these up. Only exitButtonA
+        // against exitButtonB is a mistake.
+        assertEquals(
+            emptyList(),
+            gamepadButtonCollisionWarnings(
+                GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+                GamepadButton.BACK, GamepadButton.A, GamepadButton.B
+            )
+        )
+    }
+
+    @Test
+    fun `two problems in one file produce two warnings, not just the first`()
+    {
+        // The function used to `return listOf(...)` at its single check. A technician who
+        // copy-pasted one block of the button map has plausibly broken more than one line
+        // of it, and these warnings are read off a booth log after the fact - there is no
+        // second run to surface the rest.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.A, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER
+        )
+        assertEquals(2, warnings.size, warnings.toString())
+        assertEquals(true, warnings.any { it.contains("kickButton") && it.contains("bleedButton") })
+        assertEquals(true, warnings.any { it.contains("exitButtonA") && it.contains("exitButtonB") })
     }
 }

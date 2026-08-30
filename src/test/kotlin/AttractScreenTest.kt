@@ -119,6 +119,10 @@ class AttractScreenTest
         // The distinction that made the original bug confusing: É rendered fine, the em
         // dash did not. Both are non-ASCII; only one is inside the atlas. A fix that
         // retreated to pure ASCII would have thrown away the game's own title.
+        // A FONT-RANGE PROBE, not the game's name - the title is ScreenText.TITLE and has
+        // been "ONE MORE BREATH" since 2026-08-30. This string stays because what it
+        // asserts is that the accented Norwegian range is drawable, which the practical
+        // rule in EnPustTil.kt's font doc still depends on for every other drawn string.
         for (text in listOf("ÉN PUST TIL", "ÆØÅ æøå", ScreenText.SEPARATOR))
             assertTrue(
                 DefaultFont.undrawableCodePointsIn(text).isEmpty(),
