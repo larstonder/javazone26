@@ -1271,8 +1271,31 @@ object DiveLighting
         // roughly 4x the GI work per frame — the one change in this file that could put the booth
         // under 60 fps on hardware nobody has profiled. `EPT_DEV`'s F3 MetricViewer is where that
         // is checked, on the cabinet, before this ships.
-        system.lightTexScale = 0.5f
-        system.localSceneTexScale = 0.5f
+        // CORRECTED 2026-08-30, DOWN FROM 0.5. The comment above is preserved because its
+        // REASONING about emitter silhouettes is still right; its arithmetic assumption was not.
+        //
+        // 0.5 was not "a bit more than the 0.4 default" — it was WORSE THAN THE DEFAULT by a
+        // step function. GlobalIlluminationSystem.lightTextureSizeFunc rounds the scaled
+        // framebuffer UP to a multiple of 2^cascadeCount, and cascadeCount derives from the
+        // ROUNDED diagonal. At 1080p, 0.5 tips the count 6 -> 7 and rounds 540 -> 640: +90%.
+        // At this Mac's 3200x1800 dev framebuffer it is +73%. render/GiSizing.kt re-implements
+        // that formula and GiSizingTest pins it, so the next person to touch this number finds
+        // out what it costs instead of guessing.
+        system.lightTexScale = 0.4f
+        system.localSceneTexScale = 0.4f
+
+        // maxCascades 10 (effective 7) -> 6. Removes a whole cascade pass AND shrinks the
+        // size round-up above, because both derive from this number.
+        //
+        // SAFE, AND 6 IS THE FLOOR. Max light propagation is about
+        // intervalLength * (4^N - 1) / 3 pixels: N=7 reaches ~5461 px, N=6 ~1365 px which is
+        // ~42 m at this scale — still well past TORCH_REACH_METRES (24 m). N=5 would be ~10.5 m
+        // and would visibly clip the torch beam. GiSizingTest asserts exactly that boundary.
+        //
+        // UNLIKE the scales above, this one is NOT a per-frame uniform: it feeds
+        // lightTextureSizeFunc, which is only re-evaluated when the light surface re-initialises.
+        // Set here at setup, it is in place before the first frame.
+        system.maxCascades = 6
         // Default dithering (0.2, verified by decompiling GlobalIlluminationSystem's
         // <init>) is tuned for a light map close to native resolution. Ours is HALF res since the
         // bump above — closer to native than the quarter-res this was reasoned about, so if
