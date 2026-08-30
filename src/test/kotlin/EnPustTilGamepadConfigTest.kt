@@ -144,14 +144,20 @@ class EnPustTilGamepadConfigTest
         // booth boot.
         assertEquals(
             emptyList(),
-            gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
+            gamepadButtonCollisionWarnings(
+                GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+                GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+            )
         )
     }
 
     @Test
     fun `kickButton and bleedButton on the same button is a collision`()
     {
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.A, GamepadButton.START, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.A, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
         assertEquals(true, warnings.any { it.contains("kickButton") && it.contains("bleedButton") })
     }
 
@@ -161,7 +167,10 @@ class EnPustTilGamepadConfigTest
         // THE .code FIX. Comparing by name or ordinal would miss this: A and CROSS are
         // different GamepadButton entries (different .name, different .ordinal) but the
         // same physical input (same .code) - verified from the jar's static initialiser.
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.A, GamepadButton.CROSS, GamepadButton.START, GamepadButton.START, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.CROSS, GamepadButton.START, GamepadButton.START,
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
         assertEquals(true, warnings.any { it.contains("kickButton") && it.contains("bleedButton") })
     }
 
@@ -172,7 +181,10 @@ class EnPustTilGamepadConfigTest
         // and it is a reasonable deliberate choice (force both onto a button already known
         // to work) - not a mistake to flag. See the class doc for the RunLifecycle.update
         // source citation backing this.
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.X, GamepadButton.B, GamepadButton.A, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.X, GamepadButton.B, GamepadButton.A, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
         assertEquals(emptyList(), warnings)
     }
 
@@ -183,7 +195,15 @@ class EnPustTilGamepadConfigTest
         // signal kickButton would collide with is not consulted while a run is in
         // progress, which is the only time kick matters. Verified against RunLifecycle.kt
         // source, not assumed - see the class doc.
-        val warnings = gamepadButtonCollisionWarnings(GamepadButton.START, GamepadButton.B, GamepadButton.START, GamepadButton.A, GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER)
+        //
+        // pauseButtonAlt is Y here rather than its own default START, deliberately: this case
+        // points kickButton at START, and pauseButtonAlt on kickButton IS a reported collision
+        // (a kick would open the pause screen mid-run). Leaving the default in would have this
+        // test fail for a reason that has nothing to do with what it is about.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.START, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.Y, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
         assertEquals(emptyList(), warnings)
     }
 
@@ -265,7 +285,7 @@ class EnPustTilGamepadConfigTest
         // looking like it names two buttons.
         val warnings = gamepadButtonCollisionWarnings(
             GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
-            GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER
         )
         assertEquals(true, warnings.any { it.contains("exitButtonA") && it.contains("exitButtonB") })
     }
@@ -278,7 +298,7 @@ class EnPustTilGamepadConfigTest
         // exactly as collapsed as writing X twice, and only .code sees it.
         val warnings = gamepadButtonCollisionWarnings(
             GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
-            GamepadButton.BACK, GamepadButton.X, GamepadButton.SQUARE
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.X, GamepadButton.SQUARE
         )
         assertEquals(true, warnings.any { it.contains("exitButtonA") && it.contains("exitButtonB") })
     }
@@ -288,7 +308,7 @@ class EnPustTilGamepadConfigTest
     {
         val warnings = gamepadButtonCollisionWarnings(
             GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
-            GamepadButton.A, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+            GamepadButton.A, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
         )
         assertEquals(true, warnings.any { it.contains("pauseButton") && it.contains("kickButton") })
     }
@@ -301,7 +321,7 @@ class EnPustTilGamepadConfigTest
         // .code so `bleedButton = B` / `pauseButton = CIRCLE` cannot slip past.
         val warnings = gamepadButtonCollisionWarnings(
             GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
-            GamepadButton.CIRCLE, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+            GamepadButton.CIRCLE, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
         )
         assertEquals(true, warnings.any { it.contains("pauseButton") && it.contains("bleedButton") })
     }
@@ -316,7 +336,7 @@ class EnPustTilGamepadConfigTest
             emptyList(),
             gamepadButtonCollisionWarnings(
                 GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
-                GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+                GamepadButton.START, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
             )
         )
     }
@@ -331,7 +351,7 @@ class EnPustTilGamepadConfigTest
             emptyList(),
             gamepadButtonCollisionWarnings(
                 GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
-                GamepadButton.BACK, GamepadButton.A, GamepadButton.B
+                GamepadButton.BACK, GamepadButton.START, GamepadButton.A, GamepadButton.B
             )
         )
     }
@@ -345,10 +365,133 @@ class EnPustTilGamepadConfigTest
         // second run to surface the rest.
         val warnings = gamepadButtonCollisionWarnings(
             GamepadButton.A, GamepadButton.A, GamepadButton.START, GamepadButton.A,
-            GamepadButton.BACK, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.LEFT_BUMPER
         )
         assertEquals(2, warnings.size, warnings.toString())
         assertEquals(true, warnings.any { it.contains("kickButton") && it.contains("bleedButton") })
         assertEquals(true, warnings.any { it.contains("exitButtonA") && it.contains("exitButtonB") })
+    }
+
+    // --- pauseButtonAlt (a second pause button, mirroring restartButtonAlt) ---------------
+    //
+    // Its compiled default is START, which is ALSO DEFAULT_RESTART_BUTTON. That coincidence is
+    // the feature - Options on a console pad starts a run from attract and pauses one in
+    // progress - so the negative case below is as load-bearing as any of the positives.
+
+    @Test
+    fun `the compiled default for pauseButtonAlt is a real GamepadButton name`()
+    {
+        // application.cfg documents "# pauseButtonAlt = START". If START were not an entry,
+        // parseGamepadButton would hand back the fallback and that line would be a lie that
+        // never logged - the same guarantee the other new keys get one test above.
+        assertEquals(GamepadButton.START, parseGamepadButton("START", GamepadButton.A))
+    }
+
+    @Test
+    fun `a remapped pauseButtonAlt is honoured, in the technician's casing`()
+    {
+        assertEquals(GamepadButton.GUIDE, parseGamepadButton(" guide ", GamepadButton.START))
+        assertEquals(GamepadButton.BACK, parseGamepadButton("Back", GamepadButton.START))
+    }
+
+    @Test
+    fun `a typo in pauseButtonAlt falls back to START rather than leaving the second pause button dead`()
+    {
+        // The player-facing one of the two: the pause screen prints THIS button's label, so a
+        // typo that silently unbound it would leave the screen naming a control that does
+        // nothing. Falling back to START keeps Options working and logs the typo.
+        assertEquals(GamepadButton.START, parseGamepadButton("SATRT", GamepadButton.START))
+        assertEquals(GamepadButton.START, parseGamepadButton(null, GamepadButton.START))
+    }
+
+    @Test
+    fun `gamepadButtonConfigWarning names pauseButtonAlt in all three coercion shapes`()
+    {
+        val typo = gamepadButtonConfigWarning("pauseButtonAlt", rawString = "OPTIONS", rawInt = null, rawFloat = null, resolved = GamepadButton.START, default = GamepadButton.START)
+        assertEquals(true, typo != null && typo.contains("pauseButtonAlt") && typo.contains("OPTIONS"))
+
+        // "pauseButtonAlt = 7" is the plausible edit for someone copying a raw code off the
+        // EPT_DEV overlay; it coerces to Integer and getString never sees it.
+        val int = gamepadButtonConfigWarning("pauseButtonAlt", rawString = null, rawInt = 7, rawFloat = null, resolved = GamepadButton.START, default = GamepadButton.START)
+        assertEquals(true, int != null && int.contains("pauseButtonAlt") && int.contains("7"))
+
+        val float = gamepadButtonConfigWarning("pauseButtonAlt", rawString = null, rawInt = null, rawFloat = 7.5f, resolved = GamepadButton.START, default = GamepadButton.START)
+        assertEquals(true, float != null && float.contains("pauseButtonAlt") && float.contains("7.5"))
+    }
+
+    @Test
+    fun `gamepadButtonConfigWarning stays silent when pauseButtonAlt is absent or deliberately written out`()
+    {
+        assertEquals(null, gamepadButtonConfigWarning("pauseButtonAlt", null, null, null, GamepadButton.START, GamepadButton.START))
+        assertEquals(null, gamepadButtonConfigWarning("pauseButtonAlt", "start", null, null, GamepadButton.START, GamepadButton.START))
+    }
+
+    @Test
+    fun `pauseButtonAlt on kickButton is a collision - a kick would open the pause screen`()
+    {
+        // Both pause keys are read on the same states, so which one is pointed at kick makes
+        // no difference to the defect. An earlier version of this function checked only
+        // pauseButton, which would have let the SECOND pause key through unwarned.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.A, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(true, warnings.any { it.contains("pauseButtonAlt") && it.contains("kickButton") })
+    }
+
+    @Test
+    fun `pauseButtonAlt on bleedButton is a collision, aliases included`()
+    {
+        // .code, not name: bleedButton = B and pauseButtonAlt = CIRCLE are one contact.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.BACK, GamepadButton.CIRCLE, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(true, warnings.any { it.contains("pauseButtonAlt") && it.contains("bleedButton") })
+    }
+
+    @Test
+    fun `pauseButtonAlt on restartButton is NOT reported - that collision is the shipped default`()
+    {
+        // THE NEGATIVE CASE THIS FEATURE STANDS ON. DEFAULT_PAUSE_BUTTON_ALT and
+        // DEFAULT_RESTART_BUTTON are both START on purpose: one Options press raises
+        // pressedEdge and pauseEdge in the same frame, and RunLifecycle.update's own
+        // precedence resolves it correctly in every state (IDLE gives the start the run,
+        // PLAYING pauses, PAUSED resumes, the rest ignore pauseEdge). A warning here would
+        // fire on EVERY untouched boot for the shipped, tested design - which is exactly the
+        // cried-wolf noise that narrowed this function in the first place.
+        //
+        // These are the compiled defaults written out (EnPustTil's companion is private).
+        assertEquals(
+            emptyList(),
+            gamepadButtonCollisionWarnings(
+                GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+                GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+            )
+        )
+
+        // And against restartButtonAlt too, by alias, for the same reason.
+        assertEquals(
+            emptyList(),
+            gamepadButtonCollisionWarnings(
+                GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
+                GamepadButton.BACK, GamepadButton.Y, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+            )
+        )
+    }
+
+    @Test
+    fun `both pause keys pointed at one gameplay button produce two warnings, not one`()
+    {
+        // The two checks are independent, and a technician who mis-edited the pause block has
+        // plausibly mis-edited both lines of it. Reporting only one would send them back to
+        // the cabinet twice - these are read off a booth log, not an interactive prompt.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.A, GamepadButton.CROSS, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(2, warnings.size, warnings.toString())
+        assertEquals(true, warnings.any { it.contains("pauseButton ") && it.contains("kickButton") })
+        assertEquals(true, warnings.any { it.contains("pauseButtonAlt") && it.contains("kickButton") })
     }
 }

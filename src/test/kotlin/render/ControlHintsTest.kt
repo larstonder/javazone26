@@ -79,16 +79,44 @@ class ControlHintsTest
     }
 
     @Test
+    fun `the shoulder and thumb rows read as each console's own silkscreen`()
+    {
+        // ADDED WITH THE PAUSE SCREEN'S OWN HINTS, and this is why they had to be: exitButtonA
+        // and exitButtonB default to the two bumpers and the exit hint now PRINTS them, so
+        // without these rows a DualSense owner reads "HOLD LEFT BUMPER + RIGHT BUMPER to exit"
+        // off a pad whose shoulders say L1 and R1. The thumbs are here one step ahead -
+        // application.cfg documents LEFT_THUMB/RIGHT_THUMB as valid exit remaps, so they can
+        // reach the same string.
+        //
+        // Unlike the face buttons, the XBOX column here is NOT nearly the identity: an Xbox
+        // pad's own legend is LB/RB and LS/RS.
+        val expected = listOf(
+            //                    enum            GENERIC          PLAYSTATION  XBOX
+            Triple("LEFT_BUMPER", "LEFT BUMPER", listOf("L1", "LB")),
+            Triple("RIGHT_BUMPER", "RIGHT BUMPER", listOf("R1", "RB")),
+            Triple("LEFT_THUMB", "LEFT THUMB", listOf("L3", "LS")),
+            Triple("RIGHT_THUMB", "RIGHT THUMB", listOf("R3", "RS"))
+        )
+        for ((name, generic, console) in expected)
+        {
+            assertEquals(generic, ControlHints.labelFor(name, ControllerFamily.GENERIC), "GENERIC $name")
+            assertEquals(console[0], ControlHints.labelFor(name, ControllerFamily.PLAYSTATION), "PLAYSTATION $name")
+            assertEquals(console[1], ControlHints.labelFor(name, ControllerFamily.XBOX), "XBOX $name")
+        }
+    }
+
+    @Test
     fun `a button no family renames is unchanged everywhere`()
     {
-        // The other half of the table's last row. A shoulder button, a stick click and a d-pad
-        // direction have no console-specific legend worth printing, and the underscore-to-space
-        // rendering must survive the family branch rather than being reimplemented inside it.
+        // The other half of the tables. A d-pad direction and the system button have no
+        // console-specific legend worth printing, and the underscore-to-space rendering must
+        // survive the family branch rather than being reimplemented inside it. This test used
+        // to use RIGHT_BUMPER and LEFT_THUMB as its examples; both are family-labelled now, so
+        // they moved up to the table above rather than being deleted from cover.
         for (family in ControllerFamily.entries)
         {
-            assertEquals("RIGHT BUMPER", ControlHints.labelFor("RIGHT_BUMPER", family), "$family")
-            assertEquals("LEFT THUMB", ControlHints.labelFor("LEFT_THUMB", family), "$family")
             assertEquals("DPAD UP", ControlHints.labelFor("DPAD_UP", family), "$family")
+            assertEquals("DPAD LEFT", ControlHints.labelFor("DPAD_LEFT", family), "$family")
             assertEquals("GUIDE", ControlHints.labelFor("GUIDE", family), "$family")
         }
     }
@@ -140,7 +168,7 @@ class ControlHintsTest
         val all = ControlHints.all()
         for (family in ControllerFamily.entries)
         {
-            for (name in listOf("A", "B", "X", "Y", "START", "BACK"))
+            for (name in listOf("A", "B", "X", "Y", "START", "BACK", "LEFT_BUMPER", "RIGHT_BUMPER", "LEFT_THUMB", "RIGHT_THUMB"))
             {
                 val label = ControlHints.labelFor(name, family)
                 assertTrue(all.contains(label), "$family $name -> \"$label\" missing from all()")
@@ -148,6 +176,9 @@ class ControlHintsTest
                 assertTrue(all.contains(ControlHints.playAgain(true, label)), "playAgain $label")
                 assertTrue(all.contains(ControlHints.initialsHelp(true, label)), "initialsHelp $label")
                 assertTrue(all.contains(ControlHints.legend(true, label, label)), "legend $label")
+                assertTrue(all.contains(ControlHints.resume(true, label)), "resume $label")
+                assertTrue(all.contains(ControlHints.goBack(true, label)), "goBack $label")
+                assertTrue(all.contains(ControlHints.exitHold(true, label, label)), "exitHold $label")
             }
         }
     }
@@ -222,6 +253,104 @@ class ControlHintsTest
             assertTrue(all.contains(ControlHints.playAgain(arcade, "START")), "playAgain $arcade")
             assertTrue(all.contains(ControlHints.initialsHelp(arcade, "START")), "initialsHelp $arcade")
             assertTrue(all.contains(ControlHints.legend(arcade, "A", "B")), "legend $arcade")
+            assertTrue(all.contains(ControlHints.resume(arcade, "START")), "resume $arcade")
+            assertTrue(all.contains(ControlHints.goBack(arcade, "START")), "goBack $arcade")
+            assertTrue(all.contains(ControlHints.exitHold(arcade, "LEFT BUMPER", "RIGHT BUMPER")), "exitHold $arcade")
         }
+    }
+
+    // --- The pause / cabinet-menu screen's three lines -----------------------------------
+    //
+    // These replaced ScreenText.PAUSE_RESUME_HINT / MENU_RESUME_HINT / EXIT_HINT, which were
+    // fixed keyboard literals ("ESC to resume", "ESC to go back", "HOLD Q to exit") drawn on
+    // the one screen whose whole job is to say which control does what - to a player who may
+    // be holding a controller and have no keyboard at all. Those constants are gone, so these
+    // tests are also what keeps the keyboard wording itself under test.
+
+    @Test
+    fun `the keyboard forms of the pause hints are the exact strings the deleted constants held`()
+    {
+        // ScreenText.PAUSE_RESUME_HINT / MENU_RESUME_HINT / EXIT_HINT, written out longhand
+        // rather than referenced - referencing them is impossible (they are deleted) and would
+        // have been circular anyway. A player on a keyboard must read exactly what they read
+        // before pause and exit reached the pad; this is the byte-identical guarantee.
+        assertEquals("ESC to resume", ControlHints.resume(false, "OPTIONS"))
+        assertEquals("ESC to go back", ControlHints.goBack(false, "OPTIONS"))
+        assertEquals("HOLD Q to exit", ControlHints.exitHold(false, "L1", "R1"))
+    }
+
+    @Test
+    fun `the arcade forms of the pause hints name the pad, not the keyboard`()
+    {
+        // The defect these exist for: on a controller the old literals named ESC and Q, keys
+        // the player may not have. Asserting the whole string rather than `contains` - the
+        // verb half is what tells a player resume from go-back, and a copy-paste between the
+        // two would pass a contains-check.
+        assertEquals("OPTIONS to resume", ControlHints.resume(true, "OPTIONS"))
+        assertEquals("OPTIONS to go back", ControlHints.goBack(true, "OPTIONS"))
+        assertEquals("HOLD L1 + R1 to exit", ControlHints.exitHold(true, "L1", "R1"))
+    }
+
+    @Test
+    fun `resume and goBack are different sentences, on both devices`()
+    {
+        // They are drawn at the SAME anchor on the same screen, chosen by
+        // RunLifecycle.pausedFromIdle - a paused run resumes, the cabinet menu goes back. One
+        // wired to the other's string would look entirely plausible and would tell a
+        // technician standing at an idle cabinet that there is a run to return to.
+        for (arcade in listOf(true, false))
+            assertFalse(
+                ControlHints.resume(arcade, "OPTIONS") == ControlHints.goBack(arcade, "OPTIONS"),
+                "resume and goBack are the same string at arcade=$arcade"
+            )
+    }
+
+    @Test
+    fun `the pause hints differ between the keyboard and the pad`()
+    {
+        // Same copy-paste guard the older hints get above: both branches of an `if (arcade)`
+        // wired to one constant compiles, is drawable, and silently shows keyboard keys to a
+        // player holding a pad.
+        assertFalse(ControlHints.resume(true, "OPTIONS") == ControlHints.resume(false, "OPTIONS"), "resume")
+        assertFalse(ControlHints.goBack(true, "OPTIONS") == ControlHints.goBack(false, "OPTIONS"), "goBack")
+        assertFalse(ControlHints.exitHold(true, "L1", "R1") == ControlHints.exitHold(false, "L1", "R1"), "exitHold")
+    }
+
+    @Test
+    fun `the keyboard pause hints ignore the pad labels entirely`()
+    {
+        // Esc and Q are hard-coded in updateGame; there is no config key for either. A
+        // keyboard hint that varied with a gamepad label would report a binding that does not
+        // exist - the same asymmetry the older hints are tested for.
+        assertEquals(ControlHints.resume(false, "OPTIONS"), ControlHints.resume(false, "CREATE"))
+        assertEquals(ControlHints.goBack(false, "OPTIONS"), ControlHints.goBack(false, "CREATE"))
+        assertEquals(ControlHints.exitHold(false, "L1", "R1"), ControlHints.exitHold(false, "A", "B"))
+    }
+
+    @Test
+    fun `a rebound pause or exit button reaches the pause screen`()
+    {
+        // pauseButtonAlt, exitButtonA and exitButtonB are all config keys (application.cfg's
+        // BUTTON MAP), so a technician's remap must appear on screen or the screen lies -
+        // which is the whole reason this object exists.
+        assertTrue(ControlHints.resume(true, "GUIDE").contains("GUIDE"))
+        assertTrue(ControlHints.goBack(true, "GUIDE").contains("GUIDE"))
+
+        val exit = ControlHints.exitHold(true, "L3", "R3")
+        assertTrue(exit.contains("L3"), exit)
+        assertTrue(exit.contains("R3"), exit)
+    }
+
+    @Test
+    fun `the exit hint names BOTH buttons, in order, and says they are held together`()
+    {
+        // The exit hold is an AND across two buttons specifically so one stuck contact cannot
+        // close the cabinet. A hint that named only one of them, or that read like a choice
+        // between them, would describe a protection the game does not have. Asserting the
+        // ORDER too: A before B is how application.cfg lists them.
+        val exit = ControlHints.exitHold(true, "L1", "R1")
+        assertTrue(exit.indexOf("L1") < exit.indexOf("R1"), "exitButtonA must be named first: $exit")
+        assertTrue(exit.contains("+"), "the two buttons must read as simultaneous: $exit")
+        assertTrue(exit.startsWith("HOLD"), "the hold is the instruction: $exit")
     }
 }

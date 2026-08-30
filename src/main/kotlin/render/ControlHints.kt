@@ -44,6 +44,15 @@ object ControlHints
     private const val KEY_CONFIRM = "SPACE"
     private const val KEY_CYCLE = "UP/DOWN"
 
+    /**
+     * The pause screen's own two keys. `Esc` opens AND closes it (`pauseEdges`' keyboard
+     * source in `EnPustTil.updateGame`), and `Q` held is the exit — see
+     * [RunLifecycle.EXIT_HOLD_SECONDS]. Both are compiled constants for the same reason the
+     * four above are: nothing in application.cfg rebinds a KEY.
+     */
+    private const val KEY_RESUME = "ESC"
+    private const val KEY_EXIT = "Q"
+
     private const val PAD_SWIM = "STICK"
     private const val PAD_CYCLE = "STICK UP/DOWN"
 
@@ -54,9 +63,18 @@ object ControlHints
      * what this file returned before families existed, so the booth's own USB encoder keeps
      * byte-identical screens.
      *
-     * XBOX carries only START and BACK because an Xbox pad's face buttons genuinely ARE
-     * A/B/X/Y. Identity rows would be a second copy of the truth to keep in step, with no
-     * behaviour behind them.
+     * XBOX carries no FACE row because an Xbox pad's face buttons genuinely ARE A/B/X/Y.
+     * Identity rows would be a second copy of the truth to keep in step, with no behaviour
+     * behind them. It does carry the shoulders and the stick clicks, because those are NOT
+     * identities: an Xbox pad's silkscreen reads LB/RB, and its stick clicks are LS/RS.
+     *
+     * THE SHOULDER AND THUMB ROWS ARRIVED WITH THE PAUSE SCREEN'S OWN HINTS. `exitButtonA`
+     * and `exitButtonB` default to the two bumpers, and the exit hint now PRINTS them
+     * ([exitHold]) rather than naming a keyboard key the player may not have — so
+     * `HOLD LEFT BUMPER + RIGHT BUMPER to exit` is what a DualSense owner would otherwise
+     * read off a pad whose shoulders say L1 and R1. The thumb rows are here for the same
+     * reason one step ahead: `exitButtonA = LEFT_THUMB` is a documented, tested remap
+     * (application.cfg's BUTTON MAP names both thumbs), so it can reach this exact string.
      *
      * ASCII WORDS, NOT THE REAL GLYPHS, AND THIS IS NOT A STYLE CHOICE. The engine's default
      * font bakes only U+0020..U+011F into its atlas, and anything above renders as *nothing at
@@ -78,12 +96,20 @@ object ControlHints
         "X" to "SQUARE",
         "Y" to "TRIANGLE",
         "START" to "OPTIONS",
-        "BACK" to "CREATE"
+        "BACK" to "CREATE",
+        "LEFT_BUMPER" to "L1",
+        "RIGHT_BUMPER" to "R1",
+        "LEFT_THUMB" to "L3",
+        "RIGHT_THUMB" to "R3"
     )
 
     private val XBOX_LABELS = mapOf(
         "START" to "MENU",
-        "BACK" to "VIEW"
+        "BACK" to "VIEW",
+        "LEFT_BUMPER" to "LB",
+        "RIGHT_BUMPER" to "RB",
+        "LEFT_THUMB" to "LS",
+        "RIGHT_THUMB" to "RS"
     )
 
     /**
@@ -148,6 +174,40 @@ object ControlHints
         "${kick(arcade, kickLabel)} kick${ScreenText.SEPARATOR}" +
         "${bleed(arcade, bleedLabel)} bleed"
 
+    // --- The pause / cabinet-menu screen. -------------------------------------------------
+    //
+    // These three replaced `ScreenText.PAUSE_RESUME_HINT` / `MENU_RESUME_HINT` / `EXIT_HINT`,
+    // which were fixed keyboard literals — `ESC to resume`, `ESC to go back`, `HOLD Q to
+    // exit`. Pause and exit reached the PAD on 2026-08-30, so on a controller all three named
+    // keys the player may not have in front of them, on the one screen whose entire job is to
+    // say which control does what. Same defect the four composites above already exist for:
+    // a string that promises a binding the machine does not have.
+    //
+    // WHICH PAD BUTTON THE RESUME LINE ADVERTISES IS A CHOICE, and the caller makes it. There
+    // are two buttons that open and close this screen — `pauseButton` (Create/View) and
+    // `pauseButtonAlt` (Options/Menu) — and only one fits on the line. `EnPustTil` passes the
+    // ALT's label: Options is the button a console player reaches for to pause anything, and
+    // `pauseButton`'s default (Create) is the technician's, not the player's. Both still work;
+    // only one is printed.
+
+    fun resume(arcade: Boolean, pauseLabel: String): String =
+        "${if (arcade) pauseLabel else KEY_RESUME} to resume"
+
+    fun goBack(arcade: Boolean, pauseLabel: String): String =
+        "${if (arcade) pauseLabel else KEY_RESUME} to go back"
+
+    /**
+     * The exit affordance. On a pad it is TWO buttons held together — see the exit-hold
+     * comment in `EnPustTil.updateGame` for why one stuck contact must not be able to close
+     * the cabinet — so this is the one hint that names two controls, joined with a literal
+     * `+` rather than [ScreenText.SEPARATOR]. The dot is this game's "and also"; a plus is
+     * the only punctuation that reads as "at the same time", and that simultaneity IS the
+     * instruction. `+` is U+002B, well inside the default font's atlas.
+     */
+    fun exitHold(arcade: Boolean, exitALabel: String, exitBLabel: String): String =
+        if (arcade) "HOLD $exitALabel + $exitBLabel to exit"
+        else "HOLD $KEY_EXIT to exit"
+
     /**
      * Every string this object can produce, at both device settings, at every controller
      * family and at the widest button labels, for the font-atlas sweep. Test-only; cheap
@@ -168,6 +228,13 @@ object ControlHints
             out += initialsHelp(arcade, "START")
             out += legend(arcade, "A", "B")
             out += legend(arcade, "RIGHT BUMPER", "LEFT BUMPER")
+            out += resume(arcade, "START")
+            out += goBack(arcade, "START")
+            // Both the widest generic labels and the shortest console ones, because the exit
+            // hint is the only string in this object that joins TWO variable labels and the
+            // join is where a stray character would land.
+            out += exitHold(arcade, "LEFT BUMPER", "RIGHT BUMPER")
+            out += exitHold(arcade, "L1", "R1")
         }
 
         // Every family legend, and every composite that can carry one — a family label reaches
@@ -192,6 +259,9 @@ object ControlHints
                 out += playAgain(true, label)
                 out += initialsHelp(true, label)
                 out += legend(true, label, label)
+                out += resume(true, label)
+                out += goBack(true, label)
+                out += exitHold(true, label, label)
             }
         }
         return out

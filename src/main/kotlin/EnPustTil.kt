@@ -316,10 +316,10 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
 
 /**
  * Warnings for configured-button collisions that are ALWAYS a mistake, regardless of
- * `RunLifecycle`'s state. Three of them: `kickButton == bleedButton`,
- * `exitButtonA == exitButtonB`, and `pauseButton` landing on either gameplay button — all
- * compared by [GamepadButton.code]. One warning string per problem, ready to log; empty when
- * nothing collides.
+ * `RunLifecycle`'s state. Three kinds: `kickButton == bleedButton`,
+ * `exitButtonA == exitButtonB`, and EITHER pause key (`pauseButton`, `pauseButtonAlt`)
+ * landing on either gameplay button — all compared by [GamepadButton.code]. One warning
+ * string per problem, ready to log; empty when nothing collides.
  *
  * WHY ONLY THIS ONE PAIR, when application.cfg configures four buttons and there are six
  * possible pairs among them. This function used to warn on ALL SIX — "any two of the four
@@ -368,9 +368,22 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
  *    restart keys are not: `RunLifecycle.update`'s `PLAYING` branch reads `pauseEdge`, and
  *    kick/bleed are read on exactly that state, so one physical button would kick the diver
  *    and open the pause screen in the same frame, mid-run, in front of the queue.
- * `pauseButton` colliding with `restartButton`/`restartButtonAlt` is NOT checked: a restart
- * edge and a pause edge are consumed in disjoint states (`RUN_OVER`/`IDLE` versus
- * `PLAYING`/`PAUSED`), the same disjointness that makes kick-versus-restart safe above.
+ * `pauseButtonAlt` (added with the pause screen's second button) gets those same two checks,
+ * for that same reason: the two pause keys are read on identical states, so which of them is
+ * pointed at kick makes no difference to the defect.
+ *
+ * `pauseButton`/`pauseButtonAlt` colliding with `restartButton`/`restartButtonAlt` is NOT
+ * checked, and for `pauseButtonAlt` THE COLLISION IS THE SHIPPED DEFAULT rather than merely a
+ * tolerated one: `DEFAULT_PAUSE_BUTTON_ALT` and `DEFAULT_RESTART_BUTTON` are BOTH `START`, on
+ * purpose — Options on a console pad is both "start a run" from attract and "pause" mid-run,
+ * which is what every console game does and what the owner asked for. A check here would fire
+ * a WARNING ON EVERY UNTOUCHED BOOT for the shipped design, exactly like the
+ * `kickButton == restartButtonAlt` false alarm that narrowed this function in the first place.
+ * It is safe for the general reason too: a restart edge and a pause edge are consumed in
+ * disjoint states (`RUN_OVER`/`IDLE` versus `PLAYING`/`PAUSED`), the same disjointness that
+ * makes kick-versus-restart safe above — and where they ARE raised in the same frame (`IDLE`),
+ * `RunLifecycle.update` checks `pressedEdge` first and deliberately lets the start win. See
+ * the trace beside the `pauseEdges.offer` calls in `updateGame`.
  * `exitButtonA`/`exitButtonB` colliding with anything OTHER than each other is not checked
  * either: exit is read only while `PAUSED`, which no other button in this map can reach,
  * and it needs both of them held for [render.RunLifecycle.EXIT_HOLD_SECONDS] regardless.
@@ -392,6 +405,7 @@ fun gamepadButtonCollisionWarnings(
     restartButton: GamepadButton,
     restartButtonAlt: GamepadButton,
     pauseButton: GamepadButton,
+    pauseButtonAlt: GamepadButton,
     exitButtonA: GamepadButton,
     exitButtonB: GamepadButton
 ): List<String>
@@ -418,6 +432,18 @@ fun gamepadButtonCollisionWarnings(
 
     if (pauseButton.code == bleedButton.code)
         warnings.add("application.cfg: pauseButton and bleedButton both resolve to the same physical button ($pauseButton, code ${pauseButton.code}) - a player's bleed would open the pause screen mid-run. Check for a copy-paste.")
+
+    // pauseButtonAlt gets the SAME two checks and NOT the restart one. Both pause keys are
+    // read on the same states, so either of them landing on kick or bleed is the identical
+    // mid-run defect; pauseButtonAlt landing on restartButton is the shipped default (see the
+    // class doc's PAUSE_BUTTON_ALT paragraph) and warning about it would fire on every
+    // untouched boot, which is the exact cried-wolf failure this function was narrowed to
+    // avoid.
+    if (pauseButtonAlt.code == kickButton.code)
+        warnings.add("application.cfg: pauseButtonAlt and kickButton both resolve to the same physical button ($pauseButtonAlt, code ${pauseButtonAlt.code}) - a player's kick would open the pause screen mid-run. Check for a copy-paste.")
+
+    if (pauseButtonAlt.code == bleedButton.code)
+        warnings.add("application.cfg: pauseButtonAlt and bleedButton both resolve to the same physical button ($pauseButtonAlt, code ${pauseButtonAlt.code}) - a player's bleed would open the pause screen mid-run. Check for a copy-paste.")
 
     return warnings
 }
@@ -645,11 +671,17 @@ object ScreenText
      */
     const val MENU_TITLE = "CABINET MENU"
 
-    const val PAUSE_RESUME_HINT = "ESC to resume"
-    const val MENU_RESUME_HINT = "ESC to go back"
-
-    /** The exit affordance, on both variants. See RunLifecycle.EXIT_HOLD_SECONDS. */
-    const val EXIT_HINT = "HOLD Q to exit"
+    // PAUSE_RESUME_HINT ("ESC to resume"), MENU_RESUME_HINT ("ESC to go back") and EXIT_HINT
+    // ("HOLD Q to exit") used to live here, and they are GONE rather than kept as unreferenced
+    // constants: pause and exit reached the gamepad on 2026-08-30, so all three named a
+    // keyboard key that a controller player does not have, on the one screen whose whole job
+    // is to say which control does what. They are now composed per-device and per-controller-
+    // family by ControlHints.resume/goBack/exitHold and cached on EnPustTil, exactly like
+    // PRESS_START/PLAY_AGAIN/INITIALS_HELP above.
+    //
+    // Nothing is lost from the font sweep by deleting them: a composed string can never appear
+    // in all() below, and ControlHintsTest sweeps ControlHints.all() — which carries both the
+    // keyboard forms (byte-identical to the three deleted literals) and every gamepad form.
 
     /** Dev overlay (EPT_DEV only) — see [EnPustTil.renderGamepadOverlay]. Still drawn text. */
     const val UNMAPPED_JOYSTICK_WARNING = "!! joystick present but NOT gamepad-mapped${SEPARATOR}invisible to this game !!"
@@ -698,9 +730,6 @@ object ScreenText
         UNMAPPED_JOYSTICK_WARNING,
         PAUSED_TITLE,
         MENU_TITLE,
-        PAUSE_RESUME_HINT,
-        MENU_RESUME_HINT,
-        EXIT_HINT,
         runOver(0),
         runOver(99999),
         newScore(12345),
@@ -891,7 +920,7 @@ object PauseLayout
 
     /**
      * Half the bar's length, as a fraction of screen HEIGHT — height, so the bar keeps the
-     * same proportion to the "HOLD Q to exit" line above it on any aspect ratio, exactly as
+     * same proportion to the "HOLD ... to exit" line above it on any aspect ratio, exactly as
      * [AttractLayout.ROW_HALF_SPAN] does for a leaderboard row.
      */
     const val BAR_HALF_SPAN = 0.15f
@@ -1104,6 +1133,7 @@ class EnPustTil : PulseEngineGame()
     // above are: the booth encoder's real codes are not known until one is enumerated, and a
     // technician at the cabinet has Notepad and no toolchain.
     private var pauseButton = DEFAULT_PAUSE_BUTTON
+    private var pauseButtonAlt = DEFAULT_PAUSE_BUTTON_ALT
     private var exitButtonA = DEFAULT_EXIT_BUTTON_A
     private var exitButtonB = DEFAULT_EXIT_BUTTON_B
     private var stickDeadzone = DEFAULT_STICK_DEADZONE
@@ -1152,7 +1182,7 @@ class EnPustTil : PulseEngineGame()
      */
     private var familyPadId: Int = -1
 
-    // The five composed hints. ControlHints builds Strings, and CLAUDE.md forbids per-frame
+    // The eight composed hints. ControlHints builds Strings, and CLAUDE.md forbids per-frame
     // allocation in the render path (the one written exemption is HUD numeric formatting, which
     // these are not). The button map is fixed once config is read, so `arcadeHints` is the only
     // input that can vary — these are rebuilt only when it flips.
@@ -1168,6 +1198,15 @@ class EnPustTil : PulseEngineGame()
     // rather than re-deriving ControlHints.confirm(...) a second time — see the review finding
     // that put this field here, and drawBriefingScreen for the per-frame allocation it replaced.
     private var hintBriefingSkip: String = ""
+    // The pause / cabinet-menu screen's three lines, replacing ScreenText.PAUSE_RESUME_HINT /
+    // MENU_RESUME_HINT / EXIT_HINT — three fixed keyboard literals on the one screen that
+    // exists to say which control does what, drawn on a machine whose player may be holding a
+    // controller. Cached here rather than composed in drawPauseScreen for the same
+    // no-per-frame-allocation reason as the five above: the pause screen is drawn every frame
+    // it is open, and it is open for as long as somebody leaves it open.
+    private var hintPauseResume: String = ""
+    private var hintMenuResume: String = ""
+    private var hintExitHold: String = ""
 
     /**
      * The dev-only depth pin, or null at the booth. Resolved in [onCreate] from
@@ -1372,6 +1411,7 @@ class EnPustTil : PulseEngineGame()
         val restartButtonRawString = engine.config.getString("restartButton")
         val restartButtonAltRawString = engine.config.getString("restartButtonAlt")
         val pauseButtonRawString = engine.config.getString("pauseButton")
+        val pauseButtonAltRawString = engine.config.getString("pauseButtonAlt")
         val exitButtonARawString = engine.config.getString("exitButtonA")
         val exitButtonBRawString = engine.config.getString("exitButtonB")
         kickButton = parseGamepadButton(kickButtonRawString, DEFAULT_KICK_BUTTON)
@@ -1379,6 +1419,7 @@ class EnPustTil : PulseEngineGame()
         restartButton = parseGamepadButton(restartButtonRawString, DEFAULT_RESTART_BUTTON)
         restartButtonAlt = parseGamepadButton(restartButtonAltRawString, DEFAULT_RESTART_BUTTON_ALT)
         pauseButton = parseGamepadButton(pauseButtonRawString, DEFAULT_PAUSE_BUTTON)
+        pauseButtonAlt = parseGamepadButton(pauseButtonAltRawString, DEFAULT_PAUSE_BUTTON_ALT)
         exitButtonA = parseGamepadButton(exitButtonARawString, DEFAULT_EXIT_BUTTON_A)
         exitButtonB = parseGamepadButton(exitButtonBRawString, DEFAULT_EXIT_BUTTON_B)
         // stickDeadzone = 0 (the natural way to write "disable the deadzone") is all-digit
@@ -1392,7 +1433,7 @@ class EnPustTil : PulseEngineGame()
         // falls back to the compiled default with NO signal anywhere, and the reasonable
         // conclusion for a technician is "the config file doesn't work" — precisely the
         // failure Task 7 exists to prevent.
-        Logger.warn { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt pause=$pauseButton exit=$exitButtonA+$exitButtonB deadzone=$stickDeadzone" }
+        Logger.warn { "Buttons: kick=$kickButton bleed=$bleedButton restart=$restartButton/$restartButtonAlt pause=$pauseButton/$pauseButtonAlt exit=$exitButtonA+$exitButtonB deadzone=$stickDeadzone" }
 
         // Per-key, and now checked against ALL THREE coercion shapes (see
         // gamepadButtonConfigWarning's GENERALISED paragraph) — the summary line above
@@ -1404,13 +1445,14 @@ class EnPustTil : PulseEngineGame()
         gamepadButtonConfigWarning("restartButton", restartButtonRawString, engine.config.getInt("restartButton"), engine.config.getFloat("restartButton"), restartButton, DEFAULT_RESTART_BUTTON)?.let { Logger.warn { it } }
         gamepadButtonConfigWarning("restartButtonAlt", restartButtonAltRawString, engine.config.getInt("restartButtonAlt"), engine.config.getFloat("restartButtonAlt"), restartButtonAlt, DEFAULT_RESTART_BUTTON_ALT)?.let { Logger.warn { it } }
         gamepadButtonConfigWarning("pauseButton", pauseButtonRawString, engine.config.getInt("pauseButton"), engine.config.getFloat("pauseButton"), pauseButton, DEFAULT_PAUSE_BUTTON)?.let { Logger.warn { it } }
+        gamepadButtonConfigWarning("pauseButtonAlt", pauseButtonAltRawString, engine.config.getInt("pauseButtonAlt"), engine.config.getFloat("pauseButtonAlt"), pauseButtonAlt, DEFAULT_PAUSE_BUTTON_ALT)?.let { Logger.warn { it } }
         gamepadButtonConfigWarning("exitButtonA", exitButtonARawString, engine.config.getInt("exitButtonA"), engine.config.getFloat("exitButtonA"), exitButtonA, DEFAULT_EXIT_BUTTON_A)?.let { Logger.warn { it } }
         gamepadButtonConfigWarning("exitButtonB", exitButtonBRawString, engine.config.getInt("exitButtonB"), engine.config.getFloat("exitButtonB"), exitButtonB, DEFAULT_EXIT_BUTTON_B)?.let { Logger.warn { it } }
 
         // A plausible booth copy-paste (kickButton = bleedButton, or any two of these four
         // landing on the same physical button) makes the game partly or fully unplayable
         // with no signal anywhere else — see gamepadButtonCollisionWarnings's doc.
-        gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt, pauseButton, exitButtonA, exitButtonB)
+        gamepadButtonCollisionWarnings(kickButton, bleedButton, restartButton, restartButtonAlt, pauseButton, pauseButtonAlt, exitButtonA, exitButtonB)
             .forEach { Logger.warn { it } }
 
         // AFTER the button map resolves and BEFORE the first renderGame. A cache seeded at
@@ -1938,6 +1980,39 @@ class EnPustTil : PulseEngineGame()
             // technician who writes `A` have named the same physical contact, and .ordinal
             // would give one jammed button two source keys and two stuck counters.
             pauseEdges.offer(pad.id, pauseButton.code, mappedPads.isPressed(pad.id, pauseButton))
+
+            // THE SECOND PAUSE BUTTON, AND WHY IT IS SAFE THAT IT IS ALSO THE START BUTTON.
+            //
+            // pauseButtonAlt defaults to START — Options on a DualSense, Menu on an Xbox pad —
+            // which is ALSO DEFAULT_RESTART_BUTTON. So one Options press raises BOTH signals
+            // in the same frame: pressedEdge out of lifecycleEdges.commit() and pauseEdge out
+            // of pauseEdges.commit(). That looks like a conflict and is not one. Traced
+            // against RunLifecycle.update's `when (state)` block, state by state:
+            //
+            //  - IDLE reads `if (pressedEdge) ... else if (pauseEdge)`, so the START WINS and
+            //    Options begins a run from attract. That precedence is not incidental — the
+            //    comment on that branch states it deliberately ("a player and a technician
+            //    acting in the same frame gives the player the run"). The CABINET MENU is
+            //    still reachable from IDLE, by pauseButton (Create/View) or by Esc.
+            //  - PLAYING does not consult pressedEdge AT ALL (only runOver, then pauseEdge),
+            //    so Options opens the pause screen mid-run. This is the behaviour asked for.
+            //  - PAUSED resumes on pauseEdge, so Options closes what Options opened. Symmetric,
+            //    which is what a player expects of a pause button.
+            //  - BRIEFING, RUN_OVER and ENTER_INITIALS do not handle pauseEdge at all (see the
+            //    BRIEFING branch's own comment), so their behaviour is unchanged: in
+            //    ENTER_INITIALS Options still advances a letter and nothing else.
+            //
+            // RunLifecycle therefore needs NO change for this, and its existing precedence is
+            // what makes it work — do not "fix" the double signal by removing one of the
+            // offers or by adding a pauseEdge branch to the states that ignore it.
+            //
+            // The guard is the same OPTIMISATION as restartButtonAlt's above, not a safety
+            // net: LifecycleInputEdges.offer already defends itself against one (padId, code)
+            // source being offered twice in a frame (its KDoc has the bookkeeping-corruption
+            // argument). This just skips a call whose result would be discarded, for the
+            // technician who sets both pause keys to the button they know works.
+            if (pauseButtonAlt.code != pauseButton.code)
+                pauseEdges.offer(pad.id, pauseButtonAlt.code, mappedPads.isPressed(pad.id, pauseButtonAlt))
         }
         lifecycleEdges.offerKeyboardEdge(engine.input.wasClicked(Key.SPACE))
         // ESCAPE goes in as pause's KEYBOARD source, never OR-ed into the pad levels above.
@@ -2639,8 +2714,10 @@ class EnPustTil : PulseEngineGame()
     }
 
     /**
-     * The pause / exit screen (Esc). Wording and geometry are [ScreenText]'s and
-     * [PauseLayout]'s problems; this method only issues the draw calls.
+     * The pause / exit screen (Esc, or the pad's pause button). Geometry is [PauseLayout]'s
+     * problem and wording is [ScreenText]'s and [render.ControlHints]' — the two titles are
+     * fixed, the three control lines are the cached device- and family-aware hints from
+     * [rebuildControlHints]. This method only issues the draw calls.
      *
      * Every solid rectangle here goes through [render.fillRect] and never `drawQuad` —
      * `drawQuad` renders nothing at all on macOS and, more to the point, still renders
@@ -2668,20 +2745,23 @@ class EnPustTil : PulseEngineGame()
             h * PauseLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
         hud.drawTextWithOutline(
-            if (fromIdle) ScreenText.MENU_RESUME_HINT else ScreenText.PAUSE_RESUME_HINT,
+            // Cached, device- and family-aware; these were fixed "ESC ..." literals until
+            // pause and exit reached the pad. See the hint cache and rebuildControlHints.
+            if (fromIdle) hintMenuResume else hintPauseResume,
             centreX, h * PauseLayout.RESUME_Y,
             h * PauseLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
         hud.drawTextWithOutline(
-            ScreenText.EXIT_HINT,
+            hintExitHold,
             centreX, h * PauseLayout.EXIT_Y,
             h * PauseLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        // The exit-hold bar: an empty track always, plus a fill that grows while the key is
-        // down. Drawn unconditionally rather than only while held, so the affordance is
-        // visible before anyone touches anything — an empty track under "HOLD Q to exit" is
-        // what tells a technician the key wants holding rather than pressing.
+        // The exit-hold bar: an empty track always, plus a fill that grows while the key (or
+        // the two buttons) is down. Drawn unconditionally rather than only while held, so the
+        // affordance is visible before anyone touches anything — an empty track under the
+        // "HOLD ... to exit" line is what tells a technician the control wants holding rather
+        // than pressing.
         val barX = PauseLayout.barX(centreX, h)
         val barY = h * PauseLayout.BAR_Y
         val barHeight = h * PauseLayout.BAR_HEIGHT
@@ -2951,6 +3031,22 @@ class EnPustTil : PulseEngineGame()
         hintInitialsHelp = ControlHints.initialsHelp(arcadeHints, startLabel)
         hintLegend = ControlHints.legend(arcadeHints, gamepadButtonLabel(kickButton, controllerFamily), gamepadButtonLabel(bleedButton, controllerFamily))
         hintBriefingSkip = hintPressStart + ScreenText.BRIEFING_SKIP_SUFFIX
+
+        // pauseButtonAlt's label, NOT pauseButton's, and that is a deliberate choice rather
+        // than an accident of which field was to hand. Two buttons open and close this screen
+        // and only one fits on the line: pauseButtonAlt defaults to START, i.e. Options on a
+        // DualSense and Menu on an Xbox pad, which is the button a console player already
+        // reaches for to pause anything. pauseButton defaults to BACK (Create/View) and is the
+        // TECHNICIAN's way into the CABINET MENU from attract. Both still work; the screen
+        // advertises the player's one.
+        val pauseLabel = gamepadButtonLabel(pauseButtonAlt, controllerFamily)
+        hintPauseResume = ControlHints.resume(arcadeHints, pauseLabel)
+        hintMenuResume = ControlHints.goBack(arcadeHints, pauseLabel)
+        hintExitHold = ControlHints.exitHold(
+            arcadeHints,
+            gamepadButtonLabel(exitButtonA, controllerFamily),
+            gamepadButtonLabel(exitButtonB, controllerFamily)
+        )
     }
 
     /**
@@ -3239,6 +3335,20 @@ class EnPustTil : PulseEngineGame()
         // DEFAULT_RESTART_BUTTON, and pause is edge-detected on the same states restart
         // reads, so one button would mean the press that ends a run also pauses it.
         val DEFAULT_PAUSE_BUTTON = GamepadButton.BACK
+
+        // A SECOND pause button, exactly as DEFAULT_RESTART_BUTTON_ALT is a second start
+        // button - START is Options on a DualSense and Menu on an Xbox pad, which is the
+        // button every console player already reaches for to pause anything. BACK stays the
+        // primary because it is the technician's way into the CABINET MENU from attract;
+        // Options is the player's way into PAUSED mid-run.
+        //
+        // THIS DELIBERATELY COLLIDES WITH DEFAULT_RESTART_BUTTON, AND THAT COLLISION IS THE
+        // FEATURE. One Options press now raises pressedEdge (via lifecycleEdges) AND pauseEdge
+        // (via pauseEdges) in the same frame. RunLifecycle.update's own precedence is what
+        // makes every state come out right - see the comment beside the pauseEdges.offer call
+        // in updateGame for the state-by-state trace, and note that
+        // gamepadButtonCollisionWarnings deliberately does NOT warn on this pair.
+        val DEFAULT_PAUSE_BUTTON_ALT = GamepadButton.START
 
         // The exit hold is an AND across BOTH of these on ONE pad, held for
         // RunLifecycle.EXIT_HOLD_SECONDS - see the exit-hold comment in updateGame for why

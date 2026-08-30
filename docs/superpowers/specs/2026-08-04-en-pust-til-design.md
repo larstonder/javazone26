@@ -162,8 +162,12 @@ that exist so the game can be developed and demonstrated without an encoder.
 | Bleed | `bleedButton` (default B), held | `X` | Gamepad only |
 | Start / restart / confirm | `restartButton` (START) or `restartButtonAlt` (A), on ANY connected pad | `SPACE` | Gamepad only |
 | Cycle initials | Left stick up/down **or D-pad up/down**, any pad | `UP`/`DOWN` | No |
-| Pause / cabinet menu | `pauseButton` (default BACK), on ANY connected pad | `ESC` | Gamepad only |
+| Pause / cabinet menu | `pauseButton` (default BACK) **or `pauseButtonAlt` (default START)**, on ANY connected pad | `ESC` | Gamepad only |
 | Exit the cabinet | `exitButtonA` + `exitButtonB` (defaults LEFT_BUMPER + RIGHT_BUMPER) held TOGETHER on the SAME pad for 1.5 s, and only from the pause screen | hold `Q` | Gamepad only |
+
+**`pauseButtonAlt` defaults to START, which is ALSO `restartButton`, and that overlap is the feature rather than a collision.** One Options press raises both a start edge and a pause edge in the same frame, and `RunLifecycle`'s existing precedence already resolves it in every state: IDLE checks `pressedEdge` before `pauseEdge`, so Options starts a run from attract mode and the cabinet menu stays reachable on `pauseButton` (Create) and `ESC`; PLAYING never consults `pressedEdge`, so Options pauses; PAUSED resumes on `pauseEdge`, so Options closes what Options opened; BRIEFING, RUN_OVER and ENTER_INITIALS ignore `pauseEdge` entirely, so Options still skips a briefing, retries a run and advances a letter exactly as before. `RunLifecycle` needed no change. `gamepadButtonCollisionWarnings` therefore does NOT check `pauseButtonAlt` against `restartButton` — that pairing is the shipped default, and warning on it would fire on every untouched boot.
+
+**The pause screen names the attached device.** Its two lines were fixed keyboard literals (`ESC to resume`, `HOLD Q to exit`) until 2026-08-30 and now compose through `ControlHints`, so a DualSense reads `OPTIONS to resume` / `HOLD L1 + R1 to exit` — verified on a window grab, not inferred. That is why the family label table also covers the bumpers and thumbsticks (`L1`/`R1` and `L3`/`R3` on PlayStation, `LB`/`RB` and `LS`/`RS` on Xbox): the exit hint prints two bumper names, and "HOLD LEFT BUMPER + RIGHT BUMPER to exit" is not a line anyone should have to read.
 
 The asymmetry is deliberate: gamepad bindings are configurable because the arcade encoder's
 real button codes are unknown until it is plugged in; keyboard bindings are not, because they
