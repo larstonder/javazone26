@@ -258,14 +258,11 @@ class FrameProbe(private val sampleWindowSeconds: Float = 1f) : Service()
         {
             val fps = if (p50 > 0f) 1000f / p50 else 0f
             return "[FRAME] p50=%.2fms (%.1f fps)  p95=%.2fms  worst=%.2fms  n=%d"
-                .format(p50, fps, worst.let { it }, frames)
-                .replace("worst=%.2fms".format(worst), "worst=%.2fms".format(worst))
+                .format(p50, fps, p95, worst, frames)
         }
     }
 }
 ```
-
-**Note on `formatLine`:** write it as a single straightforward `"...".format(p50, fps, p95, worst, frames)` with five placeholders in order. The version above is deliberately shown mid-thought so you do not copy a convoluted expression — replace the body with the clean one-liner and keep the test green.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
@@ -961,10 +958,12 @@ The only mechanism in the whole audit that produces a *visible hitch* rather tha
         // Measured by allocation count rather than by reading the source, because the source
         // form that allocates and the form that does not look almost identical.
         val before = allocatedBytes()
-        var sink = Zone.SHALLOWS
-        repeat(100_000) { sink = Zone.at(it % 200f) }
+        var sink = 0
+        repeat(100_000) { sink += Zone.at((it % 200).toFloat()).pearlValue }
         val after = allocatedBytes()
-        assertTrue(sink == Zone.ABYSS || sink != Zone.ABYSS)  // keep `sink` live
+        // Assert something real about `sink` so the loop cannot be optimised away: every zone
+        // has a positive pearlValue, so 100k lookups must sum to a positive total.
+        assertTrue(sink > 0, "the lookup loop was optimised away; the measurement is meaningless")
         assertTrue(after - before < 100_000,
             "Zone.at allocated ${after - before} bytes over 100k calls — it should allocate none")
     }
