@@ -10,8 +10,29 @@ application {
     // The Gradle `run` task launches the JVM on a worker thread by default, so on
     // macOS this must be forced explicitly. No-op on other platforms; the Windows
     // release build below uses launch4j's own jvmOptions instead.
+    //
+    // THE REST OF THIS LIST HAD NEVER RUN ON A MAC. -XX:+UseZGC, the heap sizes and
+    // -XX:+DisableExplicitGC were all set in the launch4j block, which builds the WINDOWS exe
+    // only — so the tuned GC configuration applied to no machine anybody was playing on once
+    // the target was corrected to "a Mac with a controller".
     if (org.gradle.internal.os.OperatingSystem.current().isMacOsX)
-        applicationDefaultJvmArgs = listOf("-XstartOnFirstThread")
+        applicationDefaultJvmArgs = listOf(
+            "-XstartOnFirstThread",
+
+            // Equal min and max: the heap never grows or shrinks, so no resize pause can land
+            // inside a frame. 512 MB is ~10x the MEASURED 49 MB peak live set — this game
+            // allocates about 1 MB/s and holds 10-30 MB.
+            "-Xms512m", "-Xmx512m",
+
+            // Pre-fault all 512 MB once at startup so no page fault happens mid-frame. Only
+            // cheap BECAUSE the heap is small; do not pair this with a multi-gigabyte -Xms.
+            "-XX:+AlwaysPreTouch",
+
+            // Measured win: removes two System.gc() full pauses (10.0 ms and 12.8 ms) that
+            // fire during engine init. PulseEngineImpl.postGameInit calls System.gc() and the
+            // engine expects that collection to happen — it does not need to.
+            "-XX:+DisableExplicitGC"
+        )
 }
 
 group = "org.example"
@@ -237,7 +258,20 @@ tasks.register<Exec>("buildMacRelease") {
             // GLFW must own the process's first thread on macOS or window creation crashes the
             // JVM. The `application {}` block above only covers `./gradlew run`; a packaged app
             // has no Gradle around it, so the flag has to be baked into the bundle's own config.
+            //
+            // The heap/GC flags below mirror the `application {}` block above for the same
+            // measured reasons (10x the peak live set, pre-touch to avoid a mid-frame page
+            // fault, drop the two System.gc() boot pauses). `-Dorg.lwjgl.util.NoChecks=true` is
+            // added ONLY here and never on `./gradlew run`: it disables LWJGL's per-call
+            // parameter validation on every GL entry point, a real per-frame saving, but it
+            // means a mistake that would otherwise throw instead corrupts state silently — a
+            // trade only acceptable in a build nobody is going to iterate against.
             "--java-options", "-XstartOnFirstThread",
+            "--java-options", "-Xms512m",
+            "--java-options", "-Xmx512m",
+            "--java-options", "-XX:+AlwaysPreTouch",
+            "--java-options", "-XX:+DisableExplicitGC",
+            "--java-options", "-Dorg.lwjgl.util.NoChecks=true",
             "--dest", macReleaseDir.asFile.absolutePath
         )
         args(macSigningArgs)
