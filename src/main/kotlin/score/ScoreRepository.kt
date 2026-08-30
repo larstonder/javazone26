@@ -54,6 +54,28 @@ class ScoreRepository(
     private var entries: MutableList<ScoreEntry> = mutableListOf()
     private var lastBackupTimeMs = System.currentTimeMillis()
 
+    /**
+     * Cache of [Leaderboard.rank]'s FULL output for a given seed, so [topN] does not
+     * re-sort and re-box every entry on every call.
+     *
+     * `rank`'s comparator is `compareByDescending<ScoreEntry> { it.score }.thenBy {
+     * it.timestampMs }` — `score` (`Int`) and `timestampMs` (`Long`) are both
+     * `Comparable`, so every single comparison during the sort boxes one `Integer` and
+     * one `Long`. `drawLeaderboard` calls `topN` once per ATTRACT-SCREEN FRAME (every
+     * frame the cabinet idles, which is most of a booth day), and the entry count only
+     * grows through the day — so this was strictly the worst place in the game for a
+     * per-call re-sort to live.
+     *
+     * Keyed by seed rather than by (seed, n): the two call sites — `drawLeaderboard`'s
+     * fixed [score.ScoreEntry] top-N and `winner`'s `topN(n = Int.MAX_VALUE)` — both want
+     * a prefix of the SAME full ranking for the same seed, so ranking once per seed and
+     * slicing per call reuses more than keying on `n` as well would. Invalidated (whole
+     * map cleared) by [registerScore] — the only mutator of [entries] after [onCreate] —
+     * and by [loadInto], so a re-load never serves a ranking computed from the entries it
+     * replaced.
+     */
+    private val rankedCache = mutableMapOf<Long, List<ScoreEntry>>()
+
     // onCreate builds the real store from the engine when one was not injected. Injection
     // is what ScoreRepositoryTest uses; the booth always takes this branch.
     override fun onCreate(engine: PulseEngine)
@@ -65,9 +87,20 @@ class ScoreRepository(
         registerWinnerCommand(engine)
     }
 
-    /** Top [n] entries for [seed] (defaults to today's), ranked — see [Leaderboard.rank]. */
-    fun topN(n: Int, seed: Long = todaySeed): List<ScoreEntry> =
-        Leaderboard.topN(entries.filter { it.seed == seed }, n)
+    /**
+     * Top [n] entries for [seed] (defaults to today's), ranked — see [Leaderboard.rank].
+     *
+     * Served from [rankedCache] rather than re-ranking [entries] on every call — see
+     * that field's doc. `n <= 0` short-circuits before touching the cache, matching
+     * [Leaderboard.topN]'s own contract of returning an empty list rather than a
+     * zero-or-negative `take`.
+     */
+    fun topN(n: Int, seed: Long = todaySeed): List<ScoreEntry>
+    {
+        if (n <= 0) return emptyList()
+        val ranked = rankedCache.getOrPut(seed) { Leaderboard.rank(entries.filter { it.seed == seed }) }
+        return ranked.take(n)
+    }
 
     /**
      * Record a completed run's score. No-ops (and never touches disk) for a run not
@@ -84,6 +117,11 @@ class ScoreRepository(
 
         val clean = initials.uppercase().filter { it in 'A'..'Z' }.take(3).padEnd(3, 'A')
         entries.add(ScoreEntry(clean, score, seed, System.currentTimeMillis()))
+        // The one mutation of `entries` after onCreate — the cached ranking for THIS
+        // seed is now stale. Clearing the whole map (rather than just this seed's key)
+        // costs nothing: a booth day touches one or two seeds total, and getOrPut simply
+        // recomputes whichever seed is next asked for.
+        rankedCache.clear()
 
         saveAndPromote(s)
         maybeRollBackup(s)
@@ -195,6 +233,12 @@ class ScoreRepository(
     {
         sweepStaleTemps(s)
         entries = loadEntries(s).toMutableList()
+        // entries was just replaced wholesale — any cached ranking now describes a set
+        // of entries this repository no longer holds. Only onCreateForTest re-enters
+        // this in practice (the booth calls it once, from onCreate, before the cache has
+        // anything in it), but a stale cache surviving a reload is exactly the kind of
+        // bug that would go unnoticed until a test deliberately reloaded mid-run.
+        rankedCache.clear()
     }
 
     /**

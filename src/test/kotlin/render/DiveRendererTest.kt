@@ -47,6 +47,28 @@ class DiveRendererTest
         }
     }
 
+    /**
+     * The point of [DiveRenderer.zoneColourAt] is to compute the SAME colour as the three
+     * single-channel functions with less redundant work — see its doc for the 222
+     * redundant-blend count it removes. If it ever disagrees with them, the zone bands
+     * change appearance and nothing else here would notice, since every other test in
+     * this class reaches the colour through `zoneRedAt`/`zoneGreenAt`/`zoneBlueAt`
+     * directly rather than through the draw path's own call.
+     */
+    @Test
+    fun `zoneColourAt agrees with the three single-channel functions it replaces`()
+    {
+        val out = FloatArray(3)
+        for (depth in intArrayOf(0, 15, 30, 59, 60, 95, 120, 160))
+        {
+            val d = depth.toFloat()
+            DiveRenderer.zoneColourAt(d, out)
+            assertEquals(DiveRenderer.zoneRedAt(d), out[0], 1e-6f, "red at ${d}m")
+            assertEquals(DiveRenderer.zoneGreenAt(d), out[1], 1e-6f, "green at ${d}m")
+            assertEquals(DiveRenderer.zoneBlueAt(d), out[2], 1e-6f, "blue at ${d}m")
+        }
+    }
+
     @Test
     fun `every zone still reads as its own colour at its own midpoint`()
     {

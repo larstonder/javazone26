@@ -2717,7 +2717,7 @@ class EnPustTil : PulseEngineGame()
 
         val fontSize = h * AttractLayout.ROW_FONT
         val centreX = w * 0.5f
-        val cold = Color(0.75f, 0.85f, 1f)
+        val cold = LEADERBOARD_COLD
 
         hud.drawTextWithOutline(
             ScreenText.LEADERBOARD_HEADING,
@@ -3343,6 +3343,17 @@ class EnPustTil : PulseEngineGame()
     private companion object
     {
         const val DAILY_SEED = 20260902L
+
+        /**
+         * `drawLeaderboard`'s row/heading colour, hoisted out of the draw call. `Color` is a
+         * plain class with four mutable float fields (decompiled: not a Kotlin value class),
+         * so `Color(0.75f, 0.85f, 1f)` inside the draw call heap-allocates once per row per
+         * attract-screen frame — this is the exact allocation the comment beside
+         * `drawBoothStatusLine`'s `setDrawColor` call warns against, just not yet fixed here.
+         * A `Color` is never mutated after construction anywhere it is read by a draw call, so
+         * one shared instance is safe to reuse across every frame and every row.
+         */
+        val LEADERBOARD_COLD = Color(0.75f, 0.85f, 1f)
 
         /** See the comment at the "hud" createSurface call for why this value and sign. */
         const val HUD_Z_ORDER = -90
