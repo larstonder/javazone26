@@ -35,6 +35,32 @@ class ZoneTest {
     }
 
     @Test
+    fun `at does not allocate`() {
+        // The old form was `entries.lastOrNull { ... }`, which compiles to
+        // EnumEntriesList.listIterator() -> new AbstractList$ListIteratorImpl: ONE allocation
+        // per call. DiveRenderer.drawZoneBands calls it five times per strip across ~111
+        // strips, i.e. 555 allocations every frame. Verified from bytecode.
+        //
+        // Measured by allocation count rather than by reading the source, because the source
+        // form that allocates and the form that does not look almost identical.
+        val before = allocatedBytes()
+        var sink = 0
+        repeat(100_000) { sink += Zone.at((it % 200).toFloat()).pearlValue }
+        val after = allocatedBytes()
+        // Assert something real about `sink` so the loop cannot be optimised away: every zone
+        // has a positive pearlValue, so 100k lookups must sum to a positive total.
+        assertTrue(sink > 0, "the lookup loop was optimised away; the measurement is meaningless")
+        assertTrue(after - before < 100_000,
+            "Zone.at allocated ${after - before} bytes over 100k calls — it should allocate none")
+    }
+
+    private fun allocatedBytes(): Long {
+        val bean = java.lang.management.ManagementFactory.getThreadMXBean()
+                as com.sun.management.ThreadMXBean
+        return bean.getThreadAllocatedBytes(Thread.currentThread().id)
+    }
+
+    @Test
     fun `air burns faster deeper`() {
         // Strict monotonicity is the property; the endpoints are pinned so the whole table
         // cannot be flattened to a constant and still pass. The Abyss's own value is a tuning

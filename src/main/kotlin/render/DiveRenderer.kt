@@ -137,6 +137,13 @@ object DiveRenderer
     private val zoneGreen = Look.ZONE_GREEN
     private val zoneBlue  = Look.ZONE_BLUE
 
+    /**
+     * Scratch output for [zoneColourAt], reused every strip so the render path does not
+     * allocate. See [zoneColourAt]'s doc for why a plain `setDrawColor(zoneRedAt(d), ...)`
+     * call at the draw site was computing red and green twice per strip.
+     */
+    private val bandColour = FloatArray(3)
+
     /** Strip height for the zone-band gradient, in metres (resolution-independent). Small
      *  enough that DepthBlend's smoothstep easing reads as continuous rather than banded.
      *  Internal so [DiveRendererTest] can assert the walk's pitch against it rather than
@@ -502,7 +509,8 @@ object DiveRenderer
             val centreDepth = stripCentreDepth(worldTop, worldBottom, i)
             val top = stripTopDepth(worldTop, i)
             val bottom = min(stripTopDepth(worldTop, i + 1), worldBottom)
-            surface.setDrawColor(zoneRedAt(centreDepth), zoneGreenAt(centreDepth), zoneBlueAt(centreDepth), 1f)
+            zoneColourAt(centreDepth, bandColour)
+            surface.setDrawColor(bandColour[0], bandColour[1], bandColour[2], 1f)
             surface.fillRect(worldLeft, top, width, bottom - top)
         }
     }
@@ -1652,6 +1660,30 @@ object DiveRenderer
      * depth where the floor starts to bite (~93 m) the two agree and there is no step — which
      * is the entire point, since a step here is the bug.
      */
+    /**
+     * The band colour at [depth], written into [out] as r, g, b.
+     *
+     * Exists because the obvious call at the draw site —
+     * `setDrawColor(zoneRedAt(d), zoneGreenAt(d), zoneBlueAt(d), 1f)` — computes red and green
+     * TWICE. [zoneBlueAt] re-derives both of them to feed [floorBlueForReflectance], so the two
+     * values already sitting on the same line get thrown away and recomputed. Across the ~111
+     * strips a full-height frame walks, that was 222 redundant blends and 222 redundant
+     * `srgbToLinear` pow calls every single frame.
+     *
+     * Takes an output array rather than returning one because the render path must not
+     * allocate: the caller holds a single reusable [bandColour] in a field. [zoneBlueAt] is
+     * kept for its existing test callers and is still the definition of the floored blue —
+     * this is the same computation with the shared work done once.
+     */
+    internal fun zoneColourAt(depth: Float, out: FloatArray)
+    {
+        val r = zoneRedAt(depth)
+        val g = zoneGreenAt(depth)
+        out[0] = r
+        out[1] = g
+        out[2] = floorBlueForReflectance(r, g, rawZoneBlueAt(depth))
+    }
+
     internal fun zoneBlueAt(depth: Float): Float =
         floorBlueForReflectance(zoneRedAt(depth), zoneGreenAt(depth), rawZoneBlueAt(depth))
 
