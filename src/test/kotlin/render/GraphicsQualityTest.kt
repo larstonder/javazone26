@@ -37,12 +37,20 @@ class GraphicsQualityTest
     }
 
     @Test
-    fun `every preset keeps at least six cascades so the torch beam is not clipped`() {
+    fun `every preset keeps at least six cascades, the measured-cost configuration`() {
+        // NOT a torch-reach floor: GiSizing.propagationMetres, corrected 2026-08-30 to convert
+        // light-texture texels through lightTexScale rather than treating them as framebuffer
+        // pixels, shows even 5 cascades reaches far past TORCH_REACH_METRES (24 m) — see
+        // GiSizingTest and GraphicsQuality's LOW comment for the numbers. Six is kept as the
+        // floor because it is the cascade count Task 04 of the rendering-performance plan
+        // actually measured (13.6 ms, design spec §6.1); dropping below it would run every
+        // preset on an unmeasured configuration, and 6 is also the number that removes the extra
+        // cascade PASS the uncapped count (7) would cost at 3200x1800.
         for ((w, h) in framebuffers)
             for (q in GraphicsQuality.entries) {
                 val s = q.settings()
                 assertTrue(GiSizing.cascadeCount(w, h, s.lightTexScale, s.maxCascades) >= 6,
-                    "$q at ${w}x$h drops below 6 cascades, which visibly clips the torch")
+                    "$q at ${w}x$h drops below 6 cascades, the measured-cost floor")
             }
     }
 

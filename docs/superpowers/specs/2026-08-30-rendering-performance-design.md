@@ -362,7 +362,7 @@ Per-change attribution, windowed at 140 m:
 | HUD `MSAA16` → `NONE` | 19.9 ms |
 | global scene chain collapsed | 17.1 ms |
 | `lightTexScale`/`localSceneTexScale` 0.4, `maxCascades` 6 | **13.6 ms** |
-| `gi_light_final`/`gi_normal_map` at 0.5 | 13.6 ms (flat — see §6.3) |
+| `gi_light_final`/`gi_normal_map` at 0.5 | 13.6 ms (never applied — see §6.3) |
 
 `targetFps` was **120 and never once reached**; it is now **60 and held solidly**, p95 sitting on
 the cap rather than trailing it. That transition is this plan's success condition, observed
@@ -383,10 +383,16 @@ windowed passes is low — but it stays open until someone runs it.
 
 ### 6.3 Two honest negatives
 
-- **`gi_light_final`/`gi_normal_map` at half scale bought nothing measurable** — 13.54 → 13.63 ms,
-  flat. Kept because the reasoning is structurally sound (both were rendering at full framebuffer
-  resolution while every input feeding them sat at 0.5, i.e. pure upsampling) and it should pay at
-  higher framebuffer resolutions. On this machine, at this point in the sequence, it does nothing.
+- **`gi_light_final`/`gi_normal_map` at half scale was never actually applied.** The two
+  `getSurface(...)?.setTextureScale(0.5f)` calls in `DiveLighting.setup` ran before
+  `engine.scene.start()`, and neither surface exists until `GlobalIlluminationSystem.onCreate`,
+  which only runs from inside that `start()` call — verified against the engine jar's bytecode.
+  `getSurface` returned null both times and `?.` silently swallowed it, so both surfaces stayed at
+  scale 1.0 the whole time. That is why the measurement below reads flat: it measured the change
+  doing nothing, because the change never ran. The lines have been deleted (whole-branch review,
+  2026-08-30) rather than moved — moving them after `start()` would work, but changes rendering
+  nobody has seen on an unattended display, so re-applying it properly is separate, measurable
+  work for when someone is at the machine.
 - **The allocation work barely moves the median, as predicted.** Its effect is on hitches: on a
   synthetic 2000-entry scoreboard the worst attract-screen frame fell 26.50 → 18.67 ms, and sample
   windows breaching 16.7 ms fell from 7-in-30 to 2-in-30.

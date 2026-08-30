@@ -50,20 +50,38 @@ class GiSizingTest
     }
 
     @Test
-    fun `capping maxCascades caps the count and shrinks the rounding`() {
+    fun `capping maxCascades removes a pass but need not shrink the rounded texture`() {
+        // At 3200x1800 uncapped cascadeCount is 7; capped it is 6 — a whole cascade PASS removed.
+        // The rounded SIZE does not move here: 2^6 = 64 and 2^7 = 128 both divide the already-
+        // rounded 1280x768 evenly, so capped and uncapped land on the identical texture. The
+        // `<=` below still holds (equality is not a shrink), which is the point — this test used
+        // to be named as if capping always shrinks the texture, and at both framebuffers this
+        // game actually runs it does not; see DiveLighting.setup's comment on `maxCascades`.
         assertEquals(6, GiSizing.cascadeCount(3200, 1800, 0.4f, maxCascades = 6))
+        assertEquals(7, GiSizing.cascadeCount(3200, 1800, 0.4f, maxCascades = 10))
         val capped = GiSizing.lightTextureSize(3200, 1800, 0.4f, maxCascades = 6)
         val uncapped = GiSizing.lightTextureSize(3200, 1800, 0.4f, maxCascades = 10)
+        assertEquals(capped, uncapped, "expected the two to round to the same texture here")
         assertTrue(capped.first * capped.second <= uncapped.first * uncapped.second,
             "capping cascades must not increase the texture")
     }
 
     @Test
-    fun `six cascades still reach past the torch`() {
-        // Light propagation is about intervalLength * (4^N - 1) / 3 pixels. At N=6 that is
-        // ~1365 px; at ~32.5 px/m that is ~42 m, comfortably past TORCH_REACH_METRES = 24.
-        // N=5 would be ~10.5 m and would visibly clip the beam - this is the floor.
-        assertTrue(GiSizing.propagationMetres(cascades = 6, pixelsPerMetre = 32.48f) > 24f)
-        assertTrue(GiSizing.propagationMetres(cascades = 5, pixelsPerMetre = 32.48f) < 24f)
+    fun `six cascades reach past the torch, with a wide margin`() {
+        // Light propagation is about intervalLength * (4^N - 1) / 3 LIGHT-TEXTURE TEXELS, which
+        // the engine's own dist = distance(...) / lightTexScale (radiance_cascades.frag:122-126)
+        // converts to framebuffer pixels — see propagationMetres's KDoc for the full derivation.
+        // At HIGH's lightTexScale = 0.4 and ~32.5 px/m, N=6 reaches ~105 m, not the ~42 m an
+        // earlier version of this test (and of propagationMetres itself) computed by treating
+        // intervalLength as framebuffer pixels directly.
+        //
+        // There used to be a second assertion here, `propagationMetres(5, ...) < 24f`, offered
+        // as proof that N=5 would clip TORCH_REACH_METRES = 24 m and that 6 is therefore a
+        // torch-reach floor. It passed only because the function was wrong: N=5 actually reaches
+        // ~26 m, comfortably past the torch too. Deleted rather than corrected to a passing
+        // number — a test that can't fail is worse than none, and this one was never testing a
+        // real boundary. `maxCascades = 6` is kept as a floor for a different, real reason: cost
+        // (GraphicsQualityTest's "at least six cascades" case), not torch reach.
+        assertTrue(GiSizing.propagationMetres(cascades = 6, pixelsPerMetre = 32.48f, lightTexScale = 0.4f) > 24f)
     }
 }

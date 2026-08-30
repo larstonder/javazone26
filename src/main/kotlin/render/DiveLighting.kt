@@ -1289,13 +1289,26 @@ object DiveLighting
         system.lightTexScale = giHigh.lightTexScale
         system.localSceneTexScale = giHigh.localSceneTexScale
 
-        // maxCascades 10 (effective 7) -> 6. Removes a whole cascade pass AND shrinks the
-        // size round-up above, because both derive from this number.
+        // maxCascades 10 (effective 7) -> 6. Removes a whole cascade PASS. It does NOT shrink
+        // the size round-up at either framebuffer this game runs: at 1920x1200 the uncapped
+        // count is already 6 (capping changes nothing), and at 3200x1800 the uncapped count is 7
+        // but 2^6 and 2^7 both divide the already-rounded 1280x768 evenly, so capped and
+        // uncapped round to the identical texture there too. The saving is the removed pass, not
+        // a smaller texture — GiSizingTest's "capping maxCascades caps the count and shrinks the
+        // rounding" name is stale for exactly this reason and is kept only because the case
+        // itself (capped <= uncapped) still holds; read GiSizing.kt's MINOR note before trusting
+        // its old name.
         //
-        // SAFE, AND 6 IS THE FLOOR. Max light propagation is about
-        // intervalLength * (4^N - 1) / 3 pixels: N=7 reaches ~5461 px, N=6 ~1365 px which is
-        // ~42 m at this scale — still well past TORCH_REACH_METRES (24 m). N=5 would be ~10.5 m
-        // and would visibly clip the torch beam. GiSizingTest asserts exactly that boundary.
+        // SAFE ON COST, NOT BECAUSE OF TORCH REACH. This used to justify 6 as the floor by
+        // claiming N=5 would visibly clip TORCH_REACH_METRES (24 m). That arithmetic was wrong —
+        // cascades march in LIGHT-TEXTURE TEXELS, not framebuffer pixels (see
+        // GiSizing.propagationMetres's KDoc for the derivation off radiance_cascades.frag), and
+        // correctly converted, N=6 reaches ~105 m and N=5 reaches ~26 m at this lightTexScale —
+        // both comfortably past the torch. GiSizingTest used to assert the N=5 boundary and the
+        // assertion has been deleted (a test that can only pass by pinning a wrong model is worse
+        // than no test). 6 is kept as the floor anyway, but for cost: GraphicsQualityTest's
+        // "every preset keeps at least six cascades" pins that a cheaper preset must not spend a
+        // 7th pass, which is a real, measured concern even though torch clipping never was.
         //
         // UNLIKE the scales above, this one is NOT a per-frame uniform: it feeds
         // lightTextureSizeFunc, which is only re-evaluated when the light surface re-initialises.
@@ -1454,25 +1467,19 @@ object DiveLighting
         engine.scene.addSystem(system)
         gi = system
 
-        // TWO GI SURFACES RENDER AT FULL FRAMEBUFFER RESOLUTION WHILE EVERY INPUT THEY CONSUME
-        // IS AT HALF. That is pure upsampling: it costs full-res pixels and carries no
-        // information the half-res inputs did not already have.
-        //
-        // Neither is reachable through a GlobalIlluminationSystem property — onCreate builds
-        // them at scale 1.0 and no field exposes them. A direct setTextureScale STICKS, though,
-        // because onUpdate re-pushes only the seven scales it owns (light_exterior,
-        // light_interior, local_sdf, local_scene, global_sdf, global_scene, ao) and never
-        // touches these two. Verified against onUpdate's bytecode.
-        //
-        // gi_light_final hosts GiFinal, whose inputs are all half-scale.
-        // gi_normal_map additionally runs a 10-level CustomMipmapGenerator chain EVERY FRAME —
-        // one full-frame draw per level — so halving it halves the mip chain too. The cascade
-        // shader samples it at 0.5-scale probe centres regardless.
-        //
-        // Deferred, not immediate: SurfaceImpl.setTextureScale queues renderTarget.init through
-        // runOnInitFrame, executed at the top of the next frame.
-        engine.gfx.getSurface(GlobalIlluminationSystem.GI_LIGHT_FINAL)?.setTextureScale(0.5f)
-        engine.gfx.getSurface(GlobalIlluminationSystem.GI_NORMAL_MAP)?.setTextureScale(0.5f)
+        // REMOVED 2026-08-30: this used to call
+        // `engine.gfx.getSurface(GlobalIlluminationSystem.GI_LIGHT_FINAL)?.setTextureScale(0.5f)`
+        // and the same for GI_NORMAL_MAP, right here — i.e. BEFORE `engine.scene.start()` below.
+        // Neither surface exists yet at this point: `GlobalIlluminationSystem.onCreate` is what
+        // creates them, and `onCreate` only runs from `Scene.start$pulse_engine`, which
+        // `engine.scene.start()` triggers via `addSystem` having merely appended the system to a
+        // list earlier. So `getSurface` returned null both times and `?.` swallowed it silently —
+        // the two lines never executed. Whole-branch review caught it from the "flat, 13.54 ->
+        // 13.63 ms" measurement in the design spec; verified independently against the engine
+        // jar's bytecode before deleting rather than moving. Do NOT re-add this after
+        // `engine.scene.start()` in this pass either — that would work geometrically, but nobody
+        // has seen the result and the display is unattended, so it is separate, measurable work
+        // for when someone is at the machine.
 
         // THE TONE MAPPER, AND IT IS THE DIAL THAT GOVERNS THE DEEP — not `contrast`, not `exposure`,
         // and not the ambient. Read `shaders/effects/color_grading.frag`'s six curves as x -> 0+:

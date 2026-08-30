@@ -72,8 +72,12 @@ enum class GraphicsQuality
         LOW -> GiSettings(
             // 0.2: stays at 6 cascades (the floor — see maxCascades below) at both framebuffers
             // with comfortable margin. 0.1 was tried and rejected here: it drops to 5 cascades at
-            // 1920x1200, which GraphicsQualityTest's "at least six cascades" case exists to catch,
-            // because 5 cascades visibly clips the torch beam (GiSizing's class doc / propagationMetres).
+            // 1920x1200, which GraphicsQualityTest's "at least six cascades" case exists to catch
+            // — not because 5 cascades clips the torch beam (correctly converted through
+            // lightTexScale, even 5 cascades reaches well past TORCH_REACH_METRES; see
+            // GiSizing.propagationMetres's KDoc), but because a 7th cascade is a whole extra
+            // fill-rate-bound pass and LOW is supposed to be the cheap end of the ladder, not the
+            // preset that silently spends more passes than HIGH.
             lightTexScale = 0.2f,
             localSceneTexScale = 0.2f,
             globalSceneTexScale = 0.15f,
