@@ -383,7 +383,7 @@ class DiveSim(seed: Long)
         // very next tick for anyone still holding kick as they surface, and fire a burst they
         // never asked for. Leaving it alone means a held button stays held across the reset and
         // the player has to let go and press again, which is what "one boost per click" means.
-        // `DiveSimTest.a kick held across a run reset does not auto-fire a new burst` pins it.
+        // `KickBurstTest.a kick held across a run reset does not auto-fire a new burst` pins it.
     }
 
     /**

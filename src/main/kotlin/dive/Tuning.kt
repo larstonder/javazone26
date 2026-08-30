@@ -52,7 +52,7 @@ object Tuning
      * That gap is the whole point. Kick used to be continuous while held, and the risk in making
      * it a burst is that a player simply mashes the button back to the old behaviour. With this
      * ceiling they cannot: mashing every single tick still cannot exceed 78% duty, so the kick
-     * stays a decision with an air price rather than a flight mode. `DiveSimTest.mashing the kick
+     * stays a decision with an air price rather than a flight mode. `KickBurstTest.mashing the kick
      * button every tick cannot approximate the old hold-to-fly behaviour` asserts it.
      */
     const val KICK_COOLDOWN_SECONDS = 0.45f
@@ -72,7 +72,7 @@ object Tuning
      *
      * They are written as products of this file's own constants rather than as literals so that
      * raising [SWIM_THRUST] or [KICK_SPEED_MULT] carries the ceiling with it; `dive/Buoyancy.kt`
-     * owns the actual formula, and `TuningTest.the speed ceilings are the buoyancy model's own
+     * owns the actual formula, and `KickBurstTest.the speed ceilings are the buoyancy model's own
      * maxima` re-derives both from it (and sweeps mass) so the two cannot silently part company.
      *
      * **The axes are clamped INDEPENDENTLY, never as a combined magnitude.** A magnitude clamp at
