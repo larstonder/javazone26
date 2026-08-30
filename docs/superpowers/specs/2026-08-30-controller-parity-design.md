@@ -155,8 +155,15 @@ renders per family:
 **The font constraint decides the vocabulary.** The default font draws only
 U+0020..U+011F, and anything above renders as *nothing at all* — no glyph, no x-advance,
 silently. The actual PlayStation glyphs ✕ ○ □ △ would therefore vanish. Labels stay ASCII
-words. `ControlHints.all()` grows to cover the new strings so the existing `AttractScreenTest`
-font sweep enforces this rather than trusting it.
+words. `ControlHints.all()` grows to cover the new strings so the font sweep enforces this
+rather than trusting it.
+
+*Corrected during implementation:* an earlier draft of this section said `AttractScreenTest`
+performs that sweep. It does not — `AttractScreenTest` sweeps `ScreenText.all()`, and the
+font check over control hints is `ControlHintsTest.every control hint is inside the default
+font's baked atlas`. Extending `all()` is still exactly what makes the constraint enforced;
+the enforcing test is simply the other one. The distinction matters to anyone who later adds
+a label and goes looking for the test that should have caught it.
 
 **A generic encoder is deliberately untouched.** `GENERIC` keeps today's behaviour exactly,
 so the booth cabinet's screens do not change.
