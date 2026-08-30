@@ -1315,6 +1315,31 @@ object DiveLighting
         // so it is live — no surface re-init, no restart.
         system.bilinearFix = false
 
+        // THE GLOBAL SCENE CHAIN — 13 PASSES SERVING RAYS THIS GAME DOES NOT CAST.
+        //
+        // gi_global_scene and gi_global_sdf each carry a jump-flood + SDF chain: a seed pass,
+        // ceil(log2(max(w,h))) ping-ponged flood passes (11 at Retina), and a resolve. That is
+        // ~19% of the whole per-frame pixel budget, and it exists to let cascades trace rays
+        // against geometry that is OFF SCREEN.
+        //
+        // We do not need it: every drawLight call in this file is already culled to the visible
+        // rect plus LIGHT_CULL_MARGIN_METRES (3 m), so there is no off-screen emitter for an
+        // off-screen ray to find.
+        //
+        // THE TRAP, AND IT IS THE WHOLE REASON THESE TWO LINES ARE ADJACENT: setting
+        // traceWorldRays = false does NOT remove the chain. Those surfaces are created
+        // unconditionally in GlobalIlluminationSystem.onCreate and their post-processing runs
+        // regardless of the flag — traceWorldRays only gates a branch inside
+        // radiance_cascades.frag. To actually reclaim the passes you must ALSO shrink the
+        // surfaces, because GiJfa's pass count is ceil(log2(max(w,h))) and therefore falls with
+        // the texture size. Set both or neither; setting only the flag costs the same and looks
+        // like it worked.
+        //
+        // Coherent as a pair: with the branch off, globalSceneTex is never sampled at all
+        // (sampleScene only reaches it when status == GLOBAL), so shrinking it cannot show.
+        system.traceWorldRays = false
+        system.globalSceneTexScale = 0.15f
+
         // AO RADIUS, IN METRES. Set AFTER localSceneTexScale above, because it is expressed
         // against it and the two must not be able to silently disagree.
         //
