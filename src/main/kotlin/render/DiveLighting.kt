@@ -3,7 +3,6 @@ package render
 import dive.DiveSim
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.graphics.api.Camera
-import no.njoh.pulseengine.core.graphics.postprocessing.effects.BloomEffect
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect
 import no.njoh.pulseengine.core.graphics.postprocessing.effects.ColorGradingEffect.ToneMapper.UNCHARTED2
 import no.njoh.pulseengine.core.graphics.surface.Surface
@@ -1513,9 +1512,14 @@ object DiveLighting
         engine.gfx.mainSurface.addPostProcessingEffect(
             ColorGradingEffect(toneMapper = UNCHARTED2, vignette = Look.GRADE_VIGNETTE, exposure = GRADE_EXPOSURE, contrast = GRADE_CONTRAST)
         )
-        engine.gfx.mainSurface.addPostProcessingEffect(
-            BloomEffect().apply { intensity = 1.2f; radius = 0f; threshold = 1.4f }
-        )
+        // BLOOM REMOVED. Not disabled — deleted, because BloomEffect's cost is its 18 draws
+        // across a 10-texture down/up chain, and intensity = 0 pays all of that to multiply by
+        // zero. ~7% of the per-frame pixel budget.
+        //
+        // Justified by capture, not by reasoning: its threshold is 1.4 and this project's own
+        // pearl measurements put the pearls under it entirely, so the only candidates were the
+        // sunset sky and the water surface. Compared at 20/75/140 m and on the attract screen
+        // with intensity 0 vs default; see the commit body for what the captures showed.
 
         // NOTHING ELSE IS ATTACHED TO `mainSurface` HERE ANY MORE. This used to add
         // `ShaftRenderer` — the god rays, a custom BatchRenderer on the WORLD surface rather than
