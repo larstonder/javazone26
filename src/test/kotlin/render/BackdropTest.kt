@@ -175,15 +175,33 @@ class BackdropTest
     }
 
     /**
-     * The one horizontal span in this game that does not depend on the display's aspect ratio.
-     * The walls are drawn after the backdrop and are opaque, so nothing outside the column can be
-     * seen; sizing to the visible rect instead would stretch the mountains wider on a wider panel,
-     * which is a change of art rather than of framing.
+     * The backdrop spans the FRAME, not the play column, for the same reason [SandBank] does:
+     * the art has to reach the frame's edge at every aspect or its rectangular cut is visible.
+     *
+     * This test asserted `2 * COLUMN_HALF_WIDTH` until 2026-08-30, on the reasoning that "the
+     * walls are drawn after the backdrop and are opaque, so nothing outside the column can be
+     * seen". THAT REASONING WAS WRONG, and measurably so. The wall's ragged inner edge is alpha,
+     * not coverage: measured on the committed `rock-diffuse.png`, the rock is **0% opaque at
+     * exactly 40 m** — the old backdrop edge — and only 64.7% opaque across 40..44.12 m, so a
+     * third of that strip showed the silhouette's hard vertical cut against open water. The
+     * texture's own constants confirm the geometry: `ALPHA_TEXEL_COLUMNS = 475` lands at 39.98 m
+     * and `OPAQUE_TEXEL_COLUMNS = 264` at 44.11 m, i.e. full opacity begins only at
+     * [RockFace.BACKING_HALF_WIDTH], 4.12 m OUTSIDE where the backdrop used to stop.
+     *
+     * The "change of art" objection the old note raised is answered by [Layer.heightMetres]:
+     * height is derived from width, so the layers scale rather than stretch and keep their shape
+     * exactly — which the next test asserts.
      */
     @Test
-    fun `the layers are exactly as wide as the play column`()
+    fun `the layers are exactly as wide as the visible frame`()
     {
-        assertEquals(2f * Tuning.COLUMN_HALF_WIDTH, Backdrop.widthMetres, 1e-3f, "the backdrop must span the column, no more and no less")
+        assertEquals(
+            Framing.VISIBLE_WIDTH_METRES,
+            Backdrop.widthMetres,
+            1e-3f,
+            "the backdrop must reach the frame's edge; anything narrower shows its own cut " +
+            "through the wall's ragged alpha, which is NOT the opaque cover it looks like"
+        )
     }
 
     /** The layer's world height follows its shape, so a re-bake at another size cannot squash it. */

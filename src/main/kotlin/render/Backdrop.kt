@@ -106,15 +106,32 @@ object Backdrop
     )
 
     /**
-     * How wide a layer is drawn: the whole play column and nothing more.
+     * How wide a layer is drawn: the whole visible frame, exactly as [SandBank.WIDTH_METRES] is.
      *
-     * NOT the visible width, and that is the point — it is the one horizontal span in this game
-     * that does not depend on the display's aspect ratio. The column walls are drawn after the
-     * backdrop and are opaque, so nothing outside +-[Tuning.COLUMN_HALF_WIDTH] could be seen even
-     * if it were drawn; sizing to the visible rect instead would stretch the mountains wider on a
-     * wider panel, which is a change of art, not of framing.
+     * THIS READ `2f * Tuning.COLUMN_HALF_WIDTH` UNTIL 2026-08-30, and the note justifying it said
+     * the column walls "are drawn after the backdrop and are opaque, so nothing outside
+     * +-[Tuning.COLUMN_HALF_WIDTH] could be seen even if it were drawn." That is false, and the
+     * error is worth keeping visible because it is an easy one to make twice: the wall's inner
+     * edge is RAGGED ALPHA, not coverage. Measured on the committed `rock-diffuse.png`, the rock
+     * is **0% opaque at exactly 40 m** — where this constant used to stop the art — and only
+     * 64.7% opaque across 40..44.12 m, so better than a third of that band was the silhouette's
+     * own rectangular cut showing against open water. [RockFace]'s own texel constants say the
+     * same thing: `ALPHA_TEXEL_COLUMNS = 475` falls at 39.98 m and `OPAQUE_TEXEL_COLUMNS = 264`
+     * at 44.11 m, so solid rock begins only at [RockFace.BACKING_HALF_WIDTH] — 4.12 m OUTSIDE the
+     * old edge. The wall covers the backdrop's cut nowhere near where the note assumed.
+     *
+     * The old note's real objection — that sizing to the visible rect "would stretch the mountains
+     * wider on a wider panel, which is a change of art" — does not apply, and [Layer.heightMetres]
+     * is why: height is DERIVED from width, so widening scales a layer and cannot stretch it. The
+     * shape is preserved exactly, and `each layer's world height follows its own proportions`
+     * asserts it. What does change is scale: every layer is 23% larger than it was, its top edge
+     * still pinned at [Layer.restTopDepth] and the extra height hanging below.
+     *
+     * It is no longer aspect-independent, and that is the point rather than a cost: the frame's
+     * width is capped at [Framing.VISIBLE_WIDTH_METRES] at every aspect (see [CameraRig]), so one
+     * quad this wide reaches both edges on every panel without tiling.
      */
-    val widthMetres = 2f * Tuning.COLUMN_HALF_WIDTH
+    val widthMetres = Framing.VISIBLE_WIDTH_METRES
 
     /** Queues all three layers for upload. Called once, from `EnPustTil.onCreate`. */
     fun load(engine: PulseEngine)

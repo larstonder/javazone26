@@ -107,7 +107,16 @@ Inside `DiveRenderer.render` (`DiveRenderer.kt:345`), on `mainSurface`, back to 
 zone bands -> backdrop silhouettes -> the sea's surface quad -> column walls -> air pockets ->
 pearls -> anglerfish -> diver -> **motes last** (`:417`). Each of those boundaries is argued in
 a comment at the call site; the backdrop in particular *must* sit between the opaque bands and
-the opaque walls, which is what confines the silhouettes to the column with no clip test.
+the walls, so the cliffs occlude its ends rather than the reverse.
+
+That clause read "the opaque walls, which is what confines the silhouettes to the column with no
+clip test" until 2026-08-30, and it was wrong twice over. The wall's inner edge is ragged ALPHA,
+not opaque cover: on the committed `rock-diffuse.png` the rock is 0% opaque at 40 m and only
+64.7% opaque across 40..44.12 m, so the backdrop was not confined by anything there — its own
+rectangular cut was visible against open water through a third of that band. `Backdrop.widthMetres`
+is now `Framing.VISIBLE_WIDTH_METRES`, the same span `SandBank` uses, so the art reaches the frame
+edge at every aspect and the walls occlude it rather than clip it. See `Backdrop.widthMetres`'s
+KDoc for the measurement.
 
 Inside `DiveLighting.render`, immediate-mode onto GI's local scene surface: pearl lights,
 anglerfish lure, diver beam. Order is presentational only - `GiSceneRenderer` accumulates a
