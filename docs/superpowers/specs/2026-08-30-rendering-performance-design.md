@@ -330,3 +330,82 @@ Also worth recording, newly discovered:
 - Every boot logs an ERROR for `pulseengine/shaders/error/error.comp` — the engine loading a
   compute shader that GL 4.1 on macOS does not have. Harmless, but it is the first ERROR in
   every log and will misdirect anyone triaging a real fault.
+
+---
+
+## 6. Measured result — 2026-08-30
+
+Nine changes landed on `perf/reach-60fps`. **The target is met**, with one configuration
+measured and one inferred. Read the scoping in §6.2 before quoting any of this.
+
+### 6.1 The numbers
+
+All at 1920×1200, `EPT_PROFILE=1`, `EPT_DEV` off, first two `[FRAME]` lines discarded,
+before/after pairs taken back to back.
+
+| Configuration | p50 | p95 |
+|---|---|---|
+| **Branch baseline** (before all nine changes), windowed | **~42 ms (~23.5 fps)** | ~44.5–46.2 ms |
+| Windowed, capped at `targetFps = 60` (**the shipped config**), attract | **16.66 ms (60.0 fps)** | 16.66–16.67 ms |
+| Windowed, capped at `targetFps = 60` (**the shipped config**), 140 m | **16.66 ms (60.0 fps)** | 16.66–16.67 ms |
+| Windowed, uncapped, attract | 12.45–12.68 ms (~80 fps) | 12.99–15.59 ms |
+| Windowed, uncapped, 140 m | 12.05–12.52 ms (~80–83 fps) | 13.50–15.36 ms |
+| Fullscreen, uncapped, attract | 4.38–4.44 ms (~226 fps) | 6.07–6.45 ms |
+| Fullscreen, 140 m | **NOT MEASURED** | — |
+
+Per-change attribution, windowed at 140 m:
+
+| Change | p50 after |
+|---|---|
+| start | ~37.6 ms |
+| `bilinearFix = false` | 21.2 ms |
+| HUD `MSAA16` → `NONE` | 19.9 ms |
+| global scene chain collapsed | 17.1 ms |
+| `lightTexScale`/`localSceneTexScale` 0.4, `maxCascades` 6 | **13.6 ms** |
+| `gi_light_final`/`gi_normal_map` at 0.5 | 13.6 ms (flat — see §6.3) |
+
+`targetFps` was **120 and never once reached**; it is now **60 and held solidly**, p95 sitting on
+the cap rather than trailing it. That transition is this plan's success condition, observed
+rather than projected.
+
+### 6.2 What is proven, and what is not
+
+**Proven:** 60 fps held solidly, capped, in both scenes, in the **windowed** configuration —
+which is the *pessimistic* case (see §6.4). And fullscreen attract at ~226 fps.
+
+**Not measured: fullscreen at 140 m.** The measuring agent was lost to an infrastructure failure
+before that cell, and the machine then went unattended, which forbade starting further fullscreen
+runs (a fullscreen window nobody can dismiss, and a capture that cannot be distinguished from a
+locked screen). Windowed 140 m uncapped is ~12.3 ms and fullscreen measured ~2.8× faster, which
+*implies* ~4.5 ms. **That is an inference, not a measurement, and must not be quoted as one.** It
+is the cheapest configuration of the fastest presentation path, so the risk of it failing while
+windowed passes is low — but it stays open until someone runs it.
+
+### 6.3 Two honest negatives
+
+- **`gi_light_final`/`gi_normal_map` at half scale bought nothing measurable** — 13.54 → 13.63 ms,
+  flat. Kept because the reasoning is structurally sound (both were rendering at full framebuffer
+  resolution while every input feeding them sat at 0.5, i.e. pure upsampling) and it should pay at
+  higher framebuffer resolutions. On this machine, at this point in the sequence, it does nothing.
+- **The allocation work barely moves the median, as predicted.** Its effect is on hitches: on a
+  synthetic 2000-entry scoreboard the worst attract-screen frame fell 26.50 → 18.67 ms, and sample
+  windows breaching 16.7 ms fell from 7-in-30 to 2-in-30.
+
+### 6.4 A correction to this spec's own framing
+
+**§1 compared windowed and fullscreen figures as if both were 1920×1200. They were not.**
+
+Fullscreen genuinely obtains a **real 1920×1200 exclusive video mode** — verified by a screengrab
+that came back as a 1920×1200 PNG with no macOS chrome, showing the actual attract screen. The
+windowed "1920×1200" is **logical points**, and under Retina scaling renders a substantially
+larger physical framebuffer.
+
+So the fullscreen-versus-windowed gap measured here is **~2.8×**, not the ~1.74× §1 estimated, and
+the difference is mostly resolution rather than compositor bypass. The consequence matters for
+every number in this document: **every windowed measurement in this plan is pessimistic.**
+
+### 6.5 Still GPU-bound
+
+`ioreg -r -d 1 -c AGXAccelerator` reported **99–100%** device utilisation windowed and uncapped at
+140 m — the GPU remains saturated even with the limiter removed. The game is fast enough; it is
+not idle. Further headroom, if ever wanted, is in removing more passes, per §2's remaining items.
