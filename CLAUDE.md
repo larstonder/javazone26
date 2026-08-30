@@ -60,7 +60,11 @@ So the block above only ever photographs the **attract screen**. Anything in the
 caffeinate -d -u -t 900 &
 EPT_DEV=1 EPT_DEPTH=160 ./gradlew run > /tmp/run.log 2>&1 &
 until pgrep -f EnPustTilKt > /dev/null; do sleep 2; done
-sleep 8                                    # let the asset upload settle (startup itself measures ~2.3 s from JVM start)
+sleep 8                                    # let DiverSprite's asynchronous sheet upload finish (SpriteSheet.textures
+                                            # populates in onUploaded, several frames after asset.load queues it, and
+                                            # sheetsReady() gates the diver's draw with a placeholder rectangle until
+                                            # then) — verified at this value: a screencapture taken at exactly this
+                                            # timing on 2026-08-30 shows the baked diver sprite, not the placeholder
 osascript -e 'tell application "System Events" to set frontmost of (first application process whose name is "java") to true'
 sleep 0.5
 python3 - <<'PY'                           # System Events will NOT deliver this keypress
@@ -85,13 +89,14 @@ The second `frontmost` call is not redundant — focus can be lost across the br
 
 `render/ScreenshotEffect.kt` is a debug tool, not a feature: it captures at frame 180 by default, and it derives its filename via `outputPath.replace(".png", "-$index.png")` — so if `EPT_SCREENSHOT` has no `.png` in it, the file is written with no extension at all.
 
-`EPT_DEV=1` forces `logLevel = DEBUG` (works even against a built release `.exe`), draws the gamepad diagnostic overlay, and adds the `MetricViewer` overlay (F3) — **which did NOT work until task 1 of the rendering-performance plan**: `engine.service.add(MetricViewer())` alone never called `.start()`, and `Service.isRunning` defaults false with `ServiceManagerImpl` skipping every non-running service, so the overlay was registered and never once ticked, for the whole life of this project, verified from bytecode and by driving F3 into the running game and screenshotting a blank result. It is fixed now (`.also { it.start() }`), but even running, it graphs `engine.data.getMetrics()`, which on this game's path holds only `ServiceManagerImpl`'s three service timers (~0.2 ms each) — no fps, no frame-time graph. `EPT_PROFILE=1` (`render/FrameProbe.kt`) is the real frame-time instrument: it prints `[FRAME] p50=... p95=... worst=... n=...` once a second to stdout.
+`EPT_DEV=1` forces `logLevel = DEBUG` (works even against a built release `.exe`), draws the gamepad diagnostic overlay, and adds the `MetricViewer` overlay — **NOT bound to F3, despite the name**: `engine.service.add(MetricViewer())` alone never called `.start()`, and `Service.isRunning` defaults false with `ServiceManagerImpl` skipping every non-running service, so the overlay was registered and never once ticked, for the whole life of this project, verified from bytecode and by driving F3 into the running game and screenshotting a blank result. Task 1 of the rendering-performance plan added `.also { it.start() }`, which makes it tick — but `MetricViewer`'s only `isRunning` toggle is the console command `showMetricViewer`, registered in its own `onCreate`, and that console is unreachable in this project (no `CommandLine` widget is ever constructed — same root cause as the dead F1 console). So the overlay is now **permanently visible whenever `EPT_DEV=1`**, with no way to turn it back off, not gated by F3 at all. It graphs `engine.data.getMetrics()`, which `DataImpl.init()` seeds with eight metrics before `ServiceManagerImpl` adds its own three service timers (`javap -p -c -constants` on `DataImpl.class`, `addMetric` calls at bytecode offsets 51-143): FRAMES PER SECOND (FPS), FRAME TIME (MS), GPU RENDER TIME (MS) — this is the CPU-around-`drawFrame` number, not a real GPU timer, see `FrameProbe`'s class doc — CPU RENDER TIME (MS), CPU UPDATE TIME (MS), CPU FIXED UPDATE TIME (MS), USED MEMORY (KB) and MEMORY OF TOTAL (%). So it DOES show fps and frame time, contrary to an earlier version of this line. It is still not the instrument to measure with: it is a visual overlay with an always-on draw cost of its own under `EPT_DEV=1`, so **never measure frame time with `EPT_DEV=1` set** — use `EPT_PROFILE=1` (`render/FrameProbe.kt`) alone, which is what the baseline in `FrameProbe`'s class doc was taken with. It prints `[FRAME] p50=... p95=... worst=... n=...` once a second to stdout and has no per-frame draw cost of its own.
 
 `EPT_FAIL_BOOT=1` makes `createGame` throw deliberately, right after the `"hud"` surface is created but before `sim`/`scoreRepository` are constructed — the one `createGame` failure `EnPustTil.worldUnusable` treats as unrecoverable. It exists so the booth's full-frame `!! BOOT FAILED - RESTART THE CABINET !!` screen (`render.BoothStatus`, `EnPustTil.drawBootFailedScreen`) can be rehearsed and photographed before a booth, rather than trusted on reasoning alone. Unset at the booth: one getenv at startup, same cost as every other `EPT_*` flag here.
 
 `EPT_BRIEFING_HOLD=1` pins the pre-run briefing open indefinitely — it then leaves only on a
-press. The documented window-grab route takes about fourteen seconds to reach a
-`screencapture`, which is longer than the briefing's five-second countdown, so without this
+press. The documented attract-screen window-grab route (the first recipe above) takes about ten
+seconds to reach a `screencapture` (`sleep 8` for the asset upload to settle, then `sleep 2`
+before the capture) — longer than the briefing's five-second countdown, so without this
 the one screen that most needs a real frame is the one screen that cannot be captured. It
 passes `Float.POSITIVE_INFINITY` as `briefingSeconds`, and `drawBriefingScreen` suppresses the
 countdown line on `briefingAutoStarts` — `Float.POSITIVE_INFINITY.toInt()` is `Int.MAX_VALUE`,

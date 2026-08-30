@@ -1504,14 +1504,29 @@ class EnPustTil : PulseEngineGame()
         {
             engine.config.logLevel = LogLevel.DEBUG   // belt-and-braces: works even against a built release .exe
 
-            // .start() IS REQUIRED AND WAS MISSING FOR THE WHOLE LIFE OF THIS LINE. Service
-            // .isRunning defaults to false and ServiceManagerImpl skips every service where
-            // !isRunning(), so `add(MetricViewer())` on its own registered an overlay that was
-            // never once ticked. Verified from bytecode and by driving F3 into the running game
-            // and screenshotting it. Note it graphs engine.data.getMetrics(), which on this
-            // game's path holds only ServiceManagerImpl's three service timers (all ~0.2 ms) —
-            // no fps and no frame-time graph. FrameProbe below is the real instrument.
-            engine.service.add(MetricViewer().also { it.start() })   // F3
+            // .start() IS REQUIRED. Service.isRunning defaults to false and ServiceManagerImpl
+            // skips every service where !isRunning(), so the old `add(MetricViewer())` on its
+            // own registered an overlay that was never once ticked — verified from bytecode and
+            // by driving F3 into the running game and screenshotting it. It graphs
+            // engine.data.getMetrics(), which DataImpl.init() seeds with eight metrics before
+            // ServiceManagerImpl adds its own three service timers (javap -p -c -constants on
+            // DataImpl.class, addMetric calls at bytecode offsets 51-143): FRAMES PER SECOND
+            // (FPS), FRAME TIME (MS), GPU RENDER TIME (MS) — this is DataImpl's CPU-around-
+            // drawFrame number, not a real GPU timer; see FrameProbe's class doc — CPU RENDER
+            // TIME (MS), CPU UPDATE TIME (MS), CPU FIXED UPDATE TIME (MS), USED MEMORY (KB) and
+            // MEMORY OF TOTAL (%), ahead of ServiceManagerImpl's three. So fps and frame time
+            // ARE on the graph once it ticks at all.
+            //
+            // "(F3)" IS STILL WRONG, THOUGH, AND MUST NOT BE RESTORED. MetricViewer's only
+            // isRunning toggle is the console command `showMetricViewer`, registered in its own
+            // onCreate — and that console is unreachable in this project (no CommandLine widget
+            // is ever constructed; see ScoreRepository's F1 note and FrameProbe's class doc).
+            // onRender has no other guard. So calling start() here does not make F3 work — it
+            // makes the overlay draw UNCONDITIONALLY from boot, with no way to turn it back off,
+            // for as long as EPT_DEV is set. That is an always-on per-frame draw cost layered on
+            // top of DEBUG logging; do not measure frame time under EPT_DEV=1 for exactly this
+            // reason — EPT_PROFILE alone (no EPT_DEV) is what the baseline below was taken with.
+            engine.service.add(MetricViewer().also { it.start() })   // always on in dev mode; NOT bound to F3
         }
 
         // Frame-time probe, gated separately from EPT_DEV so it can be run against a release

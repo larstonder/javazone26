@@ -33,6 +33,27 @@ import kotlin.math.roundToInt
  * timing is unavailable on this platform: config.gpuProfiling = true produces a well-formed
  * 85-scope tree with t=0ns on every node, because GpuTimeQuery uses GL33.glQueryCounter, which
  * Apple's GL-on-Metal shim does not implement.
+ *
+ * BASELINE (as of ec6f70e, this machine, `EPT_PROFILE=1` alone — no `EPT_DEV`, since that adds
+ * `MetricViewer`'s own always-on per-frame draw cost and would inflate every number below).
+ * Both runs `WINDOWED` (`application-dev.cfg` forces `screenMode = WINDOWED` on every
+ * `./gradlew run`; there is no runtime setter that reaches the window after creation, so a
+ * pinned-size fullscreen run cannot be expressed this way — see CLAUDE.md's config-and-release
+ * section) at `EPT_DEPTH=20`, first `[FRAME]` line of each run discarded (it carries first-use
+ * shader-compile stalls, not steady-state cost):
+ *
+ * - 1600x900 window:  p50 ~37.5-38.0 ms (~26.5 fps), p95 ~38-43 ms
+ * - 1920x1200 window: p50 ~42.1-42.8 ms (~23.5 fps), p95 ~44.5-46.2 ms
+ *
+ * **These are NOT comparable to the design spec's 22.8 ms fullscreen figure**
+ * (`docs/superpowers/specs/2026-08-30-rendering-performance-design.md`: 1920x1200 fullscreen,
+ * 140 m depth). Same pixel count, ~1.85x slower here — the spec's own audit separately measured
+ * fullscreen at roughly 1.74x faster than windowed at equal resolution (likely a macOS
+ * compositor bypass fullscreen gets and a windowed surface does not), which accounts for most of
+ * that gap; the rest is plausibly the shallower `EPT_DEPTH=20` used here against the spec's 140 m
+ * (fewer zone bands, less water column drawn). A/B measurements taken in the same mode (windowed
+ * vs windowed, or fullscreen vs fullscreen) stay valid regardless — only a windowed-to-fullscreen
+ * absolute comparison, or a "did we reach 60 fps" verdict, needs a true fullscreen run to trust.
  */
 class FrameProbe(private val sampleWindowSeconds: Float = 1f) : Service()
 {
