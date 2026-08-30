@@ -1357,10 +1357,9 @@ class EnPustTil : PulseEngineGame()
         //   - backgroundColor: engine default IS already Color.BLANK (transparent) —
         //     confirmed from Graphics.createSurface$default's bytecode. Named here so that
         //     stays true on purpose rather than by accident.
-        //   - multisampling: engine default is Multisampling.NONE. MSAA16 smooths the
-        //     bubble-ring/depth-tape edges and outlined text at negligible cost for a
-        //     screen-space overlay this small (see the reference's SceneRenderSystem,
-        //     which uses MSAA16 for both of its overlay surfaces).
+        //   - multisampling: engine default is Multisampling.NONE, and that is what this
+        //     now passes explicitly. It did not always: see the MULTISAMPLING comment
+        //     directly on the createSurface call below for why MSAA16 was removed.
         //   - zOrder: left null, the engine assigns an auto-decrementing counter
         //     (`lastZOrder--`) in creation order. HUD_Z_ORDER pins it explicitly instead —
         //     now doubly load-bearing, since this call no longer sits next to
@@ -1378,10 +1377,25 @@ class EnPustTil : PulseEngineGame()
         //     above would have reintroduced). The HUD is authored in screen pixels and stays
         //     that way; what makes its diver-anchored elements track the world is the single
         //     worldPosToScreenPos call in onRender, not a shared camera. Leave it null.
+        // MULTISAMPLING: NONE, DOWN FROM MSAA16, AND MSAA16 HERE WAS A REAL COST.
+        //
+        // This surface is screen-space text and a handful of rectangles. It was asking for
+        // 16x coverage sampling at the FULL framebuffer resolution while the actual 3D world
+        // (mainSurface, created by the engine) runs MSAA4. At 3200x1800 the colour attachment
+        // alone is ~737 MB — RenderTarget.init allocates a SECOND FBO as a resolve target when
+        // hasMultisampling, and RenderTarget.end() does a resolveToFBO blit every single frame.
+        // That blit is visible in the GPU profiler's scope list as RESOLVE_FBO (MSAA16).
+        //
+        // MSAA16 may also exceed GL_MAX_SAMPLES on Apple Silicon's GL 4.1, in which case the
+        // driver was silently granting something else anyway and the cost bought nothing at all.
+        //
+        // NONE rather than MSAA4: the HUD is axis-aligned rectangles and glyphs from a texture
+        // atlas, neither of which has the near-horizontal geometry edges MSAA exists to fix.
+        // Verified by screen grab before and after — see the commit that introduced this.
         val hudSurface = engine.gfx.createSurface(
             name = "hud",
             backgroundColor = Color.BLANK,
-            multisampling = Multisampling.MSAA16,
+            multisampling = Multisampling.NONE,
             zOrder = HUD_Z_ORDER
         )
 
