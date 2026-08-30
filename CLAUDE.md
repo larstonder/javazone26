@@ -50,6 +50,31 @@ The JVM window has **no bundle identifier**, so the computer-use MCP filters it 
 
 **`osascript`'s `System Events` `keystroke`/`key code` is silently dropped by this window** — confirmed by a control test where the identical command was delivered to TextEdit, so the loss is the GLFW/LWJGL window under `-XstartOnFirstThread`, not the automation. This matters because the game boots into IDLE and reaching the water needs a keypress. What works is posting one level lower, `Quartz.CGEventPost(Quartz.kCGHIDEventTap, ...)` from Python.
 
+So the block above only ever photographs the **attract screen**. Anything in the water needs the press, and this is the exact sequence that produced the sandbank's verification frames — copy it rather than re-deriving it, because every `osascript` route through it is a dead end:
+
+```bash
+caffeinate -d -u -t 900 &
+EPT_DEV=1 EPT_DEPTH=160 ./gradlew run > /tmp/run.log 2>&1 &
+until pgrep -f EnPustTilKt > /dev/null; do sleep 2; done
+sleep 14                                   # let the asset upload settle
+osascript -e 'tell application "System Events" to set frontmost of (first application process whose name is "java") to true'
+sleep 0.5
+python3 - <<'PY'                           # System Events will NOT deliver this keypress
+import Quartz, time
+def post_key(keycode, down):
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap,
+                       Quartz.CGEventCreateKeyboardEvent(None, keycode, down))
+SPACE = 49
+post_key(SPACE, True); time.sleep(0.05); post_key(SPACE, False)
+PY
+sleep 6                                    # ride out the briefing's five-second dwell
+osascript -e 'tell application "System Events" to set frontmost of (first application process whose name is "java") to true'
+sleep 0.5 ; screencapture -x -o /tmp/shot.png
+pkill -9 -f EnPustTilKt ; pkill -f caffeinate
+```
+
+The second `frontmost` call is not redundant — focus can be lost across the briefing dwell, and a capture taken without it photographs whatever took the focus instead. `EPT_DEPTH`'s pin survives the transition, because `applyDepthPin()` re-fires inside the `lifecycle.justStarted` branch, immediately before `camera.snapTo` — an order `EnPustTilDepthPinTest` asserts — so the diver really is at the pinned depth for the first seconds of the run, not just in attract mode. The six-second wait is `RunLifecycle.BRIEFING_SECONDS` (5 s) plus a margin.
+
 **Pinning `EPT_DEPTH` at `Tuning.MAX_DEPTH` burns air almost instantly** — a run can auto-surface within roughly 14 s of wall-clock, so a capture aimed at that depth has to run promptly after the pin takes rather than after the usual settle time.
 
 **Validate that a `screencapture` actually contains the game before drawing conclusions from it.** A capture that returns the macOS lock screen looks exactly like a successful one unless something checks it — this is not hypothetical, a full capture cycle was lost to exactly that on this project.
