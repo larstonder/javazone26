@@ -29,6 +29,7 @@ import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
 import render.DiverSprite
+import render.FrameProbe
 import render.GlfwGamepadStateReader
 import render.Hud
 import render.IridescenceRenderer
@@ -1502,8 +1503,21 @@ class EnPustTil : PulseEngineGame()
         if (devMode)
         {
             engine.config.logLevel = LogLevel.DEBUG   // belt-and-braces: works even against a built release .exe
-            engine.service.add(MetricViewer())        // F3
+
+            // .start() IS REQUIRED AND WAS MISSING FOR THE WHOLE LIFE OF THIS LINE. Service
+            // .isRunning defaults to false and ServiceManagerImpl skips every service where
+            // !isRunning(), so `add(MetricViewer())` on its own registered an overlay that was
+            // never once ticked. Verified from bytecode and by driving F3 into the running game
+            // and screenshotting it. Note it graphs engine.data.getMetrics(), which on this
+            // game's path holds only ServiceManagerImpl's three service timers (all ~0.2 ms) —
+            // no fps and no frame-time graph. FrameProbe below is the real instrument.
+            engine.service.add(MetricViewer().also { it.start() })   // F3
         }
+
+        // Frame-time probe, gated separately from EPT_DEV so it can be run against a release
+        // build without turning on DEBUG logging (which is itself a measurable cost).
+        if (System.getenv("EPT_PROFILE") == "1")
+            engine.service.add(FrameProbe())
 
         // The engine's scene editor (EPT_EDITOR=1). Registered from here because nothing in
         // the engine ever constructs SceneEditor — verified by scanning every class in

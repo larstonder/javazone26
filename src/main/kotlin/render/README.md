@@ -366,7 +366,8 @@ Every one is read once at startup and is unset at the booth, so each costs one `
 
 | Variable | Read at | Effect |
 |---|---|---|
-| `EPT_DEV` | `EnPustTil.kt:933` | Forces `logLevel = DEBUG` (works even against a built release `.exe`), adds `MetricViewer` (F3), draws the gamepad diagnostic overlay, and runs `CameraInvariants` once a second. |
+| `EPT_DEV` | `EnPustTil.kt:933` | Forces `logLevel = DEBUG` (works even against a built release `.exe`), adds `MetricViewer` (F3) *and starts it* (see `FrameProbe`'s class doc — `add()` alone never ticked it, so F3 showed nothing for the whole life of this project until that `.start()` call was added), draws the gamepad diagnostic overlay, and runs `CameraInvariants` once a second. Even started, `MetricViewer` graphs `engine.data.getMetrics()`, which on this game's path holds only `ServiceManagerImpl`'s three service timers — no fps, no frame-time graph. `EPT_PROFILE` below is the real instrument. |
+| `EPT_PROFILE` | `EnPustTil.kt` (beside the `EPT_DEV` block) | Registers `render.FrameProbe`, which prints `[FRAME] p50=... p95=... worst=... n=...` once a second to stdout (and so into the booth log via `BoothLog`'s tee). Gated separately from `EPT_DEV` so it can run against a release build without also paying for `DEBUG` logging. |
 | `EPT_DEPTH` | `EnPustTil.kt:1102` | Pins the diver at a depth via `DiveSim.debugSetDepth`, turning the attract screen into a deep-water capture rig. Coerced into `0..MAX_DEPTH`; a typo is inert. It moves the diver, it does not change the rules. |
 | `EPT_EDITOR` | `EnPustTil.kt:1172` | Registers and starts the engine's `SceneEditor`. Note it drives `mainCamera` through its own `Camera2DController` and therefore fights `CameraRig` every fixed tick - loudly (you cannot pan), never at the booth. |
 | `EPT_WAVE_PHASE` | `EnPustTil.kt:1369` | Pins `WaterSurface`'s render-clock phase for reproducible captures. |

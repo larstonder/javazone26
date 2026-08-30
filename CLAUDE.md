@@ -44,7 +44,7 @@ So use it only to inspect ONE surface's raw contents (its alpha channel is genui
 ```bash
 caffeinate -d -u -t 900 &                      # macOS: stop the display sleeping mid-capture
 ./gradlew run > /dev/null 2>&1 &
-until pgrep -f EnPustTilKt > /dev/null; do sleep 2; done ; sleep 12
+until pgrep -f EnPustTilKt > /dev/null; do sleep 2; done ; sleep 8
 osascript -e 'tell application "System Events" to set frontmost of (first application process whose name is "java") to true'
 sleep 2 ; screencapture -x -o /tmp/shot.png    # needs Screen Recording granted to the terminal
 pkill -9 -f EnPustTilKt                        # the game has no quit key in booth mode
@@ -60,7 +60,7 @@ So the block above only ever photographs the **attract screen**. Anything in the
 caffeinate -d -u -t 900 &
 EPT_DEV=1 EPT_DEPTH=160 ./gradlew run > /tmp/run.log 2>&1 &
 until pgrep -f EnPustTilKt > /dev/null; do sleep 2; done
-sleep 14                                   # let the asset upload settle
+sleep 8                                    # let the asset upload settle (startup itself measures ~2.3 s from JVM start)
 osascript -e 'tell application "System Events" to set frontmost of (first application process whose name is "java") to true'
 sleep 0.5
 python3 - <<'PY'                           # System Events will NOT deliver this keypress
@@ -85,7 +85,7 @@ The second `frontmost` call is not redundant — focus can be lost across the br
 
 `render/ScreenshotEffect.kt` is a debug tool, not a feature: it captures at frame 180 by default, and it derives its filename via `outputPath.replace(".png", "-$index.png")` — so if `EPT_SCREENSHOT` has no `.png` in it, the file is written with no extension at all.
 
-`EPT_DEV=1` enables the `MetricViewer` overlay (F3), forces `logLevel = DEBUG` (works even against a built release `.exe`), and draws the gamepad diagnostic overlay.
+`EPT_DEV=1` forces `logLevel = DEBUG` (works even against a built release `.exe`), draws the gamepad diagnostic overlay, and adds the `MetricViewer` overlay (F3) — **which did NOT work until task 1 of the rendering-performance plan**: `engine.service.add(MetricViewer())` alone never called `.start()`, and `Service.isRunning` defaults false with `ServiceManagerImpl` skipping every non-running service, so the overlay was registered and never once ticked, for the whole life of this project, verified from bytecode and by driving F3 into the running game and screenshotting a blank result. It is fixed now (`.also { it.start() }`), but even running, it graphs `engine.data.getMetrics()`, which on this game's path holds only `ServiceManagerImpl`'s three service timers (~0.2 ms each) — no fps, no frame-time graph. `EPT_PROFILE=1` (`render/FrameProbe.kt`) is the real frame-time instrument: it prints `[FRAME] p50=... p95=... worst=... n=...` once a second to stdout.
 
 `EPT_FAIL_BOOT=1` makes `createGame` throw deliberately, right after the `"hud"` surface is created but before `sim`/`scoreRepository` are constructed — the one `createGame` failure `EnPustTil.worldUnusable` treats as unrecoverable. It exists so the booth's full-frame `!! BOOT FAILED - RESTART THE CABINET !!` screen (`render.BoothStatus`, `EnPustTil.drawBootFailedScreen`) can be rehearsed and photographed before a booth, rather than trusted on reasoning alone. Unset at the booth: one getenv at startup, same cost as every other `EPT_*` flag here.
 
