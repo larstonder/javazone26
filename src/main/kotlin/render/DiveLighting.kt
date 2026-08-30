@@ -1280,8 +1280,14 @@ object DiveLighting
         // At this Mac's 3200x1800 dev framebuffer it is +73%. render/GiSizing.kt re-implements
         // that formula and GiSizingTest pins it, so the next person to touch this number finds
         // out what it costs instead of guessing.
-        system.lightTexScale = 0.4f
-        system.localSceneTexScale = 0.4f
+        // Every literal in this function that GraphicsQuality.HIGH now owns is read through
+        // `giHigh` below rather than typed here a second time — see GraphicsQuality's class doc for
+        // why HIGH is a transcription of exactly these measured values and not a separate
+        // decision. The comments stay in place because they are the evidence for the numbers,
+        // not documentation of a literal that has since moved.
+        val giHigh = GraphicsQuality.HIGH.settings()
+        system.lightTexScale = giHigh.lightTexScale
+        system.localSceneTexScale = giHigh.localSceneTexScale
 
         // maxCascades 10 (effective 7) -> 6. Removes a whole cascade pass AND shrinks the
         // size round-up above, because both derive from this number.
@@ -1294,7 +1300,7 @@ object DiveLighting
         // UNLIKE the scales above, this one is NOT a per-frame uniform: it feeds
         // lightTextureSizeFunc, which is only re-evaluated when the light surface re-initialises.
         // Set here at setup, it is in place before the first frame.
-        system.maxCascades = 6
+        system.maxCascades = giHigh.maxCascades
         // Default dithering (0.2, verified by decompiling GlobalIlluminationSystem's
         // <init>) is tuned for a light map close to native resolution. Ours is HALF res since the
         // bump above — closer to native than the quarter-res this was reasoned about, so if
@@ -1335,7 +1341,7 @@ object DiveLighting
         //
         // This is a plain uniform read fresh inside GiRadianceCascades.applyEffect every frame,
         // so it is live — no surface re-init, no restart.
-        system.bilinearFix = false
+        system.bilinearFix = giHigh.bilinearFix
 
         // THE GLOBAL SCENE CHAIN — 13 PASSES SERVING RAYS THIS GAME DOES NOT CAST.
         //
@@ -1359,8 +1365,8 @@ object DiveLighting
         //
         // Coherent as a pair: with the branch off, globalSceneTex is never sampled at all
         // (sampleScene only reaches it when status == GLOBAL), so shrinking it cannot show.
-        system.traceWorldRays = false
-        system.globalSceneTexScale = 0.15f
+        system.traceWorldRays = giHigh.traceWorldRays
+        system.globalSceneTexScale = giHigh.globalSceneTexScale
 
         // AO RADIUS, IN METRES. Set AFTER localSceneTexScale above, because it is expressed
         // against it and the two must not be able to silently disagree.
