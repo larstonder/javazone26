@@ -1297,6 +1297,24 @@ object DiveLighting
         // smooth gradient" scenario, tuned by the reference for the same lighting system.
         system.dithering = 0.6f
 
+        // BILINEAR FIX OFF — 16 raymarches per pixel become 4.
+        //
+        // radiance_cascades.frag does 4 rays per pixel; with bilinearFix ON each ray makes
+        // FOUR getRadiance calls (one per bilinear tap) instead of one, and each of those
+        // marches up to maxSteps = 25 iterations with a textureLod per step plus two
+        // scene/metadata fetches. Worst case is about 448 texture fetches PER PIXEL, and they
+        // are dependent, incoherent raymarch samples — the most cache-hostile access pattern a
+        // GPU has. This was measured as the single heaviest per-pixel item in the frame.
+        //
+        // What it costs: bilinearFix exists to suppress ringing/banding at cascade boundaries.
+        // Turning it off can reintroduce that. It was judged acceptable against the frame-rate
+        // win; if banding shows up at a specific depth, that is the thing to re-open, not the
+        // frame budget.
+        //
+        // This is a plain uniform read fresh inside GiRadianceCascades.applyEffect every frame,
+        // so it is live — no surface re-init, no restart.
+        system.bilinearFix = false
+
         // AO RADIUS, IN METRES. Set AFTER localSceneTexScale above, because it is expressed
         // against it and the two must not be able to silently disagree.
         //
