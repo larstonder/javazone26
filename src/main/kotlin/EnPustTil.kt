@@ -9,7 +9,6 @@ import no.njoh.pulseengine.core.PulseEngineGame
 import no.njoh.pulseengine.core.asset.types.Font
 import no.njoh.pulseengine.core.graphics.api.Multisampling
 import no.njoh.pulseengine.core.graphics.surface.Surface
-import no.njoh.pulseengine.core.input.Gamepad
 import no.njoh.pulseengine.core.input.GamepadAxis
 import no.njoh.pulseengine.core.input.GamepadButton
 import no.njoh.pulseengine.core.input.Key
@@ -30,10 +29,12 @@ import render.DiveCamera
 import render.DiveLighting
 import render.DiveRenderer
 import render.DiverSprite
+import render.GlfwGamepadStateReader
 import render.Hud
 import render.IridescenceRenderer
 import render.LifecycleInputEdges
 import render.LightEmitter
+import render.MappedPads
 import render.MoteSprite
 import render.Motes
 import render.OpaqueWaterEffect
@@ -1200,10 +1201,27 @@ class EnPustTil : PulseEngineGame()
      * produce. That was wrong in the PESSIMISTIC direction: it named a free operation as a
      * cost and left the real one unnamed. The real one was the `Iterator` `pads
      * .firstOrNull { it.id == chosenId }` allocated resolving [selectGameplayPad]'s answer
-     * back to a `Gamepad` — fixed alongside this doc with an indexed loop; see [readInput].
-     * [selectGameplayPad] itself is allocation-free for the same reason — see its doc.
+     * back to a `Gamepad` — fixed alongside this doc with an indexed loop. That loop is GONE
+     * now rather than merely indexed: [readInput] reads through [mappedPads], which is keyed by
+     * joystick id, so the id [selectGameplayPad] returns is already the whole answer and there
+     * is nothing left to resolve it back to. [selectGameplayPad] itself is allocation-free for
+     * the same reason — see its doc.
      */
     private val gamepadIdBuffer = ArrayList<Int>(4)
+
+    /**
+     * THE ONLY GAMEPAD READ IN THIS FILE. `Gamepad.isPressed`/`getAxis` index the device's RAW
+     * HID buffer by an SDL-standard code, so on the owner's own DualSense `kickButton = A` hit
+     * Square and `restartButton = START` hit R2 — i.e. **Options did nothing**. `MappedPads`
+     * reads `glfwGetGamepadState` instead, which is SDL-mapped and therefore actually means
+     * what `GamepadButton`'s names say. The full bytecode citation and the measured button
+     * table are in [MappedPads]' class doc; `MappedPadsSourceScanTest` fails the build if any
+     * production file outside it reaches for a `Gamepad` directly again.
+     *
+     * Constructed here rather than lazily so its one native `GLFWGamepadState` exists before
+     * the first frame; freed in [destroyGame].
+     */
+    private val mappedPads = MappedPads(GlfwGamepadStateReader())
 
     /**
      * Puts the diver at [depthPin], if there is one. Called after EVERY `DiveSim` construction.
@@ -1805,6 +1823,31 @@ class EnPustTil : PulseEngineGame()
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun updateGame()
     {
+        // THE GAMEPAD SNAPSHOT, AND IT MUST BE THE FIRST STATEMENT IN THIS FUNCTION.
+        //
+        // Every gamepad read in this file goes through mappedPads (see its field doc for the
+        // engine bug that requires it), and mappedPads only ever holds what the last refresh
+        // put there — so a frame that reads before refreshing reads the PREVIOUS frame's
+        // buttons, silently, with the pad appearing to lag by one frame.
+        //
+        // THIS IS THE ONE PLACE IN THE FRAME WHERE ONE CALL COVERS EVERY READER, verified from
+        // the 0.13.0 bytecode rather than assumed: `PulseEngineImpl.beginFrame` calls
+        // `updateInput()` -> `InputInternal.pollEvents()` (which is where the engine's own
+        // `Gamepad.updateState()` runs, and therefore where GLFW's own state is refreshed),
+        // and only THEN does `tick()` call, in this order, `update(onUpdate)` ->
+        // `fixedUpdate(onFixedUpdate x N)` -> `render(onRender)`. So this line sits after
+        // GLFW's poll and before all three of this game's readers:
+        //
+        //   - the lifecycle/pause/exit reads, further down this same function;
+        //   - readInput(), on the FIXED tick, which may run zero or several times per frame —
+        //     all of them then see ONE consistent sample, which is what stops a two-step frame
+        //     from taking a lifecycle edge against a different reading than gameplay used;
+        //   - renderGamepadOverlay(), in onRender.
+        //
+        // Moving it into readInput() would break the first and third; moving it to onRender
+        // would break the first two.
+        mappedPads.refresh(engine.input.gamepads)
+
         // Ambient is a continuous function of depth only — no camera/screen dependence — so
         // unlike the positional light draws in onRender, timing here doesn't matter.
         DiveLighting.updateAmbient(sim)
@@ -1824,9 +1867,12 @@ class EnPustTil : PulseEngineGame()
         // reasons — see `Motes.advance`. It is the third consumer of the precedent above.
         Motes.advance(engine.data.deltaTime)
 
-        // Start/restart reads gamepad LEVELS here — the engine's Gamepad only exposes
-        // isPressed/getAxis (confirmed against the engine jar: no gamepad wasClicked), so
-        // there is no engine-provided edge detection for a controller button. The edge is
+        // Start/restart reads gamepad LEVELS here — there is no engine-provided edge detection
+        // for a controller button (confirmed against the engine jar: no gamepad wasClicked),
+        // and mappedPads deliberately offers none either, since a snapshot is a level by
+        // definition. The levels come from mappedPads and NOT from `pad.isPressed`: the
+        // engine's own read is raw-HID-ordered under SDL names, which is why `restartButton =
+        // START` landed on R2 and Options did nothing (see MappedPads' class doc). The edge is
         // taken per (pad, button) SOURCE, in LifecycleInputEdges, and never over the
         // collapsed signal: this block used to OR every source into one boolean and let
         // RunLifecycle edge that, which one stuck encoder button could hold true for two
@@ -1875,7 +1921,7 @@ class EnPustTil : PulseEngineGame()
             // tell an attendant which repair to attempt. .code collapses aliases correctly
             // by construction; the existing tests are unaffected (START and A have
             // ordinal == code).
-            lifecycleEdges.offer(pad.id, restartButton.code, pad.isPressed(restartButton))
+            lifecycleEdges.offer(pad.id, restartButton.code, mappedPads.isPressed(pad.id, restartButton))
             // restartButton/restartButtonAlt are BOTH config now (Task 7), and a
             // technician who finds START unmapped could reasonably set both keys to the
             // same button (or two aliases of it). This guard is an OPTIMISATION, not the
@@ -1885,13 +1931,13 @@ class EnPustTil : PulseEngineGame()
             // Skipping the call entirely when the codes already match just avoids paying
             // for a call whose result is thrown away.
             if (restartButtonAlt.code != restartButton.code)
-                lifecycleEdges.offer(pad.id, restartButtonAlt.code, pad.isPressed(restartButtonAlt))
+                lifecycleEdges.offer(pad.id, restartButtonAlt.code, mappedPads.isPressed(pad.id, restartButtonAlt))
 
             // Pause, on its own instance, keyed on .code for the identical alias reason as
             // the two offers above: a technician who writes `pauseButton = CROSS` and a
             // technician who writes `A` have named the same physical contact, and .ordinal
             // would give one jammed button two source keys and two stuck counters.
-            pauseEdges.offer(pad.id, pauseButton.code, pad.isPressed(pauseButton))
+            pauseEdges.offer(pad.id, pauseButton.code, mappedPads.isPressed(pad.id, pauseButton))
         }
         lifecycleEdges.offerKeyboardEdge(engine.input.wasClicked(Key.SPACE))
         // ESCAPE goes in as pause's KEYBOARD source, never OR-ed into the pad levels above.
@@ -1980,7 +2026,7 @@ class EnPustTil : PulseEngineGame()
         for (i in lifecyclePads.indices)
         {
             val pad = lifecyclePads[i]
-            if (pad.isPressed(exitButtonA) && pad.isPressed(exitButtonB)) { padExitHeld = true; break }
+            if (mappedPads.isPressed(pad.id, exitButtonA) && mappedPads.isPressed(pad.id, exitButtonB)) { padExitHeld = true; break }
         }
         val exitHeld = engine.input.isPressed(Key.Q) || padExitHeld
 
@@ -2109,6 +2155,15 @@ class EnPustTil : PulseEngineGame()
      */
     private fun destroyGame()
     {
+        // The one native allocation this game owns outright: MappedPads' single
+        // GLFWGamepadState, calloc'd once and reused for every frame of the process. Freed
+        // BEFORE the log line, so a throw from the log sink (BoothLog writes to a file that
+        // could be on a full disk) cannot skip it — and freed at all even though a leaked
+        // struct at shutdown costs nothing observable, because "the process was about to exit"
+        // is a reason not to PANIC about a leak, not a reason to write one. See
+        // MappedPads.close for why it is idempotent and why every read after it is inert.
+        mappedPads.close()
+
         Logger.info { "Én Pust Til shutting down cleanly" }
     }
 
@@ -2748,14 +2803,17 @@ class EnPustTil : PulseEngineGame()
         val pads = engine.input.gamepads
         gamepadIdBuffer.clear()
         for (i in pads.indices) gamepadIdBuffer.add(pads[i].id)
-        val chosenId = selectGameplayPad(gamepadIdBuffer, activePadId)
-        // Indexed, not `pads.firstOrNull { it.id == chosenId }` — that resolves through
-        // the Iterable<T> extension and allocates one Iterator per call. See
-        // gamepadIdBuffer's doc for the matching fix on the id list this reads.
-        var pad: Gamepad? = null
-        for (i in pads.indices) if (pads[i].id == chosenId) { pad = pads[i]; break }
-        val padX = pad?.getAxis(GamepadAxis.LEFT_X)?.deadzone() ?: 0f
-        val padY = pad?.getAxis(GamepadAxis.LEFT_Y)?.deadzone() ?: 0f
+        // -1 IS "NO PAD", and it needs no special case downstream: MappedPads answers every
+        // read for an id it did not sample with `false` / `0f`, which is exactly what the
+        // `pad?.isPressed(...) ?: false` chain this replaced produced. The
+        // `pads.firstOrNull { it.id == chosenId }` lookup that used to turn the id back into a
+        // `Gamepad` (one Iterator per call, then an indexed loop after that was found) is gone
+        // outright rather than fixed again: MappedPads is keyed by joystick id, so the id IS
+        // the handle. See the mappedPads field doc for why a `Gamepad` must never be read
+        // directly, and MappedPads' class doc for the bytecode.
+        val padId = selectGameplayPad(gamepadIdBuffer, activePadId) ?: -1
+        val padX = mappedPads.getAxis(padId, GamepadAxis.LEFT_X).deadzone()
+        val padY = mappedPads.getAxis(padId, GamepadAxis.LEFT_Y).deadzone()
 
         // THE D-PAD, which this game read nowhere at all until 2026-08-30. On a console pad
         // that was a missing convenience; at the booth it is a cabinet-killer, because a
@@ -2769,10 +2827,10 @@ class EnPustTil : PulseEngineGame()
         // depth in this project (CLAUDE.md's coordinate table), so DOWN is positive. Getting
         // this backwards makes the diver swim up when the player presses down, and no test
         // catches it, so DPAD_UP is the NEGATIVE direction on purpose.
-        val dpadLeft = pad?.isPressed(GamepadButton.DPAD_LEFT) ?: false
-        val dpadRight = pad?.isPressed(GamepadButton.DPAD_RIGHT) ?: false
-        val dpadUp = pad?.isPressed(GamepadButton.DPAD_UP) ?: false
-        val dpadDown = pad?.isPressed(GamepadButton.DPAD_DOWN) ?: false
+        val dpadLeft = mappedPads.isPressed(padId, GamepadButton.DPAD_LEFT)
+        val dpadRight = mappedPads.isPressed(padId, GamepadButton.DPAD_RIGHT)
+        val dpadUp = mappedPads.isPressed(padId, GamepadButton.DPAD_UP)
+        val dpadDown = mappedPads.isPressed(padId, GamepadButton.DPAD_DOWN)
 
         val keyX = axis(Key.LEFT, Key.RIGHT)
         val keyY = axis(Key.UP, Key.DOWN)
@@ -2780,8 +2838,8 @@ class EnPustTil : PulseEngineGame()
         return DiveInput(
             horizontal = PadAxis.resolve(padX, dpadLeft, dpadRight, keyX),
             vertical   = PadAxis.resolve(padY, dpadUp, dpadDown, keyY),
-            kick       = (pad?.isPressed(kickButton) ?: false) || engine.input.isPressed(Key.Z),
-            bleed      = (pad?.isPressed(bleedButton) ?: false) || engine.input.isPressed(Key.X)
+            kick       = mappedPads.isPressed(padId, kickButton) || engine.input.isPressed(Key.Z),
+            bleed      = mappedPads.isPressed(padId, bleedButton) || engine.input.isPressed(Key.X)
         )
     }
 
@@ -2933,9 +2991,9 @@ class EnPustTil : PulseEngineGame()
         {
             val pad = pads[i]
             val cycle = PadAxis.resolve(
-                analog = pad.getAxis(GamepadAxis.LEFT_Y).deadzone(),
-                negativePressed = pad.isPressed(GamepadButton.DPAD_UP),
-                positivePressed = pad.isPressed(GamepadButton.DPAD_DOWN),
+                analog = mappedPads.getAxis(pad.id, GamepadAxis.LEFT_Y).deadzone(),
+                negativePressed = mappedPads.isPressed(pad.id, GamepadButton.DPAD_UP),
+                positivePressed = mappedPads.isPressed(pad.id, GamepadButton.DPAD_DOWN),
                 keyboard = 0f
             )
             if (cycle < 0f) padUp = true
@@ -2989,6 +3047,21 @@ class EnPustTil : PulseEngineGame()
         Logger.warn {
             "GAMEPAD DIAGNOSTIC: engine.input.gamepads = ${recognised.size} " +
             "(ids=${recognised.map { it.id }})"
+        }
+
+        // A BOOT-TIME SAMPLE, so the log records whether the SDL-mapped read is actually
+        // working on this hardware. This runs from createGame, before the first updateGame,
+        // so mappedPads is still empty; refreshing it here fills it once and it is overwritten
+        // by the per-frame refresh a few milliseconds later, so nothing downstream can be
+        // confused by the extra call. What it buys is the one line an unattended booth log
+        // most needs about input: if MappedPads had to take its raw fallback, the WARN it
+        // emits lands here at boot rather than being discovered by a queue.
+        mappedPads.refresh(recognised)
+        for (i in recognised.indices)
+        {
+            val id = recognised[i].id
+            val mode = if (mappedPads.isFallback(id)) "RAW FALLBACK (unmapped codes - see render/MappedPads.kt)" else "SDL-mapped"
+            Logger.warn { "GAMEPAD DIAGNOSTIC: pad $id reads as $mode" }
         }
 
         // This loop still walks the raw GLFW range itself, rather than calling
@@ -3098,13 +3171,30 @@ class EnPustTil : PulseEngineGame()
             hud.setDrawColor(Color.GREEN)
         }
 
+        // MAPPED VALUES, NOT `pad.getAxis` / `pad.isPressed`, AND THAT IS THE WHOLE POINT OF
+        // THIS OVERLAY. A technician reads these lines to decide what to type into
+        // application.cfg's BUTTON MAP; if the overlay reported the engine's raw HID order
+        // while the game read the SDL-mapped one, every name printed here would send them to
+        // the wrong key — worse than no overlay at all, because it looks authoritative. Both
+        // now come from mappedPads, so what is on screen is literally what readInput and the
+        // lifecycle reads saw this frame. (This overlay is where the bug was first visible:
+        // `RIGHT_Y=-1.00 LEFT_TRIGGER=-1.00` on an untouched pad, which is the raw axis order
+        // read through SDL axis codes. See MappedPads' class doc.)
         for (pad in pads)
         {
-            val axes = GamepadAxis.entries.joinToString(" ") { "%s=%.2f".format(it.name, pad.getAxis(it)) }
-            hud.drawText("pad#${pad.id} axes: $axes", x, y, fontSize = fontSize)
+            // A pad that fell back to the raw read is flagged, because in that one case the
+            // names below ARE the unmapped ones and the technician needs to know before
+            // trusting them. Unreachable in principle - see MappedPads.fillFromRawGamepad.
+            val tag = if (mappedPads.isFallback(pad.id)) " !! RAW FALLBACK !!" else ""
+
+            val axes = GamepadAxis.entries.joinToString(" ") { "%s=%.2f".format(it.name, mappedPads.getAxis(pad.id, it)) }
+            hud.drawText("pad#${pad.id} axes: $axes$tag", x, y, fontSize = fontSize)
             y += lineHeight
 
-            val pressed = GamepadButton.entries.filter { pad.isPressed(it) }
+            // Aliases share a code (A/CROSS both 0), so one physical button legitimately
+            // prints both names - which is useful here, since either spelling is valid in
+            // application.cfg and the technician can copy whichever matches their pad.
+            val pressed = GamepadButton.entries.filter { mappedPads.isPressed(pad.id, it) }
             val pressedText = if (pressed.isEmpty()) "(none)" else pressed.joinToString(",") { it.name }
             hud.drawText("pad#${pad.id} pressed: $pressedText", x, y, fontSize = fontSize)
             y += lineHeight
