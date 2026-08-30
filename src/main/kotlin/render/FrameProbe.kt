@@ -18,15 +18,24 @@ import kotlin.math.roundToInt
  * overlay is there, no metrics overlay. Same root cause as the known-dead F1 console — the
  * `bind F3 showMetricViewer` line in init-dev.pes is inert because no .pes script is ever run.
  *
- * SO THIS CLASS MUST CALL start() ON ITSELF. Registering it is not enough. See init below.
+ * SO THIS CLASS MUST CALL start() ON ITSELF. Registering it is not enough. See onCreate below.
+ *
+ * AND IT ONLY WORKS FOR A SERVICE REGISTERED DURING game.onCreate. ServiceManagerImpl.add only
+ * appends to a list; Service.onCreate is invoked exclusively from ServiceManagerInternal.init,
+ * which PulseEngineImpl.postGameInit calls ONCE, right after game.onCreate. A service added any
+ * later never receives onCreate, never calls start(), and stays isRunning = false forever - the
+ * same silent death this class was written to escape.
  *
  * WHAT IT MEASURES. `engine.data.totalFrameTimeMs` is stamped in DataImpl.update() at the top
  * of beginFrame and read in endFrame AFTER fpsLimiter.sync() — so it is the full frame period
  * INCLUDING any limiter sleep. That is the right number for "what frame rate is the player
  * getting" and the wrong number for "how long did the work take" when the limiter is actually
- * limiting. It never is here: targetFps has never once been reached (FpsLimiter.sync returns
- * immediately whenever a frame has already overrun), so the two coincide today. If a change
- * ever gets the game comfortably under its cap, this distinction wakes up.
+ * limiting. THAT CAVEAT HAS NOW FIRED - it was written when targetFps was 120 and had never once
+ * been reached, so the two numbers coincided. The 2026-08-30 performance work changed that: the
+ * game now holds a 60 fps cap comfortably, so a capped reading here measures THE LIMITER, not the
+ * renderer. To see real headroom you must set targetFps = 0 - FpsLimiter.sync returns immediately
+ * when fps <= 0 - and the spec's section 6.1 reports capped and uncapped rows separately for
+ * exactly this reason.
  *
  * DO NOT ADD A "GPU TIME" READOUT FROM engine.data. `data.gpuRenderTimeMs` is CPU wall time
  * measured around gfx.drawFrame + swapBuffers, not a GPU timer — the name lies. Real GPU

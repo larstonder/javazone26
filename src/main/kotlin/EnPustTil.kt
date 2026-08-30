@@ -518,6 +518,21 @@ const val DEPTH_PIN_ENV = "EPT_DEPTH"
  */
 const val FAIL_BOOT_ENV = "EPT_FAIL_BOOT"
 
+/**
+ * Turns on [render.FrameProbe], which prints p50/p95/worst frame time to stdout once a second.
+ *
+ * A top-level constant beside [DEPTH_PIN_ENV] and [FAIL_BOOT_ENV] for their reason ([EnPustTil]'s
+ * companion is private), and read with `!= null` rather than `== "1"` for a reason worth stating:
+ * every other flag in this file is presence-tested, so a lone value-tested one means
+ * `EPT_PROFILE=true` sets nothing while `EPT_DEV=true` works — a difference invisible at the call
+ * site and maddening at a terminal.
+ *
+ * Deliberately NOT folded into `EPT_DEV`: that one now leaves the engine's MetricViewer overlay
+ * permanently drawing (its only toggle is a console command this project can never reach), so
+ * measuring frame time under it measures a different game. Profiling has to be reachable without it.
+ */
+const val PROFILE_ENV = "EPT_PROFILE"
+
 /** @see parseDepthPin — top-level beside it, because [EnPustTil]'s companion is private. */
 fun parseDepthPin(raw: String?, maxDepth: Float): Float?
 {
@@ -1545,7 +1560,7 @@ class EnPustTil : PulseEngineGame()
 
         // Frame-time probe, gated separately from EPT_DEV so it can be run against a release
         // build without turning on DEBUG logging (which is itself a measurable cost).
-        if (System.getenv("EPT_PROFILE") == "1")
+        if (System.getenv(PROFILE_ENV) != null)
             engine.service.add(FrameProbe())
 
         // The engine's scene editor (EPT_EDITOR=1). Registered from here because nothing in
