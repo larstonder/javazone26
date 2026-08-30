@@ -274,6 +274,7 @@ whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min`
 | File | Owns |
 |---|---|
 | `ScreenshotEffect.kt` | Debug only. Captures at frame 180 by default. See section 6 for why its output is not the frame. |
+| `FrameProbe.kt` | Debug only. A `Service` printing p50/p95/worst frame time to stdout once a second under `EPT_PROFILE`. Calls `start()` on itself — see its class doc for why that is not redundant, and why a capped reading measures the limiter rather than the renderer. |
 
 ---
 

@@ -110,7 +110,7 @@ object DiveLighting
      * subtracting (`p1_d_base.png`), the shelf is a hard-edged, visibly polygonal patch about
      * 3 m across around a 1.2 m pearl — the emitter, quantised by the then quarter-scale local
      * scene ([setup]'s `localSceneTexScale`), which at 3 m resolved the circle in about 15 texels
-     * and so read as a rounded box rather than as a circle. (That scale is now 0.5, which doubles
+     * and so read as a rounded box rather than as a circle. (That scale is now 0.4 - it was 0.5 until the 2026-08-30 perf work, which
      * every texel count in this doc; the measurements below were taken at 0.25 and are left as
      * they were rather than re-stated from arithmetic.) Driving the size to 12 m in the same
      * capture makes it unmistakable: the shelf becomes a stair-stepped disc measuring 11.7 m
@@ -148,12 +148,12 @@ object DiveLighting
      *
      * ## WHY NOT SMALLER, WHICH IS A RESOLUTION BOUND AND NOT A TASTE
      *
-     * The emitter is rasterised into the HALF-SCALE local scene ([setup]'s `localSceneTexScale`),
-     * so its texel count is `size * pixelsPerMetre * 0.5` — 8.1 texels here at the 3200x1800 dev
-     * framebuffer and **4.9 at a 1080p booth panel**, where `CameraRig.pixelsPerMetre` is 19.5.
+     * The emitter is rasterised into the 0.4-SCALE local scene ([setup]'s `localSceneTexScale`),
+     * so its texel count is `size * pixelsPerMetre * 0.4` — 6.5 texels here at the 3200x1800 dev
+     * framebuffer and **3.9 at a 1080p booth panel**, where `CameraRig.pixelsPerMetre` is 19.5.
      * `scene.vert:86-88` also floors a light quad at `pixelSizeInWorld * 1500 / camScale`, which
-     * for the local scene surface (`resolution.y` = framebuffer height x 0.5) is 0.051 m here and
-     * **0.142 m at 1080p** — so 0.5 m is 3.5x the floor on the smallest panel this could ship on.
+     * for the local scene surface (`resolution.y` = framebuffer height x 0.4) is 0.064 m here and
+     * **0.178 m at 1080p** — so 0.5 m is 2.8x the floor on the smallest panel this could ship on.
      * A 0.4 m probe was built and captured and its core came out visibly polygonal at 6.5 texels;
      * there is no room below this and the numbers say where the room ran out.
      *
@@ -193,7 +193,7 @@ object DiveLighting
      * So 1.2 m: a torch head, decoupled from the swimmer holding it and stated as its own number
      * because it is not a fraction of anything. It is above the floor `scene.vert:87` puts on a
      * light quad (`pixelSizeInWorld * 1500 / camScale`, which works out at ~0.11 m for our camera
-     * at any resolution), and 1.2 m is 18 texels across in the half-scale local SDF — it was 9 when
+     * at any resolution), and 1.2 m is ~16 texels across in the 0.4-scale local SDF — it was 9 when
      * this size was chosen, which was coarse but already enough for the JFA to build a shape from.
      *
      * ## Where the reach comes from now: [TORCH_REACH_METRES]
@@ -1256,7 +1256,7 @@ object DiveLighting
         //
         // What it buys, and why the pearls are the reason: an emitter is a REGION that rasterises
         // into the local scene, so its silhouette is quantised by this scale. A 1.2 m pearl was 9
-        // texels across at 0.25 (1.2 m x ~30 px/m x 0.25) and is 18 now, and the diver's 1.2 m
+        // texels across at 0.25 (1.2 m x ~30 px/m x 0.25) and is ~14 now at 0.4, and the diver's 1.2 m
         // torch head with it — the difference between a disc that resolves as a rounded box and
         // one that resolves as a disc. See PEARL_LIGHT_SIZE_METRES, whose whole diagnosis was
         // about the visible shape of that shelf.
@@ -1315,7 +1315,7 @@ object DiveLighting
         // Set here at setup, it is in place before the first frame.
         system.maxCascades = giHigh.maxCascades
         // Default dithering (0.2, verified by decompiling GlobalIlluminationSystem's
-        // <init>) is tuned for a light map close to native resolution. Ours is HALF res since the
+        // <init>) is tuned for a light map close to native resolution. Ours is 0.4 res since the
         // bump above — closer to native than the quarter-res this was reasoned about, so if
         // anything the case for 0.6 is weaker now than it was. Left alone deliberately: the
         // A/B below could not resolve it either way even at quarter res, so lowering it now would
@@ -1401,7 +1401,7 @@ object DiveLighting
         // What the world-coordinate migration changed is what a world unit MEANS: one pixel
         // before, one metre after. Left at the engine's default of 30
         // (GlobalIlluminationSystem.kt:57) the radius would have gone from 30/0.25 = 120 pixels
-        // (0.25 being the scale at the time; it is 0.5 now, and AO_RADIUS_METRES follows it below)
+        // (0.25 being the scale at the time; it is 0.4 now, and AO_RADIUS_METRES follows it below)
         // — a halo nobody chose — to 120 METRES, twice Framing.VISIBLE_DEPTH_METRES. So the
         // value is stated in metres and converted here, once.
         //
