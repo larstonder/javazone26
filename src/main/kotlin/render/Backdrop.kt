@@ -100,10 +100,35 @@ object Backdrop
      * heavy enough to compete with the water would put the backdrop in front of the gameplay.
      */
     val layers = listOf(
-        silhouette(3, 1600, 533, rate = 0.15f, restTop = 20f, alpha = 0.10f),
-        silhouette(2, 1600, 1600, rate = 0.30f, restTop = 35f, alpha = 0.16f),
-        silhouette(1, 1600, 1600, rate = 0.50f, restTop = 60f, alpha = 0.24f)
+        silhouette(3, 1600, 533, rate = 0.15f, restTop = 20f, alpha = 0.34f),
+        silhouette(2, 1600, 1600, rate = 0.30f, restTop = 35f, alpha = 0.50f),
+        silhouette(1, 1600, 1600, rate = 0.50f, restTop = 60f, alpha = 0.68f)
     )
+
+    /*
+     * The alphas were 0.10 / 0.16 / 0.24 until 2026-08-30, when the owner asked for the ridges to
+     * be significantly darker and more prominent — at the old values they were very hard to see
+     * against the water at all.
+     *
+     * ALPHA ALONE DOES NOT DO IT, and the reason is the trap worth recording: the old
+     * [DiveRenderer.silhouetteColor] was BRIGHTER than the water it is drawn over. Measured on a
+     * real 70 m frame, the water reads (1.3, 17.4, 54.1) in 8-bit and the old tint was
+     * (25.5, 33.1, 43.4) — more red and green, less blue — so it desaturated the water rather than
+     * darkening it, and raising these alphas on it made the ridges LIGHTER. Doubling them alone
+     * moved water contrast 1.16x and the MEAN 2% the wrong way. Both had to change; see that
+     * constant's KDoc for the colour half and for the reflectance floor that caps how dark it may
+     * go.
+     *
+     * These values are high — far above what a background layer would normally take — because the
+     * ceiling is not alpha but the tint's 22% luminance gap under the water. Even alpha = 1 could
+     * not exceed that gap, so alpha is pushed most of the way to it instead: at 0.68 the nearest
+     * ridge lands about 14% under the water against a hard maximum of 22%. Going further buys
+     * single-digit percentages and starts replacing the water's own depth gradient rather than
+     * sitting behind it, which is the failure the range note above warns about.
+     *
+     * Raising alpha is safe against the floor at any value in (0, 1): the drawn result is a blend
+     * of the water and `silhouetteColor`, and both endpoints already clear it.
+     */
 
     /**
      * How wide a layer is drawn: the whole visible frame, exactly as [SandBank.WIDTH_METRES] is.

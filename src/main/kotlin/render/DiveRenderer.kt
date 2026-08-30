@@ -322,15 +322,38 @@ object DiveRenderer
      * and [Backdrop.Layer.alpha] are their entire appearance.
      *
      * Cool and dark: distant terrain seen through a hundred metres of water is the water's own
-     * hue, darker. Linear length 0.0311, so even a fully opaque silhouette clears
-     * [GI_REFLECTANCE_FLOOR] on its own and the shader never substitutes grey for it — and every
-     * layer is drawn at well under full alpha over water that already clears the floor, so the
-     * composite cannot fall under it either.
+     * hue, darker. Linear length 0.0244 once quantized to 8-bit (3, 11, 43), so a fully opaque
+     * silhouette still clears [GI_REFLECTANCE_FLOOR] on its own and the shader never substitutes
+     * grey for it — and every layer is drawn at well under full alpha over water that already
+     * clears the floor, so the composite cannot fall under it either.
      *
-     * Relative luminance 0.0146: under [wallColor]'s 0.034 and far under lit shallow water's
-     * 0.085, so a ridge always reads as something BEHIND the water rather than as an object in it.
+     * Relative luminance 0.0043: under [wallColor]'s 0.034, and now genuinely under the WATER's
+     * as well, which is the whole point of the value.
+     *
+     * ## THIS WAS (0.10, 0.13, 0.17) UNTIL 2026-08-30, AND IT WAS NOT A SHADOW
+     *
+     * The owner asked for the ridges to be significantly darker and more prominent, because at the
+     * old value they were very hard to see. The old note called it "cool and dark", and against
+     * that claim it measured: on a real 70 m frame the water reads (1.3, 17.4, 54.1) in 8-bit
+     * while the old tint was (25.5, 33.1, 43.4) — MORE red and green, LESS blue. It was brighter
+     * than the water and less saturated, so it desaturated rather than darkened, and raising the
+     * layer alphas on it made the ridges LIGHTER. Measured, doubling the alphas alone moved water
+     * contrast only 1.16x and the mean 2% the wrong way.
+     *
+     * ## AND THE FLOOR CAPS HOW DARK THIS MAY GO
+     *
+     * The GI composite is a MULTIPLY that clamps any albedo under [GI_REFLECTANCE_FLOOR] up to a
+     * flat grey — so too dark does not read as shadow, it reads as a grey smear, hue thrown away.
+     * At 70 m the water is only 1.87x the floor, which leaves very little room beneath it.
+     * Measured candidates: (0.010, 0.045, 0.168) is 1.21x the floor and 22% darker than the water;
+     * (0.008, 0.040, 0.162) is 1.13x and clamps; (0.006, 0.035, 0.155) is 1.05x and clamps. This
+     * value is therefore close to the darkest legal blue at that depth, chosen deliberately near
+     * the limit rather than comfortably inside it. The headroom GROWS in shallow water, where
+     * these layers mostly sit, and SHRINKS with depth as the water falls toward the floor — so the
+     * ridges are strongest up top and fade in the abyss. That is a consequence of the floor, not a
+     * tuning choice, and it cannot be fixed by darkening this further.
      */
-    internal val silhouetteColor = Color(0.10f, 0.13f, 0.17f)
+    internal val silhouetteColor = Color(0.010f, 0.045f, 0.168f)
 
     /**
      * The colour the sand's flat skirt is filled with, below [SandBank.QUAD_BOTTOM_DEPTH] —
