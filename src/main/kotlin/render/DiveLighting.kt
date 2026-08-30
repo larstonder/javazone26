@@ -1449,6 +1449,26 @@ object DiveLighting
         engine.scene.addSystem(system)
         gi = system
 
+        // TWO GI SURFACES RENDER AT FULL FRAMEBUFFER RESOLUTION WHILE EVERY INPUT THEY CONSUME
+        // IS AT HALF. That is pure upsampling: it costs full-res pixels and carries no
+        // information the half-res inputs did not already have.
+        //
+        // Neither is reachable through a GlobalIlluminationSystem property — onCreate builds
+        // them at scale 1.0 and no field exposes them. A direct setTextureScale STICKS, though,
+        // because onUpdate re-pushes only the seven scales it owns (light_exterior,
+        // light_interior, local_sdf, local_scene, global_sdf, global_scene, ao) and never
+        // touches these two. Verified against onUpdate's bytecode.
+        //
+        // gi_light_final hosts GiFinal, whose inputs are all half-scale.
+        // gi_normal_map additionally runs a 10-level CustomMipmapGenerator chain EVERY FRAME —
+        // one full-frame draw per level — so halving it halves the mip chain too. The cascade
+        // shader samples it at 0.5-scale probe centres regardless.
+        //
+        // Deferred, not immediate: SurfaceImpl.setTextureScale queues renderTarget.init through
+        // runOnInitFrame, executed at the top of the next frame.
+        engine.gfx.getSurface(GlobalIlluminationSystem.GI_LIGHT_FINAL)?.setTextureScale(0.5f)
+        engine.gfx.getSurface(GlobalIlluminationSystem.GI_NORMAL_MAP)?.setTextureScale(0.5f)
+
         // THE TONE MAPPER, AND IT IS THE DIAL THAT GOVERNS THE DEEP — not `contrast`, not `exposure`,
         // and not the ambient. Read `shaders/effects/color_grading.frag`'s six curves as x -> 0+:
         //
