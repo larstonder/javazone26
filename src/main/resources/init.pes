@@ -14,7 +14,9 @@
 // triggered the shipped world/HUD misalignment bug fixed in 6ea1f53 — the framebuffer resize
 // was the trigger. That bug is fixed, but a public screen-mode toggle has no business existing
 // on a cabinet whose screen mode is decided once, in application.cfg, and never again
-// (screenMode has no runtime setter — see application.cfg's own header). The deliberate way
+// (screenMode's runtime setter DOES exist — WindowImpl.updateScreenMode, named three lines above —
+// so the reason this binding stays gone is the BOOTH POLICY argument, not an absent mechanism; an
+// earlier version of this comment claimed the mechanism was missing and contradicted itself). The deliberate way
 // out is Esc, handled in RunLifecycle/EnPustTil, not a chord nobody documented.
 //
 // Deliberately not written out here in its `bind ...` form, not even inside a comment: the

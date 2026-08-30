@@ -212,9 +212,62 @@ These were each established empirically (several by decompiling `pulse-engine-0.
 - **`SpriteSheet`'s constructor takes `(…, format, maxMipLevels, hCells, vCells)`** — the argument order is *not* the field declaration order, which reads `horizontalCells, verticalCells` first. Passing `(…, cols, rows, 0)` sets `hCells = rows` and `vCells = 0`; the constructor accepts that combination without complaint and silently builds a zero-length `Texture[]` — the misconfiguration itself raises nothing. It only surfaces two stages later, as a thrown `ArrayIndexOutOfBoundsException` from `getTexture(0)` the first time a frame is drawn, by which point the call site that actually got it wrong is off the stack. Verified from bytecode: the 6th int is forwarded to `Texture.<init>`'s trailing `maxMipLevels`, and the synthetic defaults constructor defaults that slot to `5`, pairing with the `LINEAR_MIPMAP` filter default.
 - **`maxMipLevels = 0` allocates no texture storage at all.** `TextureArray` computes `mipLevels = min(maxMipLevels, floor(log2(size)) + 1)` with no `coerceAtLeast(1)` and hands it to `glTexStorage3D` as `levels`; `levels = 0` is `GL_INVALID_VALUE`, so nothing is allocated and every later `glTexSubImage3D` fails too — no exception, no log. `1` is the value that means "one level, no mips". `tools/build_spritesheet.py` prints the correct constructor call for exactly this reason.
 
+## Performance shape — measured 2026-08-30, read before touching rendering
+
+**The game is GPU-bound and the GPU is saturated.** At 100% device utilisation
+(`ioreg -r -d 1 -c AGXAccelerator`; an idle desktop reads 3-5%) even with the frame limiter
+removed. The game's own Kotlin — sim, camera, HUD, light submission — is **0.3 ms of the frame**,
+under 0.5%. Optimising Kotlin here buys nothing; removing GPU passes is the only lever.
+
+**Frame time fits roughly `13 ms + 10.5 ms per megapixel`.** The fixed term is REAL GPU WORK, not
+driver overhead: the jump-flood chains and the cascade levels are fixed-size passes that do not
+shrink when the window does. That is why pass COUNT matters as much as resolution.
+
+**Pass count matters more on this Mac than it would on the Windows booth machine.** Apple GPUs are
+tile-based deferred renderers: every render pass costs a tile-memory load at the start and a store
+at the end, so ~85 passes with large RGBA16F attachments means gigabytes per frame of tile traffic.
+A discrete desktop GPU with dedicated VRAM shrugs at many-small-passes; a TBDR is punished by it.
+GL 4.1 on macOS also has no compute shaders, so the whole GI solve runs as fragment passes over
+full-screen quads — a structural penalty of the deprecated API, not a slow chip.
+
+**FULLSCREEN IS THE CHEAP PATH, AND THE COMPARISON IS NOT WHAT IT LOOKS LIKE.** `screenMode =
+FULLSCREEN` obtains a REAL 1920x1200 exclusive video mode (verified: a `screencapture` of the
+fullscreen game came back as a 1920x1200 PNG with no macOS chrome). A windowed "1920x1200" is
+**logical points**, and under Retina scaling renders a substantially larger physical framebuffer.
+Measured gap: **~2.8x**, mostly resolution rather than compositor bypass. So **every windowed
+measurement overstates the real cost**, and a dev-window observation is a pessimistic one.
+
+**Measured state after the 2026-08-30 performance work** (`docs/superpowers/specs/2026-08-30-rendering-performance-design.md` §6):
+`targetFps` was 120 and **never once reached**; it is now 60 and **held solidly**, p95 sitting on
+the cap. Windowed 1920x1200 holds 60 fps in both the attract screen and at 140 m; fullscreen
+attract runs at ~226 fps uncapped. Fullscreen at 140 m was never measured.
+
+**Measuring it yourself:** `EPT_PROFILE=1` runs `render/FrameProbe.kt`, which prints
+`[FRAME] p50=... p95=... worst=...` once a second to stdout. Three traps:
+- **`./gradlew run` silently reverts a resolution edit.** It re-triggers `processResources`, which
+  restores `build/resources/main/application-dev.cfg` from source before the JVM launches. Use
+  `./gradlew run -x processResources`, and edit only the gitignored build output, never `src/`.
+- **Never measure under `EPT_DEV=1`** — the MetricViewer overlay is permanently visible in dev mode
+  and adds an always-on draw every frame.
+- **GL timer queries are dead on Apple Silicon.** `gpuProfiling = true` yields a well-formed
+  85-scope tree with `t=0ns` on every node, because `GpuTimeQuery` uses `GL33.glQueryCounter`, which
+  Apple's shim does not implement. The pass NAMES are still useful; the times do not exist. And
+  `data.gpuRenderTimeMs` is **CPU wall time** around `drawFrame` + `swapBuffers`, despite the name.
+
+**Two more engine facts worth knowing before adding code:**
+- **Game callbacks run on a separate `"game"` thread, not the GL/main thread.** `gameLoopMode`
+  defaults to `MULTITHREADED` and nothing here overrides it; `gfx.drawFrame` and `swapBuffers` run
+  on the main thread. A direct GLFW/GL call from `onUpdate`/`onRender` is therefore on the wrong
+  thread. `WindowImpl.initFrame` is the main-thread hook.
+- **Every boot logs 31 ERROR lines and all are benign** — two for
+  `pulseengine/shaders/error/error.comp` (a compute shader GL 4.1 on macOS does not have) and 29
+  `Config property ... not found` for the deliberately commented-out `dailySeed`, button-map and
+  `stickDeadzone` keys, whose fallbacks fire correctly on the next line. Worth stating precisely
+  because 31 ERRORs on a clean boot is exactly the noise that hides a real fault.
+
 ## Config and release
 
-`application.cfg` is the **booth default** and ships in the release `.exe`: fullscreen, no pinned window size (takes the display's native resolution), `logLevel = WARN`. `application-dev.cfg` is loaded automatically on top of it by the engine and restores windowed + DEBUG for local `./gradlew run`; it is excluded from the release by the `exclude("*-dev*")` line in `build.gradle.kts`. `screenMode` and window size **cannot** be changed at runtime — there's no setter that reaches the window after creation — which is why this split exists rather than an env var.
+`application.cfg` is the **booth default** and ships in the release `.exe`: fullscreen, no pinned window size (takes the display's native resolution), `logLevel = WARN`. `application-dev.cfg` is loaded automatically on top of it by the engine and restores windowed + DEBUG for local `./gradlew run`; it is excluded from the release by the `exclude("*-dev*")` line in `build.gradle.kts`. **`screenMode` CAN be changed at runtime, and window size can be too — this file said otherwise for months and was wrong.** `Window.updateScreenMode(ScreenMode)` is a public method on the `Window` *interface*: `WindowImpl.updateScreenMode` early-returns on no change, else queues a lambda through `runOnInitFrame` which calls `createWindow()` passing the PREVIOUS handle as GLFW's **share** parameter — so the new window inherits the old GL context's objects — then fires `resizeCallBack(w, h, windowRecreated = true)`, reaching `gfx.onWindowChanged`, which re-inits every surface and re-projects every camera. `init.pes` names this exact mechanism one paragraph before denying it exists. For window SIZE the old claim is *literally* true but misleading: there is genuinely no `glfwSetWindowSize` anywhere in the jar, but the window is created `GLFW_RESIZABLE`, the framebuffer-size callback is wired, and `SurfaceImpl.init` reallocates every render texture on resize — **dragging the window edge already works end to end today**, `CameraRig` included, and programmatic control is a ~10-line `WindowImpl` subclass (verified `open`, with an `open initFrame`). What IS startup-only is the INITIAL size and mode: `ConfigurationImpl.setWindowWidth/Height` have no effect after `WindowImpl.init` caches them, which is why this dev/booth config split still exists.
 
 **Day two at the booth:** uncomment and change `dailySeed` in `application.cfg` and restart. That regenerates the water column and, because every `ScoreEntry` stores the seed it was earned under, gives day two a fresh leaderboard while day one's board stays intact in `scoreboard.json`. **The value must be a whole number, `2147483647` (`Int.MAX_VALUE`) or below.** `ConfigurationImpl.loadConfigFile` type-coerces every property value before storing it (all-digits → `Integer`, digits-with-one-dot → `Float`, anything else → `String`) — this is not a formatting nicety, it is why the procedure above did not actually work until `EnPustTil.resolveDailySeed` existed: every real seed used here (`20260902`, `20260903`) is all-digits and was being stored as an `Integer`, while the code read it with `engine.config.getString`, which returns null for anything not literally stored as a `String` — so day two silently reused day one's seed and appended to day one's leaderboard, exactly the failure `parseDailySeed`'s fallback contract claims to guard against, arriving through a different door. `resolveDailySeed` now checks `getInt` first, which fixes the common case. Going ABOVE `2147483647` is a SEPARATE and much worse failure that nothing at the call site can fix, and is worth stating precisely rather than approximately — "ten digits or fewer" is ACTIONABLY WRONG (`2147483648` is ten digits and fails; `2147483647` is also ten digits and is fine), and was corrected here after being printed once already. `Integer.parseInt` throws while `application.cfg` is being parsed. That throw is SILENT — the engine calls `ConfigurationInternal.init()` for this file, which is `runCatching { loadConfigFile(...) }` with the `Result` stored to a local that is never read (verified from bytecode: nothing after the `astore`); the OTHER method that logs `"Failed to load configuration"` at ERROR, `ConfigurationImpl.load(path)`, is never the one the engine calls for `application.cfg`. And it is NOT the whole file that reverts to defaults — an earlier version of this paragraph claimed that and it was also wrong: `loadConfigFile` iterates `Properties.entrySet()`, a `Hashtable`, so which keys survive is HASH ORDER, not file order, and every entry already reached before the throw is already committed. Measured against the real shipping file with `dailySeed = 99999999999`: most of the file survives — the cabinet does not come up windowed, `screenMode`/`logLevel` are intact — but the loss set is HASH ORDER dependent and is emphatically NOT "just dailySeed": that exact measurement also lost `restartButtonAlt`, one of the four button-map keys, so "the whole button map survives" is not a safe thing to say either (an earlier version of this very paragraph said it, and was wrong — the two passages had disagreed with each other, which is worse than either being wrong alone). The authoritative measured example — the full survive/lose key list specifically, as opposed to the boundary and mechanism explained above, which ARE deliberately repeated here because a technician standing at the booth needs them in this paragraph — lives in `EnPustTil.resolveDailySeed`'s KDoc: read that KDoc if this paragraph and it ever look different again, rather than trusting whichever one you found first. Which keys are lost for any GIVEN bad value is unpredictable and changes if the key set changes, so no fixed list belongs in either place. `EnPustTil.configFileHealthWarning` is a cheap runtime check in the same spirit (compares `gameName` read back against the compiled constant, since it can never itself be the value that throws) but its detection is SPECULATIVE, not reliable: it did NOT fire for either scenario actually measured here — `dailySeed` and `targetFps` above the ceiling both left `gameName` intact — so its silence means only "gameName survived," never "the file loaded completely," and must not be read as the latter. It also has a false-positive path nobody had documented until now: editing or removing the `gameName` line itself fires it with nothing truncated at all — application.cfg now carries a one-line note beside that key saying not to touch it. Verified empirically against the real `ConfigurationImpl`, including the exact boundary (`2147483647` loads, `2147483648` throws), not reasoned from the decompiled loader alone — see `.superpowers/sdd/2026-08-21-booth-survival/task-6-7-report.md` for the harness and full output, and read the full report rather than only its first pass — this exact paragraph has been revised more than once as later measurements corrected earlier ones.
 
