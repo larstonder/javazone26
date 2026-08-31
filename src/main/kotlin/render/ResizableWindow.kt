@@ -96,10 +96,12 @@ class ResizableWindow : WindowImpl()
     fun requestSwapInterval(interval: Int) = pending.requestSwapInterval(interval)
 
     /**
-     * Drains any pending request BEFORE `super.initFrame`, so a resize this frame is reflected
-     * in the same frame's own `wasResized`/framebuffer-size-callback handling that the base
-     * class's `initFrame` (and the engine code that follows it this frame) relies on — applying
-     * it afterwards would leave this frame observing the window's PREVIOUS size.
+     * Runs `super.initFrame` FIRST, then drains this class's own pending-request queue — see
+     * the inline comment on the call below for the full reasoning. (FINDING I7, final review,
+     * 2026-08-30: this KDoc used to say the queue is drained BEFORE `super.initFrame`, which
+     * is the exact defect `95bd110` fixed — a stale doc presenting a reverted bug as the
+     * design, in a repo where the comments ARE the evidence. Corrected here rather than left
+     * to disagree with the inline comment two lines below it.)
      */
     override fun initFrame(engineInternal: PulseEngineInternal)
     {

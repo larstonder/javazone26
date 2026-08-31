@@ -40,14 +40,27 @@ class MenuLayoutTest
     }
 
     @Test
-    fun `the value column sits clear of the label column at every aspect ratio`() {
-        // Aspect matters because both columns are placed as height fractions either side of the
-        // screen centre; at 4:3 the screen is narrowest in height-relative terms and is where
-        // they would collide first.
+    fun `the value column sits clear of the label column, and both stay on screen, at every aspect ratio`() {
+        // MINOR fix (final review, 2026-08-30): the old version of this test computed
+        // `0.5 - GAP/aspect < 0.5 + GAP/aspect` directly instead of calling
+        // MenuLayout.labelX/valueX - that inequality is true for ANY positive GAP regardless
+        // of aspect, so the five-aspect loop was inert and the real functions were never
+        // invoked at all. A sign flip in either (label using `+`, value using `-`) would have
+        // shipped invisibly. This version calls the REAL functions with centreX/h computed the
+        // same way drawMainMenu does (`centreX = w * 0.5f`), so aspect enters the way it
+        // actually does at the call site - through centreX, not through COLUMN_GAP - and also
+        // checks the columns stay on screen, not merely clear of each other.
+        val h = 1200f
         for (aspect in listOf(4f / 3f, 16f / 10f, 16f / 9f, 2.389f, 32f / 9f)) {
-            val labelRight = 0.5f - MenuLayout.COLUMN_GAP / aspect
-            val valueLeft = 0.5f + MenuLayout.COLUMN_GAP / aspect
+            val w = h * aspect
+            val centreX = w * 0.5f
+            val labelRight = MenuLayout.labelX(centreX, h)
+            val valueLeft = MenuLayout.valueX(centreX, h)
+            assertTrue(labelRight < centreX, "label column did not land left of centre at aspect $aspect")
+            assertTrue(valueLeft > centreX, "value column did not land right of centre at aspect $aspect")
             assertTrue(labelRight < valueLeft, "columns collide at aspect $aspect")
+            assertTrue(labelRight > 0f, "label column ran off the left edge at aspect $aspect")
+            assertTrue(valueLeft < w, "value column ran off the right edge at aspect $aspect")
         }
     }
 

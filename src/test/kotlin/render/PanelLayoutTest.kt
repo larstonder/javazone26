@@ -422,10 +422,30 @@ class PanelLayoutTest
         // and in panel-report.md): the pause screen already draws a full-screen scrim at
         // PauseLayout.SCRIM_ALPHA before the panel goes on top of it, and the two must not
         // compose to near-opacity - that would destroy the "run is held, not thrown away"
-        // reading the scrim exists to give. Standard alpha-over-alpha compositing for two
-        // layers of the same (black) colour: combined = 1 - (1-a1)*(1-a2).
-        val composed = 1f - (1f - PauseLayout.SCRIM_ALPHA) * (1f - PanelLayout.ALPHA)
+        // reading the scrim exists to give.
+        //
+        // FINDING I8 (final review, 2026-08-31): this used to compute
+        // `1 - (1-a1)*(1-a2)` (0.846) - standard source-over compositing on DISPLAYED
+        // alphas, and a test that CANNOT fail from the real bug the arithmetic was meant to
+        // catch, because it pins the wrong blend model rather than the surface's actual one.
+        // The HUD surface SQUARES alpha (Hud.authoredAlphaFor's own doc, measured: a single
+        // draw at authored alpha `a` onto a blank surface stores `a^2`), so re-derived from
+        // that same measurement for two stacked draws - `new = src^2 + dst*(1-src)`, where
+        // `src` is the RAW (sqrt) value passed to setDrawColor, not the displayed one:
+        val panelSrc = kotlin.math.sqrt(PanelLayout.ALPHA)
+        val composed = PanelLayout.ALPHA + PauseLayout.SCRIM_ALPHA * (1f - panelSrc)
         assertTrue(composed < 0.95f, "composed pause alpha $composed reads as opaque, not held")
-        assertTrue(composed > PauseLayout.SCRIM_ALPHA, "the panel should darken the pause screen further, not lighten it")
+
+        // NOT `composed > PauseLayout.SCRIM_ALPHA`, which the old (wrong-model) version of
+        // this test asserted: under the real squared-alpha blend, a LIGHTER panel (0.45)
+        // drawn over a HEAVIER scrim (0.72) actually composes to marginally BELOW the
+        // scrim's own alpha (~0.687 < 0.72) - a real, measured property of this blend, not
+        // a regression. Bounded generously rather than re-pinned exactly, so a future change
+        // to either alpha does not need this comment re-derived by hand; the reviewer's own
+        // ruling (Finding I8) is that this is harmless regardless, since the panel's bounds
+        // sit entirely inside the area the plain scrim already covers - see this class's own
+        // doc for the diver/pearls/clock that stay untouched by it.
+        assertTrue(composed > PauseLayout.SCRIM_ALPHA * 0.9f,
+            "composed pause alpha $composed is unexpectedly far below the scrim alone - re-check the blend model")
     }
 }

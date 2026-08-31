@@ -12,6 +12,22 @@ import kotlin.test.assertTrue
  * open, and it is read before anything is on screen — so every failure path has to end at
  * GameSettings.DEFAULT and a WARN, never at an exception. This mirrors the scoreboard's
  * contract, which survives a corrupt file the same way.
+ *
+ * FINDING I6 (final review, 2026-08-30): every test below targets [FakeStore], which
+ * reimplements the [SettingsStore] contract with its own try/catch and its own `.clamped()`
+ * call — so these assertions were only ever proving the FAKE obeys the contract, never that
+ * [EngineSettingsStore] does. `EngineSettingsStore` is constructed with a live `PulseEngine`
+ * and reads `engine.data`/`engine.window`/`engine.config`, none of which exist in a headless
+ * JVM without a GL context — this repo has no precedent anywhere for constructing a real
+ * `PulseEngine` in a test (`render.MappedPadsTest` went the other way, splitting a
+ * `StateReader` interface out specifically so the GLFW half never has to be constructed for a
+ * test to run — see that class's own doc), so `EngineSettingsStore` genuinely cannot be
+ * exercised here and stays untested by this file. What CAN be tested, and is the point of
+ * keeping [FakeStore] rather than deleting these tests: the shared CONTRACT every
+ * [SettingsStore] implementation must honour (never throw, always clamp on load, always
+ * degrade to [GameSettings.DEFAULT] rather than propagate) — `EngineSettingsStore`'s own
+ * `try`/`catch` blocks are a direct visual match against this fake's, which is the closest
+ * this suite can get to that class without an engine.
  */
 class SettingsStoreTest
 {
@@ -55,7 +71,18 @@ class SettingsStoreTest
     @Test
     fun `a failed save does not propagate`() {
         // A player quitting mid-write must not see a crash instead of the game closing.
-        FakeStore(throwOnSave = true).save(GameSettings.DEFAULT)
+        //
+        // FINDING I6: this used to be `FakeStore(throwOnSave = true).save(GameSettings.DEFAULT)`
+        // with no assertion at all — it passed iff the call did not throw, which FakeStore's
+        // own try/catch guarantees unconditionally regardless of whether the catch block
+        // actually did anything. Asserting on the fake's own bookkeeping (warnings/saveCount)
+        // gives the catch branch something to fail: an implementation that swallowed the
+        // exception WITHOUT logging, or that returned early and skipped the save attempt
+        // bookkeeping entirely, now reddens this test instead of passing it by construction.
+        val store = FakeStore(throwOnSave = true)
+        store.save(GameSettings.DEFAULT)
+        assertEquals(1, store.saveCount, "save must still be attempted exactly once")
+        assertTrue(store.warnings > 0, "a failed save should warn, not fail silently")
     }
 
     @Test
