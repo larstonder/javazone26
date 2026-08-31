@@ -4,8 +4,8 @@ import booth.CallbackSites
 import dive.DiveInput
 import dive.DiveSim
 import dive.Tuning
-import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.PulseEngineGame
+import no.njoh.pulseengine.core.PulseEngineImpl
 import no.njoh.pulseengine.core.asset.types.Font
 import no.njoh.pulseengine.core.graphics.api.Multisampling
 import no.njoh.pulseengine.core.graphics.surface.Surface
@@ -31,11 +31,14 @@ import render.DiveRenderer
 import render.DiverSprite
 import render.FrameProbe
 import render.GlfwGamepadStateReader
+import render.GraphicsApplier
+import render.GraphicsQuality
 import render.Hud
 import render.IridescenceRenderer
 import render.LifecycleInputEdges
 import render.LightEmitter
 import render.MappedPads
+import render.MenuAction
 import render.MenuItemId
 import render.MenuLayout
 import render.MenuModel
@@ -46,6 +49,7 @@ import render.OpaqueWaterEffect
 import render.OxygenSprite
 import render.PadAxis
 import render.PearlNormalMap
+import render.ResizableWindow
 import render.RockFace
 import render.RunLifecycle
 import render.RunLifecycleState
@@ -58,7 +62,9 @@ import render.drawTextWithOutline
 import render.fillRect
 import render.selectGameplayPad
 import score.ScoreRepository
+import settings.EngineSettingsStore
 import settings.GameSettings
+import settings.SettingsStore
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
@@ -77,7 +83,17 @@ fun main()
     )
     println(if (log != null) "Booth log: ${log.absolutePath}" else "Booth log: unavailable (continuing without one)")
 
-    PulseEngine.run<EnPustTil>()
+    // Explicit construction, replacing the inline `PulseEngine.run<EnPustTil>()` helper —
+    // `PulseEngine.Companion.run` is an inline reified function that does exactly this
+    // construct-then-run with every dependency defaulted, and going explicit is the only way
+    // to hand it a custom `Window`. `ResizableWindow` adds the programmatic resize/vsync hook
+    // the GRAPHICS page's RESOLUTION row needs (see its class doc for why the engine jar has
+    // no `glfwSetWindowSize` call of its own). Confirmed safe against the 0.13.0 jar before
+    // writing this: `WindowImpl` is a non-final class with a non-final `initFrame`, and
+    // `PulseEngineImpl`'s primary constructor has every parameter defaulted (verified via
+    // `javap` — see ResizableWindow's class doc for the exact commands and output), so naming
+    // only `window` here and leaving every other dependency at its engine default is valid.
+    PulseEngineImpl(window = ResizableWindow()).run(EnPustTil())
 }
 
 /** Must match `gameName` in application.cfg — see [main] for why it cannot be read from there. */
@@ -98,6 +114,69 @@ const val GAME_NAME = "EnPustTil"
  * day one's seed instead).
  */
 fun parseDailySeed(raw: String?, fallback: Long): Long = raw?.toLongOrNull() ?: fallback
+
+/**
+ * The GRAPHICS page's cycler logic: one [MenuAction.SettingChanged] step -> a new
+ * [GameSettings]. Pure and engine-free, tested without a booted engine (see
+ * `EnPustTilMenuSettingsTest`), the same pure-logic-extracted-for-testing pattern as
+ * [parseDailySeed] just above.
+ *
+ * EVERY LADDER STEPS ([MenuItemId.QUALITY]/[RESOLUTION]/[RENDER_SCALE]/[FRAME_CAP]) BY INDEX
+ * INTO THE SAME CANONICAL LIST [GameSettings.clamped] ALREADY CLAMPS AGAINST — never by
+ * arithmetic on the raw value — so a step can never land off the ladder in the first place;
+ * [GameSettings.clamped] (still called by the caller after this) is a second, defence-in-
+ * depth guard, not the only one. `coerceIn(0, list.lastIndex)` CLAMPS the index rather than
+ * wrapping it: the design spec is explicit that value cyclers clamp (`docs/superpowers/specs/
+ * 2026-08-30-main-menu-and-graphics-options-design.md`, "Value cyclers **clamp** rather than
+ * wrap, so holding right cannot silently take RESOLUTION from the largest value back to the
+ * smallest") — unlike [MenuModel]'s own row selection, which DOES wrap (an arcade convention
+ * `score.InitialsEntry` already uses for A-Z).
+ *
+ * [MenuItemId.FULLSCREEN]/[VSYNC]/[SHOW_FPS] are booleans, not ladders — every delta (+1 or
+ * -1 alike) just flips the flag, since a two-value cycler has nothing else to step through in
+ * either direction. [MenuItemId.BACK] and every ROOT-page item never reach here (see
+ * `MenuModel.VALUE_ITEMS`; only value rows ever produce [MenuAction.SettingChanged]) and fall
+ * through to [current] unchanged, defensively rather than by an assumed-unreachable branch.
+ *
+ * `.indexOf(...)` returning -1 (a value that is not ITSELF one of the canonical list's
+ * entries — the shape a hand-edited or cross-build settings.json can arrive in) falls back to
+ * the index of [GameSettings.DEFAULT]'s own value for that field, so a step from an already-
+ * invalid setting lands somewhere on the ladder instead of stepping from -1 and clamping to
+ * index 0 (the smallest option) regardless of which direction the player pressed.
+ */
+fun stepGameSettings(current: GameSettings, item: MenuItemId, delta: Int): GameSettings = when (item)
+{
+    MenuItemId.QUALITY ->
+    {
+        val names = GraphicsQuality.entries.map { it.name }
+        val fromIndex = names.indexOf(current.quality).let { if (it < 0) names.indexOf(GameSettings.DEFAULT.quality) else it }
+        current.copy(quality = names[(fromIndex + delta).coerceIn(0, names.lastIndex)])
+    }
+    MenuItemId.RESOLUTION ->
+    {
+        val resolutions = GameSettings.RESOLUTIONS
+        val fromIndex = resolutions.indexOf(current.windowWidth to current.windowHeight)
+            .let { if (it < 0) resolutions.indexOf(GameSettings.DEFAULT.windowWidth to GameSettings.DEFAULT.windowHeight) else it }
+        val (w, h) = resolutions[(fromIndex + delta).coerceIn(0, resolutions.lastIndex)]
+        current.copy(windowWidth = w, windowHeight = h)
+    }
+    MenuItemId.RENDER_SCALE ->
+    {
+        val scales = GameSettings.RENDER_SCALES
+        val fromIndex = scales.indexOf(current.renderScale).let { if (it < 0) scales.indexOf(GameSettings.DEFAULT.renderScale) else it }
+        current.copy(renderScale = scales[(fromIndex + delta).coerceIn(0, scales.lastIndex)])
+    }
+    MenuItemId.FRAME_CAP ->
+    {
+        val caps = GameSettings.FRAME_CAPS
+        val fromIndex = caps.indexOf(current.frameCap).let { if (it < 0) caps.indexOf(GameSettings.DEFAULT.frameCap) else it }
+        current.copy(frameCap = caps[(fromIndex + delta).coerceIn(0, caps.lastIndex)])
+    }
+    MenuItemId.FULLSCREEN -> current.copy(fullscreen = !current.fullscreen)
+    MenuItemId.VSYNC -> current.copy(vsync = !current.vsync)
+    MenuItemId.SHOW_FPS -> current.copy(showFps = !current.showFps)
+    else -> current
+}
 
 /**
  * Resolves "dailySeed" across every shape `ConfigurationImpl`'s own loader can store ONE
@@ -1166,6 +1245,31 @@ class EnPustTil : PulseEngineGame()
     // order and the durability guarantees actually achieved.
     private lateinit var scoreRepository: ScoreRepository
 
+    /**
+     * The graphics-options settings persistence, built in [onCreate] once `engine` exists
+     * (`EngineSettingsStore` wraps `engine.data`). Not constructible earlier — there is no
+     * `engine` before `onCreate` runs — so this is `lateinit` rather than defaulted, the same
+     * shape as [scoreRepository] just above.
+     */
+    private lateinit var settingsStore: SettingsStore
+
+    /**
+     * The one place graphics/window state is pushed onto the running engine — see
+     * [render.GraphicsApplier]'s class doc for the four traps it exists to absorb. Built in
+     * [onCreate] for the same reason as [settingsStore]: it wraps `engine`.
+     */
+    private lateinit var graphicsApplier: GraphicsApplier
+
+    /**
+     * The registered [FrameProbe], or null if neither [PROFILE_ENV] nor a `showFps` setting
+     * has ever asked for one this process. A field, not a local, for two reasons: [renderGame]
+     * reads [FrameProbe.currentP50Ms] off it every frame the readout is on screen, and
+     * [updateMainMenu] checks it for null to decide whether toggling SHOW_FPS on needs to
+     * register a fresh one (see that call site's doc on why a service added after [onCreate]
+     * must be started explicitly rather than relying on the engine's own hook).
+     */
+    private var frameProbe: FrameProbe? = null
+
     // The seed driving both today's water column ([DiveSim]) and which leaderboard rows
     // count as "today's" (ScoreRepository.topN filters entries by seed — see
     // drawLeaderboard). Resolved in onCreate from application.cfg's "dailySeed" key
@@ -1283,19 +1387,43 @@ class EnPustTil : PulseEngineGame()
 
     /**
      * Pure navigation state for the main menu (see [render.MenuModel]'s class doc for why it is
-     * edge-triggered and engine-free). NOT YET WIRED TO INPUT — that is a later task's job. Until
-     * then this sits at [MenuPage.ROOT], row 0, for the whole process, so [drawMainMenu] always
-     * draws the menu's resting state. Kept as a field rather than a local so the *next* task
-     * only has to add an `update(...)` call rather than also inventing where the model lives.
+     * edge-triggered and engine-free). Driven from [updateMainMenu], called from [updateGame]
+     * only while `lifecycle.state == MAIN_MENU` — see that call site's own comment. Kept as a
+     * field, not a local, because it must persist across frames the menu is on screen (its
+     * `was*` edge-tracking fields are exactly [render.MenuModel]'s equivalent of
+     * `InitialsEntry`'s) and, unlike most per-frame state in this file, must ALSO survive every
+     * frame the menu is NOT on screen — a player's cursor position/page inside GRAPHICS must
+     * still be there if they reopen it without a restart in between. [wasInMainMenu] is what
+     * decides when THAT persistence should instead be thrown away — see its own doc.
      */
     private val menuModel = MenuModel()
 
     /**
-     * The player's graphics/window settings (see [settings.GameSettings]). NOT YET loaded from
-     * `~/EnPustTil/settings.json` or applied to the running engine — that is `SettingsStore`'s
-     * and `GraphicsApplier`'s wiring, a later task. Until then this stays at the compiled
-     * [GameSettings.DEFAULT] and is never written to, so the GRAPHICS page always shows the
-     * shipped defaults. [drawMainMenu] reads it only to compose each row's value string.
+     * Whether [lifecycle] was in MAIN_MENU on the PREVIOUS frame — the one piece of state
+     * [updateGame] needs to detect "the menu was just (re)entered" and, on exactly that frame,
+     * call [MenuModel.reset]. Without this, a player who opens GRAPHICS, wanders down to FRAME
+     * CAP, and then WALKS AWAY (letting `MENU_IDLE_TIMEOUT_SECONDS` fall back to IDLE without
+     * ever pressing BACK — see `RunLifecycle`'s MAIN_MENU branch, which does exactly this) would
+     * find the very next visitor's menu parked on the GRAPHICS page at the FRAME CAP row
+     * instead of ROOT, row 0 — a stale selection from a completely different person's visit.
+     * `RunLifecycle` has no "just entered MAIN_MENU" flag of its own (only `justReturnedToIdle`,
+     * `justStarted` and `justEnteredBriefing`, none of which fire on entering MAIN_MENU), so
+     * this is tracked locally rather than added there — MAIN_MENU is reached from three
+     * different RunLifecycle transitions (`IDLE`'s press, `RUN_OVER`'s/`ENTER_INITIALS`'
+     * `returnToMenu()`) and a flag catching all three belongs with the one class that actually
+     * needs it.
+     */
+    private var wasInMainMenu = false
+
+    /**
+     * The player's graphics/window settings (see [settings.GameSettings]). Defaulted here so
+     * every field is non-null before [onCreate] runs; [onCreate] immediately overwrites it with
+     * whatever [settingsStore] loads from `~/EnPustTil/settings.json` (falling back to this same
+     * [GameSettings.DEFAULT] on a missing/corrupt file — see [settings.SettingsStore.load]).
+     * Mutated thereafter only from [updateMainMenu]'s `SettingChanged` handling, which also
+     * pushes each change onto the running engine via [graphicsApplier]. [drawMainMenu] reads it
+     * only indirectly, through the seven cached strings [rebuildMenuValueHints] composes from it
+     * — see that function's own doc for why the draw call never formats a number itself.
      */
     private var gameSettings: GameSettings = GameSettings.DEFAULT
 
@@ -1502,6 +1630,20 @@ class EnPustTil : PulseEngineGame()
             zOrder = HUD_Z_ORDER
         )
 
+        // SETTINGS LOADED HERE, APPLIED MUCH LATER — the LOAD and the APPLY are split on
+        // purpose, and only the load happens this early. `EngineSettingsStore.load` depends
+        // on nothing but `engine.data`/`engine.config.saveDirectory`, both already live before
+        // `onCreate` ever runs, so there is no reason to wait. `graphicsApplier.apply`, by
+        // contrast, writes to the GI system `DiveLighting.setup` has not captured yet and to
+        // `mainSurface`'s texture scale — see the call further down, right after that setup
+        // call, for why THAT half has to wait. `gameSettings` is read here, this early,
+        // specifically so [PROFILE_ENV]'s FrameProbe gate a little further down can also
+        // register the probe when a player's SAVED `showFps` choice asks for it, not only
+        // under the env var (Task 8) — the env var and the setting are two independent ways
+        // to turn the same instrument on.
+        settingsStore = EngineSettingsStore(engine)
+        gameSettings = settingsStore.load()
+
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
         // application.cfg (loaded by the engine before onCreate runs — see dailySeed's
         // doc) is the only source for a technician's day-two override. See
@@ -1654,8 +1796,19 @@ class EnPustTil : PulseEngineGame()
 
         // Frame-time probe, gated separately from EPT_DEV so it can be run against a release
         // build without turning on DEBUG logging (which is itself a measurable cost).
-        if (System.getenv(PROFILE_ENV) != null)
-            engine.service.add(FrameProbe())
+        //
+        // TWO INDEPENDENT WAYS TO TURN THIS ON, as of Task 8: the env var (unchanged — a
+        // release-build profiling run with no on-screen readout) OR the player's own SAVED
+        // `showFps` choice (the GRAPHICS page's readout, drawn in renderGame). Registered
+        // AT MOST ONCE regardless of how many of the two ask for it — `Service` has no
+        // built-in guard against being added twice, and two FrameProbes would each sample
+        // `engine.data.totalFrameTimeMs` and print/update independently, which is confusing
+        // rather than merely wasteful. `frameProbe` is held as a field (not a local) so
+        // renderGame can read `currentP50Ms` off the SAME instance this registered — a
+        // second `FrameProbe()` constructed later for that purpose would read a rolling
+        // figure of its own that never agrees with what actually got registered.
+        if (System.getenv(PROFILE_ENV) != null || gameSettings.showFps)
+            frameProbe = FrameProbe().also { engine.service.add(it) }
 
         // The engine's scene editor (EPT_EDITOR=1). Registered from here because nothing in
         // the engine ever constructs SceneEditor — verified by scanning every class in
@@ -1828,6 +1981,37 @@ class EnPustTil : PulseEngineGame()
         PearlNormalMap.load(engine)
 
         DiveLighting.setup(engine)
+
+        // THE APPLY HALF OF SETTINGS STARTUP — see the load, much further up (right after the
+        // "hud" surface is created), for why the two are split. This half runs here and only
+        // here: after DiveLighting.setup has captured the GlobalIlluminationSystem
+        // (DiveLighting.giSystem() below reads it) and after every surface
+        // graphicsApplier.apply touches ("hud" above, mainSurface via engine.gfx already built
+        // by the engine before onCreate) exists. Earlier would apply against a GI system that
+        // is not there yet; later would mean at least one frame renders with the compiled
+        // GameSettings.DEFAULT rather than what the player actually chose last time.
+        //
+        // TAKING THE SIMPLER OF THE SPEC'S TWO STARTUP PATHS (task-7-brief.md's own
+        // instruction): the window opens at application.cfg's size — the booth default — and
+        // the saved size, if different, is requested through the SAME pending-resize hook the
+        // GRAPHICS page's RESOLUTION row uses at runtime, rather than a second
+        // `UserConfig : ConfigurationImpl` path that intercepts the window's OWN creation size.
+        // One code path costs a resize on the first frame or two if the last session's window
+        // size differs from application.cfg's; the `UserConfig` route was ruled out precisely
+        // to avoid maintaining that second path for a cost this small. `engine.window` really
+        // is the `ResizableWindow` `main()` constructed (see that function's doc) — the `as?`
+        // is defensive rather than expected to ever miss, so a future test harness that boots
+        // this class against a stub `Window` degrades to "no programmatic resize" instead of a
+        // `ClassCastException` taking the whole boot down.
+        graphicsApplier = GraphicsApplier(engine)
+        graphicsApplier.apply(gameSettings, DiveLighting.giSystem())
+        (engine.window as? ResizableWindow)?.requestSize(gameSettings.windowWidth, gameSettings.windowHeight)
+        // gameSettings has held the LOADED value (not the compiled DEFAULT the first
+        // rebuildMenuValueHints call a few dozen lines above ran against — see that call's
+        // own comment) since the load a few dozen lines up; rebuild now so the GRAPHICS
+        // page's seven cached strings reflect what was actually loaded, the first time a
+        // player opens it.
+        rebuildMenuValueHints()
 
         // THE GAME'S OWN SHADER, on both surfaces — one program, two coordinate spaces.
         //
@@ -2257,6 +2441,18 @@ class EnPustTil : PulseEngineGame()
         }
         val exitHeld = engine.input.isPressed(Key.Q) || padExitHeld
 
+        // THE MENU'S OWN NAVIGATION, DRIVEN ONLY WHILE MAIN_MENU IS ACTUALLY ON SCREEN. Gating
+        // here means updateMainMenu's pad walk is skipped entirely on every other screen, which
+        // is most of the game's runtime; updateMainMenu itself does not re-check the state.
+        val inMainMenuNow = lifecycle.state == RunLifecycleState.MAIN_MENU
+        // FRESHLY (RE)ENTERED, NOT MERELY OPEN — see wasInMainMenu's own doc for the stale-
+        // selection bug this prevents. Checked BEFORE updateMainMenu runs, so the very first
+        // frame back on MAIN_MENU already reads a clean ROOT/row-0 model rather than resetting
+        // one frame late.
+        if (inMainMenuNow && !wasInMainMenu) menuModel.reset()
+        wasInMainMenu = inMainMenuNow
+        val menuStartDive = if (inMainMenuNow) updateMainMenu() else false
+
         lifecycle.update(
             dt = engine.data.deltaTime,
             anyInputPressed = actionPressed,
@@ -2266,7 +2462,8 @@ class EnPustTil : PulseEngineGame()
             cycleDown = cycleDown,
             confirmPressed = actionPressed,
             pausePressed = pausePressed,
-            exitHeld = exitHeld
+            exitHeld = exitHeld,
+            menuAction = menuStartDive
         )
 
         // The deliberate way out of the cabinet, replacing the accidental one that the
@@ -2390,6 +2587,15 @@ class EnPustTil : PulseEngineGame()
         // is a reason not to PANIC about a leak, not a reason to write one. See
         // MappedPads.close for why it is idempotent and why every read after it is inert.
         mappedPads.close()
+
+        // The FINAL debounced settings write — see updateMainMenu's MenuAction.Back branch
+        // for the other one. Guarded on ::settingsStore.isInitialized rather than assumed set:
+        // it is constructed late in createGame (after DiveLighting.setup — see that call
+        // site's comment), so a createGame failure early enough (EPT_FAIL_BOOT, an asset
+        // queue throwing before that point) can reach destroyGame with it never having been
+        // built at all, the same lateinit hazard worldUnusable already guards sim/
+        // scoreRepository against.
+        if (::settingsStore.isInitialized) settingsStore.save(gameSettings)
 
         Logger.info { "Én Pust Til shutting down cleanly" }
     }
@@ -3400,6 +3606,135 @@ class EnPustTil : PulseEngineGame()
         val up = padUp || engine.input.isPressed(Key.UP)
         val down = padDown || engine.input.isPressed(Key.DOWN)
         return up to down
+    }
+
+    /**
+     * Drives [menuModel] for one frame and acts on whatever [MenuAction] it returns. Called
+     * from [updateGame] only while [lifecycle]'s state is MAIN_MENU — that gate lives at the
+     * call site (see the comment there), and this function does not re-check it: unlike
+     * [readInitialsCycle], which RunLifecycle harmlessly ignores outside ENTER_INITIALS, an
+     * unwanted [MenuModel] update here has a real side effect (it moves the cursor / mutates
+     * [gameSettings]) that must not happen while some other screen is on top.
+     *
+     * STEERING THROUGH [PadAxis], READING THROUGH [mappedPads] — never `pad.isPressed` (see
+     * that field's own doc; `MappedPadsSourceScanTest` fails the build on a direct read).
+     * SCANS EVERY CONNECTED PAD, exactly as [readInitialsCycle] just above and the lifecycle
+     * edges further up this function do, and for the identical reason: index 0 is not
+     * guaranteed to be the player's pad (`anyLifecycleActionPressed`'s doc).
+     *
+     * CONFIRM reads [restartButton]/[restartButtonAlt] — the SAME button [hintPressStart]
+     * already advertises everywhere else in the game as "PRESS <button>", so [hintMenuLegend]
+     * is not a promise this function breaks. BACK reads [pauseButtonAlt] — the button
+     * [hintMenuResume] advertises as "<button> to go back". Keyboard SPACE/ESCAPE are OR-ed
+     * in alongside each, matching [lifecycleEdges]'/[pauseEdges]'s own keyboard sources.
+     *
+     * Up/down/left/right are OR-ed the same way [readInitialsCycle] ORs its own two
+     * directions across pads: [MenuModel] has no per-device precedence to protect (there is
+     * no proportional value here the way a half-deflected stick is one for [DiveInput]), so
+     * "any live source says up" is the whole rule, matching the initials screen rather than
+     * [readInput]'s first-source-wins.
+     *
+     * @return true on exactly the frame [MenuModel.update] returns [MenuAction.StartDive] —
+     *   the caller feeds that straight into `lifecycle.update`'s `menuAction` parameter, which
+     *   does its OWN edge detection (see that parameter's doc), so a raw per-frame level here
+     *   is correct and no local edge tracking is needed.
+     */
+    private fun updateMainMenu(): Boolean
+    {
+        var padUp = false
+        var padDown = false
+        var padLeft = false
+        var padRight = false
+        var padConfirm = false
+        var padBack = false
+        val pads = engine.input.gamepads
+        for (i in pads.indices)
+        {
+            val pad = pads[i]
+            val vertical = PadAxis.resolve(
+                analog = mappedPads.getAxis(pad.id, GamepadAxis.LEFT_Y).deadzone(),
+                negativePressed = mappedPads.isPressed(pad.id, GamepadButton.DPAD_UP),
+                positivePressed = mappedPads.isPressed(pad.id, GamepadButton.DPAD_DOWN),
+                keyboard = 0f
+            )
+            val horizontal = PadAxis.resolve(
+                analog = mappedPads.getAxis(pad.id, GamepadAxis.LEFT_X).deadzone(),
+                negativePressed = mappedPads.isPressed(pad.id, GamepadButton.DPAD_LEFT),
+                positivePressed = mappedPads.isPressed(pad.id, GamepadButton.DPAD_RIGHT),
+                keyboard = 0f
+            )
+            if (vertical < 0f) padUp = true
+            if (vertical > 0f) padDown = true
+            if (horizontal < 0f) padLeft = true
+            if (horizontal > 0f) padRight = true
+            if (mappedPads.isPressed(pad.id, restartButton) || mappedPads.isPressed(pad.id, restartButtonAlt)) padConfirm = true
+            if (mappedPads.isPressed(pad.id, pauseButtonAlt)) padBack = true
+        }
+
+        val up = padUp || engine.input.isPressed(Key.UP)
+        val down = padDown || engine.input.isPressed(Key.DOWN)
+        val left = padLeft || engine.input.isPressed(Key.LEFT)
+        val right = padRight || engine.input.isPressed(Key.RIGHT)
+        val confirm = padConfirm || engine.input.isPressed(Key.SPACE)
+        val back = padBack || engine.input.isPressed(Key.ESCAPE)
+
+        when (val action = menuModel.update(up, down, left, right, confirm, back))
+        {
+            is MenuAction.SettingChanged ->
+            {
+                gameSettings = stepGameSettings(gameSettings, action.item, action.delta).clamped()
+                graphicsApplier.apply(gameSettings, DiveLighting.giSystem())
+                // RESOLUTION is the one setting GraphicsApplier does not touch at all — it
+                // writes render scale, quality, screen mode and vsync, but never a window
+                // SIZE (see its class doc; that call does not exist on Graphics/Window).
+                // ResizableWindow.requestSize is what actually moves the window, and only
+                // for this one row.
+                if (action.item == MenuItemId.RESOLUTION)
+                    (engine.window as? ResizableWindow)?.requestSize(gameSettings.windowWidth, gameSettings.windowHeight)
+                // SHOW_FPS TURNED ON MID-SESSION, WITH NO PROBE YET RUNNING — the boot-time
+                // registration a few dozen lines up in createGame only sees the SAVED value
+                // from before this run started, so a player switching this on for the first
+                // time needs a probe started here too, or the readout would draw at 0 forever.
+                //
+                // `.also { it.start() }` MIRRORS THE ESTABLISHED MetricViewer PRECEDENT in
+                // this same file's createGame (`engine.service.add(MetricViewer().also {
+                // it.start() })`) rather than relying on `FrameProbe.onCreate` firing —
+                // `ServiceManagerImpl.onCreate` is only ever invoked once, from
+                // `postGameInit`, right after THIS game's own `onCreate` (see FrameProbe's
+                // own class doc), so a `Service` added any later never receives that
+                // callback and would stay `isRunning = false` forever without the explicit
+                // call. It is safe to add here regardless: verified from the 0.13.0
+                // bytecode that `ServiceManagerImpl.update`/`render` read the SAME live
+                // `services` list every call (`aload_0; getfield services; ... List.get`) —
+                // nothing is snapshotted at init — so a service appended mid-session and
+                // started manually is picked up on the very next frame exactly as one added
+                // during onCreate would be.
+                if (action.item == MenuItemId.SHOW_FPS && gameSettings.showFps && frameProbe == null)
+                    frameProbe = FrameProbe().also { engine.service.add(it); it.start() }
+                rebuildMenuValueHints()
+            }
+            MenuAction.Back ->
+                // DEBOUNCED SAVE. MenuModel.update returns Back exactly when it actually
+                // leaves the GRAPHICS page — both the BACK row's confirm and the back button
+                // itself route through the identical branch in MenuModel (see its class doc)
+                // — never on every SettingChanged step, so holding right on FRAME CAP cannot
+                // produce a burst of file writes. onDestroy is the other, final write.
+                settingsStore.save(gameSettings)
+            MenuAction.Quit ->
+                // Clean shutdown, not exitProcess — see the identical call a few lines below
+                // for QUIT's own doc on why: service.destroy runs, so ScoreRepository.onDestroy
+                // still saves, and destroyGame's own settingsStore.save below still fires too.
+                engine.window.close()
+            MenuAction.ShowLeaderboard ->
+                // RunLifecycle owns MAIN_MENU/IDLE, MenuModel does not know either state
+                // exists — see RunLifecycle.viewLeaderboard's own doc for why this is a
+                // direct call rather than a case RunLifecycle interprets from MenuAction.
+                lifecycle.viewLeaderboard()
+            MenuAction.StartDive ->
+                return true
+            MenuAction.None -> {}
+        }
+        return false
     }
 
     private fun axis(negative: Key, positive: Key) = when

@@ -501,6 +501,30 @@ class RunLifecycle(
         return state
     }
 
+    /**
+     * The main menu's LEADERBOARD row — leaves MAIN_MENU for IDLE on demand, rather than
+     * waiting out [MENU_IDLE_TIMEOUT_SECONDS]. This is deliberately a public method and not a
+     * `MenuAction` case [update] itself interprets: `MenuModel` (in `render`, engine-free) has
+     * no notion of `RunLifecycleState`, and `EnPustTil` is what already owns both objects and
+     * translates one's output into calls on the other (see `EnPustTil.updateMainMenu`'s
+     * `when` over `MenuAction`).
+     *
+     * Reuses [enter]'s existing `newState == IDLE` branch rather than duplicating it — that
+     * branch already sets [justReturnedToIdle] (see [enter]'s own comment on why the condition
+     * stays a plain `== IDLE` check), which is EXACTLY the signal `EnPustTil` already acts on
+     * to rebuild `DiveSim`/snap the camera/restart the diver's loop for a fresh attract screen.
+     * That is the same transition MAIN_MENU's own idle-timeout already takes on a clock; this
+     * is the identical transition taken by player choice instead.
+     *
+     * A no-op from any state but MAIN_MENU — nothing in the design calls this from anywhere
+     * else, and a defensive no-op is safer here than an assertion on a path a menu-only caller
+     * should never be able to reach incorrectly in the first place.
+     */
+    fun viewLeaderboard()
+    {
+        if (state == RunLifecycleState.MAIN_MENU) enter(RunLifecycleState.IDLE)
+    }
+
     private fun finishInitials()
     {
         completedInitials = initialsEntry.initialsString()

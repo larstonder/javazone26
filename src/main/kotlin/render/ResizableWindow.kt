@@ -1,0 +1,110 @@
+package render
+
+import no.njoh.pulseengine.core.PulseEngineInternal
+import no.njoh.pulseengine.core.window.WindowImpl
+import org.lwjgl.glfw.GLFW
+
+/**
+ * Latest-wins, pure, engine-free queue behind [ResizableWindow]. Split out from that class
+ * specifically so the collapsing discipline can be asserted in a headless JVM (see
+ * `ResizableWindowTest`) without a GL context — the same pure-logic-extracted-for-testing
+ * pattern as `Framing`, `CameraRig` and `RunLifecycle` (CLAUDE.md).
+ *
+ * WHY A QUEUE AT ALL, RATHER THAN A DIRECT `GLFW.glfwSetWindowSize` CALL FROM THE MENU: game
+ * callbacks (`onCreate`, `updateGame`, `onFixedUpdate`, `onRender`) run on the engine's "game"
+ * thread — `gameLoopMode` defaults to `MULTITHREADED` and nothing in `application.cfg` or here
+ * overrides it — while every GLFW window call must happen on the main/GL thread. `initFrame` is
+ * the main-thread hook the engine already runs at the top of every frame
+ * (`WindowInternal.initFrame(PulseEngineInternal)`), so a menu selection on the game thread
+ * records an INTENT here, and [ResizableWindow.initFrame], running on the correct thread, is
+ * what actually performs it.
+ *
+ * MUST COLLAPSE: a player holding right on the RESOLUTION row fires `SettingChanged` on every
+ * edge-triggered frame that produces one — if each call queued independently, [initFrame] would
+ * drain one resize per frame and the window would visibly walk through every size on the ladder
+ * before landing on the held-to value. `requestSize`/`requestSwapInterval` overwrite their own
+ * slot rather than appending, and [takeSize]/[takeSwapInterval] clear what they return, so only
+ * the latest request the menu produced before the next `initFrame` survives, and it fires
+ * exactly once.
+ */
+class PendingWindowRequests
+{
+    private var pendingWidth: Int? = null
+    private var pendingHeight: Int? = null
+    private var pendingSwapInterval: Int? = null
+
+    /** Overwrites any earlier unfulfilled size request. */
+    fun requestSize(width: Int, height: Int)
+    {
+        pendingWidth = width
+        pendingHeight = height
+    }
+
+    /** Overwrites any earlier unfulfilled swap-interval request. */
+    fun requestSwapInterval(interval: Int)
+    {
+        pendingSwapInterval = interval
+    }
+
+    /** Returns the latest queued size, or null if none is pending, and clears it either way —
+     * a taken request is never re-applied on the next frame. */
+    fun takeSize(): Pair<Int, Int>?
+    {
+        val w = pendingWidth ?: return null
+        val h = pendingHeight ?: return null
+        pendingWidth = null
+        pendingHeight = null
+        return w to h
+    }
+
+    /** Returns the latest queued swap interval, or null if none is pending, and clears it. */
+    fun takeSwapInterval(): Int?
+    {
+        val interval = pendingSwapInterval
+        pendingSwapInterval = null
+        return interval
+    }
+}
+
+/**
+ * Adds PROGRAMMATIC window resizing to the engine's own [WindowImpl] — there is no
+ * `glfwSetWindowSize` call anywhere in `pulse-engine-0.13.0.jar` (confirmed by unzipping and
+ * grepping the jar's classes; `WindowImpl.updateScreenMode` recreates the window for a
+ * fullscreen/windowed toggle but never resizes an existing windowed one), so the RESOLUTION row
+ * on the GRAPHICS page has nothing to call without this class.
+ *
+ * Dragging the window's own edge already works today — GLFW's `GLFW_RESIZABLE` window hint is
+ * set at creation and the framebuffer-size callback is already wired to `gfx.onWindowChanged`,
+ * which reallocates every render texture and re-projects every camera (see `CameraRig`'s class
+ * doc). This class only adds a second, programmatic way to trigger that same, already-correct
+ * path — it does not touch resize HANDLING at all, only resize REQUESTING.
+ *
+ * `WindowImpl` is a non-final `public class` with a non-final `initFrame`, confirmed against the
+ * shipped jar before writing this class:
+ * ```
+ * javap -p no/njoh/pulseengine/core/window/WindowImpl.class | head -30
+ * ```
+ * shows `public class ... WindowImpl` (no `final`) and `public void initFrame(...)` (no
+ * `final`), and `PulseEngineImpl`'s own constructor is public with every parameter defaulted —
+ * so `PulseEngineImpl(window = ResizableWindow())` in `main()` is valid Kotlin.
+ */
+class ResizableWindow : WindowImpl()
+{
+    private val pending = PendingWindowRequests()
+
+    fun requestSize(width: Int, height: Int) = pending.requestSize(width, height)
+    fun requestSwapInterval(interval: Int) = pending.requestSwapInterval(interval)
+
+    /**
+     * Drains any pending request BEFORE `super.initFrame`, so a resize this frame is reflected
+     * in the same frame's own `wasResized`/framebuffer-size-callback handling that the base
+     * class's `initFrame` (and the engine code that follows it this frame) relies on — applying
+     * it afterwards would leave this frame observing the window's PREVIOUS size.
+     */
+    override fun initFrame(engineInternal: PulseEngineInternal)
+    {
+        pending.takeSize()?.let { (w, h) -> GLFW.glfwSetWindowSize(windowHandle, w, h) }
+        pending.takeSwapInterval()?.let { GLFW.glfwSwapInterval(it) }
+        super.initFrame(engineInternal)
+    }
+}

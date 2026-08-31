@@ -693,6 +693,39 @@ class RunLifecycleTest
     }
 
     @Test
+    fun `the leaderboard row leaves the menu for the attract screen`()
+    {
+        // Task 7's wiring: the LEADERBOARD row is EnPustTil calling viewLeaderboard()
+        // directly (MenuModel.update returns ShowLeaderboard, and RunLifecycle has no
+        // notion of that type - see viewLeaderboard's own doc for why this is a public
+        // method rather than a MenuAction case RunLifecycle interprets itself).
+        val lc = newLifecycle()
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
+
+        lc.viewLeaderboard()
+
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertTrue(lc.justReturnedToIdle, "reuses enter(IDLE)'s existing signal - EnPustTil rebuilds " +
+            "DiveSim/snaps the camera/restarts the diver's loop on this flag exactly as it does for " +
+            "the menu's own idle-timeout fallback")
+    }
+
+    @Test
+    fun `viewLeaderboard is a no-op outside MAIN_MENU`()
+    {
+        // A run in progress must never be yanked to the attract screen because a stray call
+        // reached viewLeaderboard() - drive to PLAYING first, the state furthest from
+        // MAIN_MENU's own screen, and confirm the call does nothing at all.
+        val lc = newLifecycle()
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+
+        lc.viewLeaderboard()
+
+        assertEquals(RunLifecycleState.PLAYING, lc.state, "must not interrupt a run in progress")
+    }
+
+    @Test
     fun `justEnteredBriefing is a one-tick event`()
     {
         val lc = briefingLifecycle()

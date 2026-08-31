@@ -1096,6 +1096,17 @@ object DiveLighting
     private val ambientColor = Color(0f, 0f, 0f, 1f)
 
     /**
+     * Exposes the [GlobalIlluminationSystem] [setup] captured, for `EnPustTil` to hand to
+     * `GraphicsApplier.apply` — that class writes GI scales/cascades/flags and needs the real
+     * system rather than looking one up itself (see `GraphicsApplier.apply`'s own doc: "finding
+     * the right scene/system is the caller's job"). Null before [setup] runs, and permanently
+     * null if [setup] failed and fell back (see [setup]'s own recoverable-failure handling) —
+     * `GraphicsApplier.apply` already treats a null [gi] as "only apply the non-GI half of
+     * settings," so no additional null handling is needed at the call site.
+     */
+    fun giSystem(): GlobalIlluminationSystem? = gi
+
+    /**
      * THE RESTING HEADING, CHANGED FROM -90 WHEN THE DIVER'S BODY STARTED SHARING IT.
      *
      * It used to be -90 — "facing down" in GiSceneRenderer's Y-flipped cone-direction convention
