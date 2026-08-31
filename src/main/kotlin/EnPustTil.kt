@@ -36,6 +36,10 @@ import render.IridescenceRenderer
 import render.LifecycleInputEdges
 import render.LightEmitter
 import render.MappedPads
+import render.MenuItemId
+import render.MenuLayout
+import render.MenuModel
+import render.MenuPage
 import render.MoteSprite
 import render.Motes
 import render.OpaqueWaterEffect
@@ -54,7 +58,9 @@ import render.drawTextWithOutline
 import render.fillRect
 import render.selectGameplayPad
 import score.ScoreRepository
+import settings.GameSettings
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 fun main()
 {
@@ -733,6 +739,28 @@ object ScreenText
 
     fun briefingCountdown(seconds: Int) = "STARTING IN $seconds"
 
+    // --- The main menu (Task 5) --------------------------------------------------------
+    // Every row label and every fixed value word the menu draws. Value STRINGS built from a
+    // number (resolution, render scale, frame cap) are composed at the draw site, not here —
+    // see EnPustTil's menuValue* cache — because they are not fixed literals; ON/OFF/UNCAPPED
+    // are, and belong here with everything else this object owns.
+
+    const val MENU_START_DIVE = "START DIVE"
+    const val MENU_GRAPHICS = "GRAPHICS"
+    const val MENU_LEADERBOARD = "LEADERBOARD"
+    const val MENU_QUIT = "QUIT"
+    const val MENU_QUALITY = "QUALITY"
+    const val MENU_RESOLUTION = "RESOLUTION"
+    const val MENU_RENDER_SCALE = "RENDER SCALE"
+    const val MENU_FULLSCREEN = "FULLSCREEN"
+    const val MENU_FRAME_CAP = "FRAME CAP"
+    const val MENU_VSYNC = "VSYNC"
+    const val MENU_SHOW_FPS = "SHOW FPS"
+    const val MENU_BACK = "BACK"
+    const val MENU_ON = "ON"
+    const val MENU_OFF = "OFF"
+    const val MENU_UNCAPPED = "UNCAPPED"
+
     /**
      * Every drawable string, with the interpolated ones instantiated at values that
      * exercise their widest form. Used only by the test; cheap enough not to warrant
@@ -757,7 +785,22 @@ object ScreenText
         BRIEFING_VERB_KICK,
         BRIEFING_VERB_BLEED,
         BRIEFING_SKIP_SUFFIX,
-        briefingCountdown(5)
+        briefingCountdown(5),
+        MENU_START_DIVE,
+        MENU_GRAPHICS,
+        MENU_LEADERBOARD,
+        MENU_QUIT,
+        MENU_QUALITY,
+        MENU_RESOLUTION,
+        MENU_RENDER_SCALE,
+        MENU_FULLSCREEN,
+        MENU_FRAME_CAP,
+        MENU_VSYNC,
+        MENU_SHOW_FPS,
+        MENU_BACK,
+        MENU_ON,
+        MENU_OFF,
+        MENU_UNCAPPED
     )
 }
 
@@ -1225,6 +1268,51 @@ class EnPustTil : PulseEngineGame()
     private var hintExitHold: String = ""
 
     /**
+     * "PRESS <button>  ·  <button> to go back" — the main menu's confirm/back legend.
+     * Deliberately built from [hintPressStart] and [hintMenuResume] rather than composed from
+     * fresh [ControlHints] calls: both are already the correct button for this job (confirm is
+     * the same restart/confirm button every other screen calls "PRESS <button>"; back is the
+     * same pauseButtonAlt "<button> to go back" the cabinet-menu pause screen already prints),
+     * and concatenating two already-drawable, already-swept strings with [ScreenText.SEPARATOR]
+     * introduces no character `ControlHints.all()`/`AttractScreenTest` have not already checked.
+     * Rebuilt alongside the other seven in [rebuildControlHints], for the same reason: the
+     * button map is fixed once config is read, so only a device/family change ever invalidates
+     * it, never a per-frame recomposition.
+     */
+    private var hintMenuLegend: String = ""
+
+    /**
+     * Pure navigation state for the main menu (see [render.MenuModel]'s class doc for why it is
+     * edge-triggered and engine-free). NOT YET WIRED TO INPUT — that is a later task's job. Until
+     * then this sits at [MenuPage.ROOT], row 0, for the whole process, so [drawMainMenu] always
+     * draws the menu's resting state. Kept as a field rather than a local so the *next* task
+     * only has to add an `update(...)` call rather than also inventing where the model lives.
+     */
+    private val menuModel = MenuModel()
+
+    /**
+     * The player's graphics/window settings (see [settings.GameSettings]). NOT YET loaded from
+     * `~/EnPustTil/settings.json` or applied to the running engine — that is `SettingsStore`'s
+     * and `GraphicsApplier`'s wiring, a later task. Until then this stays at the compiled
+     * [GameSettings.DEFAULT] and is never written to, so the GRAPHICS page always shows the
+     * shipped defaults. [drawMainMenu] reads it only to compose each row's value string.
+     */
+    private var gameSettings: GameSettings = GameSettings.DEFAULT
+
+    // The seven GRAPHICS-page value strings, cached for the same no-per-frame-allocation reason
+    // as the hint fields above (CLAUDE.md; the menu is drawn every frame it is open, for as long
+    // as somebody leaves it open) rather than formatted in drawMainMenu. Rebuilt by
+    // [rebuildMenuValueHints] whenever [gameSettings] changes — today that is only once, from
+    // [onCreate], because nothing yet mutates gameSettings after construction.
+    private var menuValueQuality: String = ""
+    private var menuValueResolution: String = ""
+    private var menuValueRenderScale: String = ""
+    private var menuValueFullscreen: String = ""
+    private var menuValueFrameCap: String = ""
+    private var menuValueVsync: String = ""
+    private var menuValueShowFps: String = ""
+
+    /**
      * The dev-only depth pin, or null at the booth. Resolved in [onCreate] from
      * [DEPTH_PIN_ENV] — see [parseDepthPin] for what it is for and why it exists.
      *
@@ -1489,6 +1577,12 @@ class EnPustTil : PulseEngineGame()
         // field-init time would hold pre-config labels — the fields above are still their
         // compiled defaults until the four lines above run.
         rebuildControlHints()
+
+        // Seeds the GRAPHICS page's seven value strings from the compiled GameSettings.DEFAULT
+        // (gameSettings is not yet loaded from disk — see its field doc). Without this call the
+        // menu would draw seven empty strings until the first SettingChanged, exactly the
+        // "value fields start empty" trap hintPlayAgain's own comment warns about above.
+        rebuildMenuValueHints()
 
         // A cheap, general symptom-check for "application.cfg silently failed to load
         // completely" (see resolveDailySeed's doc for the mechanism) — a startup guard
@@ -2608,24 +2702,124 @@ class EnPustTil : PulseEngineGame()
     /**
      * The main menu — the screen the game now BOOTS into (see [render.RunLifecycleState.MAIN_MENU]).
      *
-     * STUB. Deliberately draws nothing yet: this task's job was the lifecycle state, and the
-     * layout and drawing land in the next one. It exists so the draw dispatch above is
-     * exhaustive without an `else` — that `when` has no `else` on purpose, so that a future
-     * state cannot silently inherit another screen's rendering, and adding one here to defer the
-     * work would have spent exactly the guard this file relies on.
+     * Reads [menuModel] for what to draw (current page, selected row) and [gameSettings] /
+     * the cached `menuValue*` fields for the GRAPHICS page's value column — neither is wired to
+     * real input or a real settings load yet (see both fields' docs), so today this always draws
+     * the menu's resting state: ROOT, row 0, every value at its compiled default. That is a
+     * later task's wiring, not this method's — this method only has to draw whatever state it is
+     * handed correctly, which is exactly as testable as [AttractLayout]/[PauseLayout]'s geometry
+     * without needing the input to exist yet.
      *
-     * The next task REPLACES this body rather than adding a second function beside it.
+     * Draws to `hud` (the screen-space surface), never `mainSurface` — `GlobalIlluminationSystem`
+     * multiplies `mainSurface` by the light map, which would leave the menu near-invisible in the
+     * abyss (see this repo's CLAUDE.md). The world still renders behind this surface, exactly as
+     * it does behind the attract screen, so the menu is never drawn over a blank frame.
      *
-     * When it is written: draw to `hud` (the screen-space surface), never `mainSurface` —
-     * `GlobalIlluminationSystem` multiplies `mainSurface` by the light map, which would leave the
-     * menu near-invisible in the abyss. Every string goes through [ScreenText]; the default font
-     * draws only U+0020..U+011F and renders anything above it as nothing at all, silently.
+     * Every string goes through [ScreenText]; the default font draws only U+0020..U+011F and
+     * renders anything above it as nothing at all, silently. Every rectangle goes through
+     * [render.fillRect] — never `drawQuad`, which renders nothing on macOS and, more to the
+     * point, still renders nothing in the shipped Windows `.exe` (see `render/Draw.kt`).
+     *
+     * NO PER-FRAME ALLOCATION beyond what [drawTextWithOutline] itself already accepts (HUD text
+     * is the one documented exemption): the row list, the label for a row and its value string
+     * are all either a fixed constant or a cached field, never composed here.
      */
     private fun drawMainMenu(hud: Surface, w: Float, h: Float)
     {
-        // Intentionally empty until the menu's layout lands. The world still renders behind this
-        // surface, so the screen is not blank in the meantime - it shows the live shallows, the
-        // same as the attract screen does.
+        val centreX = w * 0.5f
+
+        hud.drawTextWithOutline(
+            ScreenText.TITLE,
+            centreX, h * MenuLayout.TITLE_Y,
+            h * MenuLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+
+        val page = menuModel.page
+        val items = menuModel.itemsOn(page)
+        val selectedIndex = menuModel.selectedIndex
+        val fontSize = h * MenuLayout.ROW_FONT
+        val highlightHalfWidth = h * MenuLayout.HIGHLIGHT_HALF_SPAN
+        val highlightPad = fontSize * MenuLayout.HIGHLIGHT_PAD_FRACTION
+
+        for (index in items.indices)
+        {
+            val item = items[index]
+            val y = h * MenuLayout.rowY(index)
+
+            if (index == selectedIndex)
+            {
+                // A filled bar behind the row, not a colour change on the text — legible at
+                // arcade viewing distance even for a one-word row, and it is the same
+                // affordance PauseLayout's exit bar already uses (a shape, not a hue, is what
+                // reads at a glance). Low authored alpha: this is a highlight, not a scrim, and
+                // must not fight the outlined text drawn on top of it a moment later.
+                hud.setDrawColor(1f, 1f, 1f, Hud.authoredAlphaFor(0.18f))
+                hud.fillRect(
+                    centreX - highlightHalfWidth, y - highlightPad,
+                    highlightHalfWidth * 2f, fontSize + highlightPad * 2f
+                )
+            }
+
+            val label = menuItemLabel(item)
+
+            // Only the GRAPHICS page has a value column, and BACK — present on that page as an
+            // action row, not a setting — is the one row on it that does not. Checking the page
+            // rather than reaching into MenuModel's own VALUE_ITEMS set keeps this method
+            // engine-shell-only: it decides how to DRAW a row, not which rows carry a value,
+            // which is MenuModel's decision to own.
+            if (page == MenuPage.GRAPHICS && item != MenuItemId.BACK)
+            {
+                hud.drawTextWithOutline(label, MenuLayout.labelX(centreX, h), y, fontSize, h, Color.WHITE, xOrigin = 1f)
+                hud.drawTextWithOutline(menuValueFor(item), MenuLayout.valueX(centreX, h), y, fontSize, h, Color.WHITE, xOrigin = 0f)
+            }
+            else
+            {
+                hud.drawTextWithOutline(label, centreX, y, fontSize, h, Color.WHITE, xOrigin = 0.5f)
+            }
+        }
+
+        hud.drawTextWithOutline(
+            hintMenuLegend,
+            centreX, h * MenuLayout.HINT_Y,
+            h * MenuLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+    }
+
+    /** The fixed row label for [item] — see [ScreenText]'s MENU_* group. */
+    private fun menuItemLabel(item: MenuItemId): String = when (item)
+    {
+        MenuItemId.START_DIVE -> ScreenText.MENU_START_DIVE
+        MenuItemId.GRAPHICS -> ScreenText.MENU_GRAPHICS
+        MenuItemId.LEADERBOARD -> ScreenText.MENU_LEADERBOARD
+        MenuItemId.QUIT -> ScreenText.MENU_QUIT
+        MenuItemId.QUALITY -> ScreenText.MENU_QUALITY
+        MenuItemId.RESOLUTION -> ScreenText.MENU_RESOLUTION
+        MenuItemId.RENDER_SCALE -> ScreenText.MENU_RENDER_SCALE
+        MenuItemId.FULLSCREEN -> ScreenText.MENU_FULLSCREEN
+        MenuItemId.FRAME_CAP -> ScreenText.MENU_FRAME_CAP
+        MenuItemId.VSYNC -> ScreenText.MENU_VSYNC
+        MenuItemId.SHOW_FPS -> ScreenText.MENU_SHOW_FPS
+        MenuItemId.BACK -> ScreenText.MENU_BACK
+    }
+
+    /**
+     * The cached value string for a GRAPHICS-page row — see the `menuValue*` fields and
+     * [rebuildMenuValueHints]. `START_DIVE`/`GRAPHICS`/`LEADERBOARD`/`QUIT`/`BACK` never reach
+     * this (guarded by the page check at the one call site), so their branch is unreachable
+     * rather than meaningful; it returns the empty string instead of throwing so a future call
+     * site added without the same guard degrades to a blank value cell instead of crashing the
+     * cabinet.
+     */
+    private fun menuValueFor(item: MenuItemId): String = when (item)
+    {
+        MenuItemId.QUALITY -> menuValueQuality
+        MenuItemId.RESOLUTION -> menuValueResolution
+        MenuItemId.RENDER_SCALE -> menuValueRenderScale
+        MenuItemId.FULLSCREEN -> menuValueFullscreen
+        MenuItemId.FRAME_CAP -> menuValueFrameCap
+        MenuItemId.VSYNC -> menuValueVsync
+        MenuItemId.SHOW_FPS -> menuValueShowFps
+        else -> ""
     }
 
     private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
@@ -3130,6 +3324,31 @@ class EnPustTil : PulseEngineGame()
             gamepadButtonLabel(exitButtonA, controllerFamily),
             gamepadButtonLabel(exitButtonB, controllerFamily)
         )
+
+        // See hintMenuLegend's field doc for why this concatenates two already-cached,
+        // already-swept composites rather than issuing fresh ControlHints calls.
+        hintMenuLegend = hintPressStart + ScreenText.SEPARATOR + hintMenuResume
+    }
+
+    /**
+     * Refills the GRAPHICS page's seven cached value strings from [gameSettings]. Called once
+     * from [onCreate] today (see the call site's comment) and is the function a future task's
+     * `SettingChanged` handling calls again — [drawMainMenu] never formats a number itself.
+     */
+    private fun rebuildMenuValueHints()
+    {
+        menuValueQuality = gameSettings.quality
+        menuValueResolution = "${gameSettings.windowWidth}x${gameSettings.windowHeight}"
+        // roundToInt(), not toInt(): 0.85f is not exactly representable in IEEE 754, and
+        // toInt()'s truncation is the one rounding mode that can turn a value landing at
+        // 84.999996... back into "84%" instead of "85%". Every RENDER_SCALES rung
+        // (0.5/0.6/0.75/0.85/1.0) is meant to read as its obvious whole percentage.
+        menuValueRenderScale = "${(gameSettings.renderScale * 100f).roundToInt()}%"
+        menuValueFullscreen = if (gameSettings.fullscreen) ScreenText.MENU_ON else ScreenText.MENU_OFF
+        // 0 is "no limiter" (see GameSettings.clamped's comment) and reads as UNCAPPED, not "0".
+        menuValueFrameCap = if (gameSettings.frameCap == 0) ScreenText.MENU_UNCAPPED else "${gameSettings.frameCap}"
+        menuValueVsync = if (gameSettings.vsync) ScreenText.MENU_ON else ScreenText.MENU_OFF
+        menuValueShowFps = if (gameSettings.showFps) ScreenText.MENU_ON else ScreenText.MENU_OFF
     }
 
     /**
