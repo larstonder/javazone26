@@ -19,6 +19,36 @@ class RunLifecycleTest
     private val BRIEF = 3f
     private val BRIEF_DWELL = 0.5f
 
+    /**
+     * Drive a freshly booted lifecycle (MAIN_MENU) forward to IDLE via the
+     * MENU_IDLE_TIMEOUT_SECONDS fallback — the real unattended-recovery path an abandoned
+     * menu takes at the booth, not a shortcut invented for tests. `enter()` zeroes
+     * timeInState on every transition, so arriving at IDLE this way leaves no residual timer
+     * behind, and works regardless of how much timeInState the lifecycle already had
+     * accumulated in MAIN_MENU when this is called.
+     *
+     * AMENDMENT (2026-08-31, task-4-ruling.md): this used to be wired into newLifecycle()
+     * and briefingLifecycle() themselves, so EVERY test transparently started at IDLE. That
+     * was the wrong call — the spec's own transition table has "start a dive" move from
+     * IDLE's press to MAIN_MENU's menuAction, and burying every test's arrival at IDLE inside
+     * the shared factories made the whole suite silently keep testing the retired flow. This
+     * helper now stays, but is called explicitly only by the handful of tests that are
+     * genuinely about IDLE/attract-mode behaviour; everything else starts at the real boot
+     * state, MAIN_MENU, and drives a dive with `menuAction` — the path a player now takes.
+     */
+    private fun warmToIdle(lc: RunLifecycle): RunLifecycle
+    {
+        lc.update(dt = RunLifecycle.MENU_IDLE_TIMEOUT_SECONDS + 0.1f, anyInputPressed = false, runOver = false)
+        check(lc.state == RunLifecycleState.IDLE) { "warmToIdle did not reach IDLE, reached ${lc.state}" }
+        return lc
+    }
+
+    /**
+     * A freshly booted lifecycle — MAIN_MENU, the real state `RunLifecycle()` starts in.
+     * Most tests below drive a dive from here with `menuAction`, exactly as a player now
+     * does; the few tests that are genuinely about IDLE/attract-mode wrap this in
+     * [warmToIdle] instead.
+     */
     private fun newLifecycle() = RunLifecycle(
         dwellSeconds = DWELL,
         idleTimeoutSeconds = IDLE_TIMEOUT,
@@ -27,9 +57,6 @@ class RunLifecycleTest
         exitHoldSeconds = EXIT_HOLD,
         // A zero-length briefing is NO briefing (see `a zero-length briefing...`), so every
         // test written before BRIEFING existed keeps asserting exactly what it always did.
-        // Without this, 29 of the 34 would fail: three shared helpers press once and
-        // immediately assert the resulting state, and all of them drive with dt = 0f, so a
-        // briefing would never expire.
         briefingSeconds = 0f
     )
 
@@ -43,45 +70,93 @@ class RunLifecycleTest
         briefingDwellSeconds = BRIEF_DWELL
     )
 
-    /** Drive a fresh lifecycle from IDLE into a paused run, with every input released. */
+    /**
+     * Drive a fresh (MAIN_MENU) lifecycle into a paused run, with every input released.
+     *
+     * AMENDMENT (2026-08-31): used to be `warmToIdle` + a press (IDLE -> PLAYING). Rewritten
+     * per task-4-ruling.md to exercise the path a player actually takes now: MAIN_MENU's
+     * `menuAction`, straight to PLAYING because every caller here uses `newLifecycle()`,
+     * whose `briefingSeconds = 0f` means no briefing.
+     */
     private fun enterPausedRun(lc: RunLifecycle)
     {
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // IDLE -> PLAYING
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)  // release
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)   // MAIN_MENU -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)  // release
         lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
         assertEquals(RunLifecycleState.PAUSED, lc.state)
         lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = false)
     }
 
-    /** Drive a fresh lifecycle from IDLE, through one full run, into RUN_OVER. */
+    /**
+     * Drive a fresh (MAIN_MENU) lifecycle, through one full run, into RUN_OVER.
+     *
+     * AMENDMENT (2026-08-31): same rewrite as [enterPausedRun] — MAIN_MENU's `menuAction`
+     * replaces the old IDLE press.
+     */
     private fun enterRunOver(lc: RunLifecycle)
     {
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // IDLE -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)   // MAIN_MENU -> PLAYING
         assertEquals(RunLifecycleState.PLAYING, lc.state)
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)  // release, so later presses are genuine edges
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)  // release, so later presses are genuine edges
         lc.update(dt = 0f, anyInputPressed = false, runOver = true)   // sim reports over -> RUN_OVER
         assertEquals(RunLifecycleState.RUN_OVER, lc.state)
     }
 
     @Test
-    fun `boots into IDLE`() {
-        assertEquals(RunLifecycleState.IDLE, newLifecycle().state)
+    fun `the game boots into the main menu, not the attract screen`() {
+        // AMENDMENT (2026-08-31): this test used to be named "boots into IDLE" and asserted
+        // exactly that. MAIN_MENU is the real boot state now (`state` initialises to it — see
+        // RunLifecycle's class doc); renamed and re-pointed rather than left asserting the
+        // old default.
+        assertEquals(RunLifecycleState.MAIN_MENU, newLifecycle().state)
     }
 
     @Test
-    fun `a fresh press leaves IDLE into a fresh run`() {
+    fun `an abandoned main menu falls back to the attract screen after its own timeout`() {
+        // The other half of the boot-state test above: MAIN_MENU is not a dead end if nobody
+        // touches it. This is the exact mechanism [warmToIdle] relies on internally, asserted
+        // here directly rather than only trusted via that helper's own `check`.
         val lc = newLifecycle()
+        lc.update(dt = RunLifecycle.MENU_IDLE_TIMEOUT_SECONDS - 0.1f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state, "must not fall back before the timeout elapses")
+
+        lc.update(dt = 0.2f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+    }
+
+    @Test
+    fun `the four booth timeout constants hold their values`() {
+        // Pinned so a later "let's round these" edit reddens the build instead of silently
+        // changing how long an unattended cabinet waits before recovering. These four are
+        // exactly the ones task-4-ruling.md called booth-hardening and off-limits for this
+        // task: the three idle timeouts, plus the exit hold.
+        assertEquals(17.5f, RunLifecycle.IDLE_TIMEOUT_SECONDS)
+        assertEquals(20f, RunLifecycle.PAUSE_IDLE_TIMEOUT_SECONDS)
+        assertEquals(15f, RunLifecycle.INITIALS_IDLE_TIMEOUT_SECONDS)
+        assertEquals(1.5f, RunLifecycle.EXIT_HOLD_SECONDS)
+    }
+
+    @Test
+    fun `a fresh press in IDLE opens the main menu, not a fresh run`() {
+        // AMENDMENT (2026-08-31): this test used to be `a fresh press leaves IDLE into a
+        // fresh run`, asserting IDLE + press -> PLAYING directly. That is exactly the flow
+        // this task retired (see RunLifecycle's IDLE amendment and task-4-ruling.md), so
+        // keeping it green would mean not implementing the spec. Rewritten, not deleted, to
+        // assert the transition that replaced it — this is the "add a test for the new
+        // IDLE + press -> MAIN_MENU transition" requirement from the brief.
+        val lc = warmToIdle(newLifecycle())
         lc.update(dt = 1f / 60f, anyInputPressed = true, runOver = false)
-        assertEquals(RunLifecycleState.PLAYING, lc.state)
-        assertTrue(lc.justStarted, "caller must construct a new DiveSim on this transition")
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
+        assertFalse(lc.justStarted, "opening the menu from attract must not itself start a dive")
     }
 
     @Test
     fun `IDLE never spontaneously starts without input`() {
-        val lc = newLifecycle()
+        val lc = warmToIdle(newLifecycle())
         // Ten seconds of frames at 60fps with nothing pressed. If this class ever ticked
-        // toward PLAYING on its own, or the caller's contract ("only tick the sim while
-        // PLAYING") were violated, this is what would catch it: IDLE must sit still forever.
+        // toward MAIN_MENU or PLAYING on its own, or the caller's contract ("only tick the
+        // sim while PLAYING") were violated, this is what would catch it: IDLE must sit
+        // still forever without a press.
         repeat(600) { lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false) }
         assertEquals(RunLifecycleState.IDLE, lc.state)
         assertFalse(lc.justStarted)
@@ -110,7 +185,13 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `no input for the idle timeout returns to IDLE`() {
+    fun `no input for the idle timeout returns to the menu`() {
+        // AMENDMENT (2026-08-31): this test used to be named "...returns to IDLE" and
+        // asserted exactly that. RUN_OVER's unattended fallback now lands on MAIN_MENU
+        // (RunLifecycle.returnToMenu) — a player who just finished a run gets "play again"
+        // one press away, not the screensaver. idleTimeoutSeconds itself (the VALUE under
+        // test here) is completely untouched; only the destination moved, and only the final
+        // assertion below reflects that.
         val lc = newLifecycle()
         enterRunOver(lc)
 
@@ -118,7 +199,7 @@ class RunLifecycleTest
         assertEquals(RunLifecycleState.RUN_OVER, lc.state, "must not fall back before the timeout elapses")
 
         lc.update(dt = 0.02f, anyInputPressed = false, runOver = true)
-        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
     }
 
     @Test
@@ -155,7 +236,7 @@ class RunLifecycleTest
     @Test
     fun `PLAYING ignores input entirely and only reacts to runOver`() {
         val lc = newLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false) // IDLE -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true) // MAIN_MENU -> PLAYING
         assertEquals(RunLifecycleState.PLAYING, lc.state)
 
         repeat(120) { lc.update(dt = 1f / 60f, anyInputPressed = true, runOver = false) }
@@ -167,12 +248,16 @@ class RunLifecycleTest
 
     // --- ENTER_INITIALS ---------------------------------------------------------------
 
-    /** Drive a fresh lifecycle from IDLE through a run that banked [score], into RUN_OVER. */
+    /**
+     * Drive a fresh (MAIN_MENU) lifecycle through a run that banked [score], into RUN_OVER.
+     *
+     * AMENDMENT (2026-08-31): same MAIN_MENU/menuAction rewrite as [enterRunOver].
+     */
     private fun enterRunOverWithScore(lc: RunLifecycle, score: Int)
     {
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)                          // IDLE -> PLAYING
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)                          // release
-        lc.update(dt = 0f, anyInputPressed = false, runOver = true, bankedScore = score)      // -> RUN_OVER
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)    // MAIN_MENU -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)   // release
+        lc.update(dt = 0f, anyInputPressed = false, runOver = true, bankedScore = score)   // -> RUN_OVER
         assertEquals(RunLifecycleState.RUN_OVER, lc.state)
     }
 
@@ -213,7 +298,11 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `cycling and confirming three letters completes entry and returns to IDLE`() {
+    fun `cycling and confirming three letters completes entry and returns to the menu`() {
+        // AMENDMENT (2026-08-31): this test used to be named "...and returns to IDLE" and
+        // asserted exactly that. ENTER_INITIALS' completion now lands on MAIN_MENU
+        // (RunLifecycle.finishInitials -> returnToMenu) — renamed and re-pointed rather than
+        // left asserting the old destination.
         val lc = newLifecycle()
         enterRunOverWithScore(lc, score = 500)
         lc.update(dt = DWELL + 0.01f, anyInputPressed = false, runOver = true, bankedScore = 500)
@@ -235,7 +324,7 @@ class RunLifecycleTest
 
         assertTrue(lc.initialsJustCompleted, "must fire the tick the third slot is confirmed")
         assertEquals("CAA", lc.completedInitials)
-        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
     }
 
     @Test
@@ -250,12 +339,19 @@ class RunLifecycleTest
         lc.update(dt = 0f, anyInputPressed = false, runOver = true, confirmPressed = true) // confirms slot 2 -> complete
         assertTrue(lc.initialsJustCompleted, "must be true on the exact tick entry completes")
 
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false) // any subsequent update, from IDLE
+        // AMENDMENT (2026-08-31): comment used to say "from IDLE" — entry now completes onto
+        // MAIN_MENU (see the test above), but the point of this line is unchanged: any
+        // subsequent update must clear the one-tick flag.
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false) // any subsequent update, from MAIN_MENU
         assertFalse(lc.initialsJustCompleted, "must clear the next tick, same as justStarted/DiveEnded")
     }
 
     @Test
     fun `abandoning ENTER_INITIALS for the idle timeout auto-submits rather than losing the score`() {
+        // AMENDMENT (2026-08-31): the final assertion used to be IDLE; auto-submit now lands
+        // on MAIN_MENU (returnToMenu) — same reasoning as the "cycling and confirming..." test
+        // above. Everything about the auto-submit ITSELF (that it fires, that it keeps
+        // whatever letters were set) is unchanged and un-weakened, per task-4-ruling.md.
         val lc = newLifecycle()
         enterRunOverWithScore(lc, score = 500)
         lc.update(dt = DWELL + 0.01f, anyInputPressed = false, runOver = true, bankedScore = 500)
@@ -269,7 +365,7 @@ class RunLifecycleTest
 
         assertTrue(lc.initialsJustCompleted, "the cabinet must recover on its own, not stay stuck forever")
         assertEquals("BAA", lc.completedInitials, "whatever was set at the moment of timeout must be kept")
-        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
     }
 
     @Test
@@ -300,7 +396,7 @@ class RunLifecycleTest
     fun `a run that is merely playing does advance the simulation`() {
         // The other half of the above: without this, freezing everything forever would pass.
         val lc = newLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true) // MAIN_MENU -> PLAYING
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         assertTrue(lc.simulationAdvances)
     }
@@ -311,7 +407,7 @@ class RunLifecycleTest
         // must stay frozen on an unattended cabinet (it would burn air and "drown" the
         // attract-mode diver otherwise), but the sprite should still kick in place at the
         // surface rather than hold a motionless frame — see DiverSprite.loopPhase's doc.
-        val lc = newLifecycle()
+        val lc = warmToIdle(newLifecycle())
         assertEquals(RunLifecycleState.IDLE, lc.state)
         assertFalse(lc.simulationAdvances, "IDLE must not tick DiveSim")
         assertTrue(lc.spriteAnimates, "IDLE must still animate the sprite")
@@ -350,7 +446,7 @@ class RunLifecycleTest
         // simulationAdvances silently disagreed with spriteAnimates in RUN_OVER, because
         // nothing here ever called simulationAdvances for that state.
         val lc = newLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // IDLE -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)   // MAIN_MENU -> PLAYING
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         assertEquals(lc.simulationAdvances, lc.spriteAnimates, "PLAYING must not disagree")
 
@@ -375,8 +471,9 @@ class RunLifecycleTest
     @Test
     fun `Esc from attract opens the same screen and returns to attract`() {
         // A technician must be able to shut the cabinet down without a run in progress, and
-        // must not find themselves in a phantom run afterwards.
-        val lc = newLifecycle()
+        // must not find themselves in a phantom run afterwards. Genuinely about IDLE, so this
+        // explicitly warms to it rather than starting at the real MAIN_MENU boot state.
+        val lc = warmToIdle(newLifecycle())
         lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
         assertEquals(RunLifecycleState.PAUSED, lc.state)
         assertTrue(lc.pausedFromIdle, "the screen must word itself as a cabinet menu, not a paused run")
@@ -400,8 +497,8 @@ class RunLifecycleTest
         // has no wasClicked, so this class does its own edge detection. A held key that
         // toggled per frame would make the pause screen strobe.
         val lc = newLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)  // MAIN_MENU -> PLAYING
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)
         repeat(60) { lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, pausePressed = true) }
         assertEquals(RunLifecycleState.PAUSED, lc.state, "a held key must not toggle back out")
     }
@@ -487,9 +584,11 @@ class RunLifecycleTest
         // pressing again after the dwell restarts exactly once`, which used a held-then-
         // released LEVEL shape EnPustTil no longer produces. This fails if
         // `wasInputPressed` is ever left latched true across a PLAYING -> RUN_OVER
-        // transition.
+        // transition. RUN_OVER's own restart-on-press is unaffected by the MAIN_MENU work
+        // (it still reads `anyInputPressed` directly, not `menuAction`), so `enterRunOver`'s
+        // menuAction-based entry into the first run does not change what this test exercises.
         val lc = newLifecycle()
-        enterRunOver(lc) // pulse: IDLE -> PLAYING -> RUN_OVER, input released throughout
+        enterRunOver(lc) // MAIN_MENU -> PLAYING -> RUN_OVER, input released throughout
 
         lc.update(dt = DWELL, anyInputPressed = false, runOver = true) // clear the dwell, still no input
         assertEquals(RunLifecycleState.RUN_OVER, lc.state)
@@ -500,29 +599,33 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `returning to attract mode is announced exactly once`()
+    fun `returning to the menu after a run is announced exactly once`()
     {
-        // EnPustTil rebuilds DiveSim on this flag. Without it the attract screen keeps the
-        // last player's final frame - a motionless diver at whatever depth the clock caught
-        // him, which after a 120 m timeout is a near-black abyss with a leaderboard in it.
+        // AMENDMENT (2026-08-31): this test used to be named "returning to attract mode is
+        // announced exactly once" and asserted a final IDLE state. RUN_OVER's idle-timeout
+        // fallback now lands on MAIN_MENU (RunLifecycle.returnToMenu). justReturnedToIdle's
+        // CONTRACT (EnPustTil rebuilds DiveSim so the next screen never shows the finished
+        // run's last frame) is completely unchanged — only the destination state moved, so
+        // this test is renamed and re-pointed rather than left asserting the old destination.
         val lc = newLifecycle()
         enterRunOver(lc)
 
-        // Not worth recording, so RUN_OVER times out straight back to IDLE.
+        // Not worth recording, so RUN_OVER times out straight back to the menu.
         lc.update(dt = IDLE_TIMEOUT + 0.1f, anyInputPressed = false, runOver = true)
 
-        assertEquals(RunLifecycleState.IDLE, lc.state)
-        assertTrue(lc.justReturnedToIdle, "the return to attract must be announced")
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
+        assertTrue(lc.justReturnedToIdle, "the return to the menu must be announced")
 
         lc.update(dt = 0.016f, anyInputPressed = false, runOver = false)
         assertFalse(lc.justReturnedToIdle, "and must be a one-tick event, not a latched mode")
     }
 
     @Test
-    fun `finishing initials also announces the return to attract mode`()
+    fun `finishing initials also announces the return to the menu`()
     {
-        // The other way back to IDLE. Both must rebuild the sim, or a player who entered
-        // initials leaves their corpse on the attract screen for the next person in the queue.
+        // AMENDMENT (2026-08-31): this test used to be named "...return to attract mode" and
+        // asserted a final IDLE state. Same rewrite as the test above — ENTER_INITIALS'
+        // completion now lands on MAIN_MENU too, via the same returnToMenu().
         val lc = newLifecycle()
         enterRunOver(lc)
         lc.update(dt = DWELL + 0.1f, anyInputPressed = false, runOver = true, bankedScore = 5000)
@@ -530,7 +633,7 @@ class RunLifecycleTest
 
         lc.update(dt = INITIALS_IDLE_TIMEOUT + 0.1f, anyInputPressed = false, runOver = true, bankedScore = 5000)
 
-        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
         assertTrue(lc.justReturnedToIdle)
         // The Critical this task's own review caught (task-9-report.md) was exactly this
         // co-firing: EnPustTil read `justReturnedToIdle` (rebuilding `sim`) before
@@ -545,8 +648,10 @@ class RunLifecycleTest
     fun `resuming a run paused from attract mode does not announce a return`()
     {
         // PAUSED -> IDLE is a resume, not a fresh attract screen. Rebuilding the sim there
-        // would be harmless but the flag must mean one thing only.
-        val lc = newLifecycle()
+        // would be harmless but the flag must mean one thing only. Genuinely about IDLE (Esc
+        // is only handled in IDLE and PLAYING — see RunLifecycle's PAUSED doc), so this
+        // explicitly warms to it.
+        val lc = warmToIdle(newLifecycle())
         lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
         assertEquals(RunLifecycleState.PAUSED, lc.state)
 
@@ -558,23 +663,30 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `a zero-length briefing goes straight from IDLE to PLAYING`()
+    fun `a zero-length briefing goes straight from MAIN_MENU to PLAYING`()
     {
-        // The rule the whole existing test file rests on. newLifecycle() passes
-        // briefingSeconds = 0f, so all 34 tests written before BRIEFING existed keep
-        // asserting exactly what they always asserted. A zero-length briefing is not a
-        // briefing that closes instantly - it is no briefing at all.
+        // AMENDMENT (2026-08-31): this test used to be named "...from IDLE to PLAYING" and
+        // drove `anyInputPressed` from IDLE. Starting a dive moved from IDLE's press to
+        // MAIN_MENU's menuAction (see RunLifecycle's IDLE amendment); IDLE's own press now
+        // only opens the menu — see `a fresh press in IDLE opens the main menu...` above. The
+        // rule under test — a zero-length briefing IS no briefing at all — is itself
+        // unchanged, and is what the whole rest of this file rests on via newLifecycle()'s
+        // briefingSeconds = 0f.
         val lc = newLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         assertEquals(RunLifecycleState.PLAYING, lc.state)
-        assertTrue(lc.justStarted, "justStarted must still fire on the IDLE transition")
+        assertTrue(lc.justStarted, "justStarted must still fire on the MAIN_MENU transition")
     }
 
     @Test
-    fun `a press in IDLE enters BRIEFING, not PLAYING`()
+    fun `a menu action in MAIN_MENU enters BRIEFING, not PLAYING`()
     {
+        // AMENDMENT (2026-08-31): this test used to be named "a press in IDLE enters
+        // BRIEFING, not PLAYING" and drove `anyInputPressed` from IDLE. Entering BRIEFING is
+        // MAIN_MENU's decision now, via `menuAction` — IDLE's press no longer starts
+        // anything, it only opens the menu.
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         assertEquals(RunLifecycleState.BRIEFING, lc.state)
         assertFalse(lc.justStarted, "the run has not started yet - nothing may build a DiveSim")
         assertTrue(lc.justEnteredBriefing, "EnPustTil latches the pad id on this flag")
@@ -584,7 +696,7 @@ class RunLifecycleTest
     fun `justEnteredBriefing is a one-tick event`()
     {
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         assertTrue(lc.justEnteredBriefing)
         lc.update(dt = 0f, anyInputPressed = false, runOver = false)
         assertFalse(lc.justEnteredBriefing, "a latched flag would re-latch the pad every frame")
@@ -594,11 +706,11 @@ class RunLifecycleTest
     fun `the briefing auto-starts the run when the countdown expires, with no input`()
     {
         // The unattended-recovery guarantee: a player who walks off mid-briefing must not
-        // strand the cabinet. The run starts, drowns, and falls through RUN_OVER -> IDLE on
-        // the existing timers.
+        // strand the cabinet. The run starts, drowns, and falls through RUN_OVER -> MAIN_MENU
+        // on the existing timers.
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)
         lc.update(dt = BRIEF + 0.01f, anyInputPressed = false, runOver = false)
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         assertTrue(lc.justStarted, "the auto-start is still a run start")
@@ -609,10 +721,12 @@ class RunLifecycleTest
     {
         // The press that OPENS the briefing must not also close it. Edge detection already
         // forces a release-then-press, but a double-tap is ordinary on an arcade button and
-        // would otherwise blow straight past the text.
+        // would otherwise blow straight past the text. Entry is via menuAction (see the
+        // BRIEFING-entry amendment above); the skip check itself still reads anyInputPressed,
+        // unchanged.
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)
         lc.update(dt = BRIEF_DWELL * 0.5f, anyInputPressed = true, runOver = false)
         assertEquals(RunLifecycleState.BRIEFING, lc.state)
     }
@@ -621,8 +735,8 @@ class RunLifecycleTest
     fun `a press after the dwell skips the briefing`()
     {
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)
         lc.update(dt = BRIEF_DWELL + 0.01f, anyInputPressed = true, runOver = false)
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         assertTrue(lc.justStarted)
@@ -634,7 +748,7 @@ class RunLifecycleTest
         // A stuck booth encoder button must never be able to skip the explanation for every
         // person in the queue - the same reasoning as the RUN_OVER dwell.
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         // 10 * (BRIEF_DWELL * 0.2) = 1.0s: past the 0.5s dwell but short of BRIEF (3s), so this
         // genuinely exercises the gate AFTER the dwell has elapsed - the button is held the whole
         // time (never released), so a correct edge-detected gate stays refused throughout, while a
@@ -647,7 +761,7 @@ class RunLifecycleTest
     fun `the briefing freezes the simulation but keeps the diver kicking`()
     {
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         assertFalse(lc.simulationAdvances, "a briefing that burned air would drown the player")
         assertTrue(lc.spriteAnimates, "a frozen diver behind the briefing reads as dead, not idle")
     }
@@ -656,8 +770,8 @@ class RunLifecycleTest
     fun `the countdown counts down, never goes negative, and reads zero outside BRIEFING`()
     {
         val lc = briefingLifecycle()
-        assertEquals(0f, lc.briefingCountdownSeconds, "IDLE shares timeInState with BRIEFING")
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(0f, lc.briefingCountdownSeconds, "MAIN_MENU shares timeInState with BRIEFING")
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         assertEquals(BRIEF, lc.briefingCountdownSeconds, 0.001f)
         lc.update(dt = BRIEF * 0.5f, anyInputPressed = false, runOver = false)
         assertEquals(BRIEF * 0.5f, lc.briefingCountdownSeconds, 0.001f)
@@ -666,15 +780,21 @@ class RunLifecycleTest
     @Test
     fun `briefingSkippable is state-blind-proof`()
     {
-        // timeInState is shared by the RUN_OVER, PAUSED and ENTER_INITIALS dwells, so an
-        // unguarded `timeInState >= briefingDwellSeconds` would read true in IDLE. Harmless
-        // today, but it would pin the wrong contract.
-        val lc = briefingLifecycle()
-        lc.update(dt = BRIEF_DWELL * 5f, anyInputPressed = false, runOver = false)
-        assertEquals(RunLifecycleState.IDLE, lc.state)
-        assertFalse(lc.briefingSkippable, "IDLE is not a skippable briefing")
+        // timeInState is shared by MAIN_MENU, IDLE, RUN_OVER, PAUSED and ENTER_INITIALS, so
+        // an unguarded `timeInState >= briefingDwellSeconds` would read true outside BRIEFING
+        // too. Checked in both non-BRIEFING states this task actually touches.
+        val menuLc = briefingLifecycle()
+        menuLc.update(dt = BRIEF_DWELL * 5f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.MAIN_MENU, menuLc.state)
+        assertFalse(menuLc.briefingSkippable, "MAIN_MENU is not a skippable briefing")
 
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        val idleLc = warmToIdle(briefingLifecycle())
+        idleLc.update(dt = BRIEF_DWELL * 5f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.IDLE, idleLc.state)
+        assertFalse(idleLc.briefingSkippable, "IDLE is not a skippable briefing either")
+
+        val lc = briefingLifecycle()
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true) // -> BRIEFING
         assertFalse(lc.briefingSkippable, "not yet - the dwell has not elapsed")
         lc.update(dt = BRIEF_DWELL + 0.01f, anyInputPressed = false, runOver = false)
         assertTrue(lc.briefingSkippable)
@@ -684,7 +804,9 @@ class RunLifecycleTest
     fun `an infinite briefing never auto-starts but still skips on a press`()
     {
         // The EPT_BRIEFING_HOLD contract: the capture pin must hold the screen open for a
-        // screencapture, and must still be dismissable by hand.
+        // screencapture, and must still be dismissable by hand. Constructed directly (not via
+        // briefingLifecycle()) because this needs its own briefingSeconds, and entered via
+        // menuAction like every other route into BRIEFING now.
         val lc = RunLifecycle(
             dwellSeconds = DWELL,
             idleTimeoutSeconds = IDLE_TIMEOUT,
@@ -694,7 +816,7 @@ class RunLifecycleTest
             briefingSeconds = Float.POSITIVE_INFINITY,
             briefingDwellSeconds = BRIEF_DWELL
         )
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         assertFalse(lc.briefingAutoStarts, "drawBriefingScreen suppresses the countdown on this")
         lc.update(dt = 10_000f, anyInputPressed = false, runOver = false)
         assertEquals(RunLifecycleState.BRIEFING, lc.state, "it must hold for the capture")
@@ -707,9 +829,11 @@ class RunLifecycleTest
     {
         // The owner's decision, pinned so a later "for consistency" change reddens the build.
         // A player who just drowned in eight seconds retries instantly; the briefing is for
-        // the person who just walked up.
+        // the person who just walked up. Protected by task-4-ruling.md: only the entry into
+        // the FIRST briefing (menuAction, see above) changed here - the retry itself still
+        // reads anyInputPressed directly from RUN_OVER and must still go straight to PLAYING.
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         lc.update(dt = BRIEF + 0.01f, anyInputPressed = false, runOver = false)
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         lc.update(dt = 0f, anyInputPressed = false, runOver = true)
@@ -725,7 +849,7 @@ class RunLifecycleTest
         // Consistent with RUN_OVER and ENTER_INITIALS, which also ignore it. A technician
         // waits at most one countdown for the cabinet menu.
         val lc = briefingLifecycle()
-        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
         lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
         assertEquals(RunLifecycleState.BRIEFING, lc.state)
     }

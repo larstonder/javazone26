@@ -2455,6 +2455,8 @@ class EnPustTil : PulseEngineGame()
 
         when (lifecycle.state)
         {
+            RunLifecycleState.MAIN_MENU -> drawMainMenu(hud, w, h)
+
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
 
             RunLifecycleState.BRIEFING -> drawBriefingScreen(hud, w, h)
@@ -2603,6 +2605,29 @@ class EnPustTil : PulseEngineGame()
      * ScoreRepository.topN's default), which is what gives day two a fresh, empty board
      * for free.
      */
+    /**
+     * The main menu — the screen the game now BOOTS into (see [render.RunLifecycleState.MAIN_MENU]).
+     *
+     * STUB. Deliberately draws nothing yet: this task's job was the lifecycle state, and the
+     * layout and drawing land in the next one. It exists so the draw dispatch above is
+     * exhaustive without an `else` — that `when` has no `else` on purpose, so that a future
+     * state cannot silently inherit another screen's rendering, and adding one here to defer the
+     * work would have spent exactly the guard this file relies on.
+     *
+     * The next task REPLACES this body rather than adding a second function beside it.
+     *
+     * When it is written: draw to `hud` (the screen-space surface), never `mainSurface` —
+     * `GlobalIlluminationSystem` multiplies `mainSurface` by the light map, which would leave the
+     * menu near-invisible in the abyss. Every string goes through [ScreenText]; the default font
+     * draws only U+0020..U+011F and renders anything above it as nothing at all, silently.
+     */
+    private fun drawMainMenu(hud: Surface, w: Float, h: Float)
+    {
+        // Intentionally empty until the menu's layout lands. The world still renders behind this
+        // surface, so the screen is not blank in the meantime - it shows the live shallows, the
+        // same as the attract screen does.
+    }
+
     private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
     {
         // The world (DiveRenderer) still renders behind this surface while IDLE — the

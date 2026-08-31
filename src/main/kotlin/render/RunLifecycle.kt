@@ -4,7 +4,7 @@ import score.InitialsEntry
 import score.Leaderboard
 
 /** The presentation states a booth run cycles through. */
-enum class RunLifecycleState { IDLE, BRIEFING, PLAYING, PAUSED, RUN_OVER, ENTER_INITIALS }
+enum class RunLifecycleState { MAIN_MENU, IDLE, BRIEFING, PLAYING, PAUSED, RUN_OVER, ENTER_INITIALS }
 
 /**
  * Pure state machine for the run lifecycle — no pulseengine imports, so it is fully
@@ -15,9 +15,24 @@ enum class RunLifecycleState { IDLE, BRIEFING, PLAYING, PAUSED, RUN_OVER, ENTER_
  * simulation of a single run.
  *
  * States:
- * - IDLE     — attract mode, entered on boot. The sim is NOT ticked (caller's
- *              responsibility — see [RunLifecycleState.IDLE] usage in EnPustTil). A fresh
- *              input press leaves IDLE into a brand new run.
+ * - MAIN_MENU — entered on boot (2026-08-31: this used to be IDLE's job — see the amendment
+ *              below). The sim is NOT ticked, for the same reason IDLE's isn't: a menu that
+ *              ticked DiveSim would burn the diver's air while nobody was playing. A
+ *              `menuAction` press is what actually starts a dive from here (straight to
+ *              BRIEFING, or PLAYING if [BRIEFING_SECONDS] is zero-or-less — see that
+ *              constant); `anyInputPressed` alone does nothing, on purpose, because
+ *              EnPustTil hands this class the SAME edge-pulse for menu navigation and for
+ *              "start" — see [MENU_IDLE_TIMEOUT_SECONDS] for the unattended-recovery half of
+ *              this state, and the IDLE amendment below for why a press FROM attract still
+ *              lands here rather than straight into a run.
+ * - IDLE     — attract mode, the screensaver an abandoned MAIN_MENU falls back to (see
+ *              [MENU_IDLE_TIMEOUT_SECONDS]). The sim is NOT ticked (caller's responsibility —
+ *              see [RunLifecycleState.IDLE] usage in EnPustTil).
+ *              AMENDMENT (2026-08-31, MAIN_MENU added): a fresh input press used to leave
+ *              IDLE straight into a brand new run (BRIEFING, or PLAYING if briefing-less).
+ *              It now returns to MAIN_MENU instead — attract is a second way to REACH the
+ *              menu, not a second way to start a dive, and this is the one existing
+ *              behaviour this task deliberately changes. See that branch's own comment.
  * - PLAYING  — a run is in progress. Moves to RUN_OVER the instant the sim reports
  *              `runOver`. Start/restart input is otherwise ignored here — kicking/bleeding
  *              never restarts anything. The one thing that DOES act here is `pausePressed`
@@ -35,9 +50,12 @@ enum class RunLifecycleState { IDLE, BRIEFING, PLAYING, PAUSED, RUN_OVER, ENTER_
  *              .isWorthRecording]), this state moves ON ITS OWN, with no input required,
  *              into ENTER_INITIALS — a qualifying run always gets a chance at the board.
  *              Otherwise a fresh press restarts immediately, or — with no input at all —
- *              the state falls back to IDLE once [idleTimeoutSeconds] have elapsed since
- *              RUN_OVER was entered (so that value already includes the dwell window, not
- *              on top of it).
+ *              the state falls back once [idleTimeoutSeconds] have elapsed since RUN_OVER
+ *              was entered (so that value already includes the dwell window, not on top of
+ *              it). AMENDMENT (2026-08-31): that fallback now lands on MAIN_MENU rather than
+ *              IDLE — a player who just finished a run gets the menu (where "play again" is
+ *              one press away), not the screensaver. [idleTimeoutSeconds] itself is
+ *              unchanged; only its destination moved. See [returnToMenu].
  * - ENTER_INITIALS — three-letter arcade-initials entry (see [InitialsEntry]), reached
  *              only for a run worth recording. Completes either when the player confirms
  *              the third letter, or — if nobody touches the controls for
@@ -45,9 +63,10 @@ enum class RunLifecycleState { IDLE, BRIEFING, PLAYING, PAUSED, RUN_OVER, ENTER_
  *              set (default "AAA" if nothing was changed). AUTO-SUBMIT rather than
  *              discarding is a deliberate choice: a qualifying score that already exists
  *              is worth more to the leaderboard/prize draw than a "clean" abandonment,
- *              and — just as importantly — the cabinet MUST recover to IDLE on its own so
- *              a walked-away player can never block the next person in the queue from
- *              playing.
+ *              and — just as importantly — the cabinet MUST recover on its own so a
+ *              walked-away player can never block the next person in the queue from
+ *              playing. AMENDMENT (2026-08-31): recovery now lands on MAIN_MENU rather than
+ *              IDLE, same reasoning and same [returnToMenu] as RUN_OVER's fallback above.
  *
  * EDGE-TRIGGERING: this class — and the [InitialsEntry] it owns — track the previous
  * frame themselves and only treat a false-to-true transition as "pressed": a button held
@@ -77,7 +96,7 @@ class RunLifecycle(
     private val briefingDwellSeconds: Float = BRIEFING_DWELL_SECONDS
 )
 {
-    var state: RunLifecycleState = RunLifecycleState.IDLE
+    var state: RunLifecycleState = RunLifecycleState.MAIN_MENU
         private set
 
     /**
@@ -88,7 +107,13 @@ class RunLifecycle(
         private set
 
     /**
-     * True for exactly the [update] call that transitions IDLE -> BRIEFING.
+     * True for exactly the [update] call that transitions into BRIEFING.
+     *
+     * AMENDMENT (2026-08-31): that transition used to be IDLE -> BRIEFING; it is now
+     * MAIN_MENU -> BRIEFING (`menuAction`), since IDLE's own press no longer starts anything
+     * — see the class doc's IDLE amendment. The flag's contract is unaffected: it still
+     * fires on exactly the update that enters BRIEFING, whichever state that update started
+     * from.
      *
      * EnPustTil latches `lifecycleEdges.firedPadId` on this, and that latch is load-bearing.
      * `firedPadId` is reset to null at the top of EVERY frame, and the briefing's countdown
@@ -102,15 +127,27 @@ class RunLifecycle(
         private set
 
     /**
-     * True for exactly one tick on each arrival at [RunLifecycleState.IDLE] from a finished
-     * run - the RUN_OVER timeout and the end of initials entry alike, but NOT a resume out
-     * of PAUSED, which returns to an attract screen that was never left.
+     * True for exactly one tick on the arrival that follows a finished run - the RUN_OVER
+     * timeout and the end of initials entry alike, but NOT a resume out of PAUSED, which
+     * returns to a screen that was never left.
      *
-     * EnPustTil rebuilds [dive.DiveSim] on this. Without it the attract screen kept the
-     * previous run's final frame: `sim` was reconstructed only on [justStarted], and
-     * `simulationAdvances` is false in IDLE, so the diver simply stopped wherever the clock
-     * caught him. After a 120 m timeout that left the queue-forming display a near-black
-     * abyss with a leaderboard floating in it, until the next person pressed start.
+     * EnPustTil rebuilds [dive.DiveSim] on this. Without it the screen behind a finished run
+     * kept the previous run's final frame: `sim` was reconstructed only on [justStarted], and
+     * `simulationAdvances` is false wherever this flag fires, so the diver simply stopped
+     * wherever the clock caught him. After a 120 m timeout that left the queue-forming
+     * display a near-black abyss with a leaderboard floating in it, until the next person
+     * pressed start.
+     *
+     * AMENDMENT (2026-08-31): both of the paths this flag documents (RUN_OVER's fallback,
+     * ENTER_INITIALS' completion/auto-submit) now land on MAIN_MENU rather than IDLE - see
+     * the class doc. This flag's own name still says "Idle" because IDLE is where it was
+     * born and renaming it is out of this task's scope, but its CONTRACT was always "a run
+     * just ended, rebuild the sim" and that contract does not depend on which resting screen
+     * the run lands on. [enter] deliberately does NOT grow a blanket
+     * `newState == IDLE || newState == MAIN_MENU` condition to cover this: that would also
+     * fire on IDLE's own ordinary press into MAIN_MENU (opening the menu from attract is not
+     * "a run just ended"). Instead [returnToMenu] sets this flag explicitly at the two call
+     * sites that really mean it - see that function.
      *
      * A one-tick event rather than a latched flag, for the same reason [justStarted] is.
      */
@@ -189,10 +226,15 @@ class RunLifecycle(
      * ticking exactly as they did before this state existed — `DiveSim.tick` already no-ops
      * once `runOver` is set, so those two are true here to preserve the previous behaviour
      * verbatim rather than because anything still moves.
+     *
+     * MAIN_MENU (2026-08-31) joins IDLE, BRIEFING and PAUSED at `false`, for the exact
+     * reason IDLE is false: a menu that ticked `DiveSim` would burn the diver's air while
+     * nobody was playing. It is grouped with IDLE and BRIEFING rather than with PLAYING
+     * because, like them, nothing the player does on this screen is a dive in progress.
      */
     val simulationAdvances: Boolean get() = when (state)
     {
-        RunLifecycleState.IDLE, RunLifecycleState.BRIEFING, RunLifecycleState.PAUSED -> false
+        RunLifecycleState.MAIN_MENU, RunLifecycleState.IDLE, RunLifecycleState.BRIEFING, RunLifecycleState.PAUSED -> false
         RunLifecycleState.PLAYING, RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
     }
 
@@ -213,11 +255,16 @@ class RunLifecycle(
      * comparison: that inline form is an exhaustive rule hiding in an `||`, and a sixth state
      * added later would silently inherit "sprite frozen" instead of failing to compile. An
      * exhaustive `when` on purpose, with no `else`.
+     *
+     * MAIN_MENU (2026-08-31) joins IDLE and the rest at `true`: a motionless diver behind
+     * the menu reads as a crashed game exactly as it would behind attract or the briefing,
+     * and the menu is the FIRST screen a booth or a desktop build shows — a frozen diver
+     * there is the worst possible first impression.
      */
     val spriteAnimates: Boolean get() = when (state)
     {
         RunLifecycleState.PAUSED -> false
-        RunLifecycleState.IDLE, RunLifecycleState.BRIEFING, RunLifecycleState.PLAYING,
+        RunLifecycleState.MAIN_MENU, RunLifecycleState.IDLE, RunLifecycleState.BRIEFING, RunLifecycleState.PLAYING,
         RunLifecycleState.RUN_OVER, RunLifecycleState.ENTER_INITIALS -> true
     }
 
@@ -266,6 +313,7 @@ class RunLifecycle(
     private var timeInState = 0f
     private var wasInputPressed = false
     private var wasPausePressed = false
+    private var wasMenuActionPressed = false
 
     /**
      * How long the exit input has been held CONTINUOUSLY while PAUSED. Reset to zero the
@@ -303,6 +351,14 @@ class RunLifecycle(
      *   input read as a level and not edge-detected, deliberately: what it measures is
      *   duration, and duration is what makes the exit safe (see [EXIT_HOLD_SECONDS]).
      *   Consulted only in PAUSED.
+     * @param menuAction whether the menu's own "confirm/select this item" input reads
+     *   pressed THIS frame — a level reading, edge-detected here exactly like
+     *   [anyInputPressed]. Consulted only in MAIN_MENU, and deliberately separate from
+     *   [anyInputPressed]: MAIN_MENU is where a caller distinguishes "the player is merely
+     *   moving the menu cursor" from "the player picked something," and collapsing the two
+     *   into one boolean would make every navigation press start a dive. Defaulted to
+     *   `false` so every pre-existing caller and test compiles unchanged — none of them
+     *   know MAIN_MENU exists yet.
      * @return the state after this update.
      */
     fun update(
@@ -314,7 +370,8 @@ class RunLifecycle(
         cycleDown: Boolean = false,
         confirmPressed: Boolean = false,
         pausePressed: Boolean = false,
-        exitHeld: Boolean = false
+        exitHeld: Boolean = false,
+        menuAction: Boolean = false
     ): RunLifecycleState
     {
         justStarted = false
@@ -330,20 +387,49 @@ class RunLifecycle(
         val pauseEdge = pausePressed && !wasPausePressed
         wasPausePressed = pausePressed
 
+        val menuActionEdge = menuAction && !wasMenuActionPressed
+        wasMenuActionPressed = menuAction
+
         when (state)
         {
+            RunLifecycleState.MAIN_MENU ->
+                // The menu's own screen — see the class doc's MAIN_MENU entry. menuAction is
+                // deliberately the ONLY thing that can start a dive from here; anyInputPressed
+                // is left completely unconsulted in this branch (contrast IDLE below, which
+                // still reads pressedEdge) so a stray navigation press can never be mistaken
+                // for "start."
+                if (menuActionEdge)
+                {
+                    // A zero-or-less briefing is NO briefing - straight to PLAYING, exactly
+                    // as this did before BRIEFING existed, and exactly as IDLE's press used
+                    // to do before this task moved "start a dive" here. See BRIEFING_SECONDS.
+                    if (briefingSeconds > 0f) enterBriefing()
+                    else enter(RunLifecycleState.PLAYING, started = true)
+                }
+                else if (timeInState >= MENU_IDLE_TIMEOUT_SECONDS)
+                {
+                    // Unattended-recovery fallback, same shape as every other state's: a menu
+                    // nobody is touching must not hold the screen forever. Longer than
+                    // IDLE_TIMEOUT_SECONDS on purpose - see MENU_IDLE_TIMEOUT_SECONDS' own doc.
+                    enter(RunLifecycleState.IDLE)
+                }
+                // Otherwise: stay. A held or repeated anyInputPressed (menu navigation) does
+                // NOT reset this timer - only genuine inactivity does - matching every other
+                // idle-timeout in this class, which are all measured from state entry.
+
             RunLifecycleState.IDLE ->
                 // Esc from attract opens the same screen a paused run gets, so a technician
                 // has one way to close the cabinet down and does not have to remember a
                 // keyboard shortcut nobody wrote down. Checked AFTER the start press so a
                 // player and a technician acting in the same frame gives the player the run.
-                if (pressedEdge)
-                {
-                    // A zero-or-less briefing is NO briefing - straight to PLAYING, exactly
-                    // as this did before BRIEFING existed. See BRIEFING_SECONDS.
-                    if (briefingSeconds > 0f) enterBriefing()
-                    else enter(RunLifecycleState.PLAYING, started = true)
-                }
+                //
+                // AMENDMENT (2026-08-31): a press here used to go straight into BRIEFING/
+                // PLAYING (with the zero-briefing shortcut inline). It now returns to
+                // MAIN_MENU instead, unconditionally - "start a dive" is MAIN_MENU's decision
+                // to make (see that branch above), and IDLE's only job is to be the
+                // screensaver a walked-away MAIN_MENU falls back to. This is the one existing
+                // behaviour this task deliberately changes.
+                if (pressedEdge) enter(RunLifecycleState.MAIN_MENU)
                 else if (pauseEdge) enterPause(RunLifecycleState.IDLE)
 
             RunLifecycleState.BRIEFING ->
@@ -385,6 +471,13 @@ class RunLifecycle(
             }
 
             RunLifecycleState.RUN_OVER ->
+                // AMENDMENT (2026-08-31): both idleTimeoutSeconds fallbacks below used to
+                // land on IDLE; they now land on MAIN_MENU (returnToMenu()), so a player who
+                // just finished a run gets the menu - "play again" one press away - rather
+                // than the attract screen. idleTimeoutSeconds itself is untouched; only the
+                // destination moved. The retry branch (pressedEdge, mid-list) is UNCHANGED -
+                // a retry still goes straight back to PLAYING, never through MAIN_MENU or
+                // BRIEFING (see `a retry from RUN_OVER does not re-brief`).
                 if (timeInState >= dwellSeconds)
                 {
                     if (Leaderboard.isWorthRecording(bankedScore))
@@ -392,10 +485,10 @@ class RunLifecycle(
                     else if (pressedEdge)
                         enter(RunLifecycleState.PLAYING, started = true)
                     else if (timeInState >= idleTimeoutSeconds)
-                        enter(RunLifecycleState.IDLE)
+                        returnToMenu()
                 }
                 else if (timeInState >= idleTimeoutSeconds)
-                    enter(RunLifecycleState.IDLE)
+                    returnToMenu()
 
             RunLifecycleState.ENTER_INITIALS ->
             {
@@ -412,7 +505,26 @@ class RunLifecycle(
     {
         completedInitials = initialsEntry.initialsString()
         initialsJustCompleted = true
-        enter(RunLifecycleState.IDLE)
+        returnToMenu()
+    }
+
+    /**
+     * The shared "a run just ended, and nobody is holding a paused one open" landing spot —
+     * called from RUN_OVER's unattended fallback and from [finishInitials]. AMENDMENT
+     * (2026-08-31): both used to call `enter(IDLE)` directly; they now land on MAIN_MENU, but
+     * still need [justReturnedToIdle] to fire, because that flag's actual contract (EnPustTil
+     * rebuilds `DiveSim` so the next screen never shows the finished run's last frame) does
+     * not care which resting screen the run lands on. [enter]'s own condition for the flag
+     * stays `newState == IDLE` — broadening it to also cover MAIN_MENU would make it ALSO
+     * fire on IDLE's ordinary press into MAIN_MENU (opening the menu from attract is not "a
+     * run just ended," see that branch above) — so this function sets the flag explicitly,
+     * after calling [enter], instead. See [justReturnedToIdle]'s own doc for the full
+     * reasoning.
+     */
+    private fun returnToMenu()
+    {
+        enter(RunLifecycleState.MAIN_MENU)
+        justReturnedToIdle = true
     }
 
     private fun enterPause(returnTo: RunLifecycleState)
@@ -436,6 +548,12 @@ class RunLifecycle(
         // would also swallow a future "abandon run, return to attract" route added to the
         // pause screen, which goes PAUSED -> IDLE through this same funnel but IS a genuine
         // return to a fresh attract screen, not a resume.
+        //
+        // Deliberately still just `== IDLE`, not `== IDLE || == MAIN_MENU`, even though
+        // MAIN_MENU is now also a valid landing spot for a finished run - see [returnToMenu],
+        // which sets the flag explicitly for exactly those two call sites instead of widening
+        // this condition (which would incorrectly also fire on IDLE's ordinary press into
+        // MAIN_MENU).
         justReturnedToIdle = newState == RunLifecycleState.IDLE && !resuming
         state = newState
         timeInState = 0f
@@ -458,14 +576,16 @@ class RunLifecycle(
          *
          * This countdown IS the unattended-recovery guarantee for the state: a player who
          * walks away mid-briefing does not strand the cabinet, because the run starts,
-         * drowns, and falls through RUN_OVER -> IDLE on the timers above. That is why
-         * BRIEFING needs no idle timeout of its own.
+         * drowns, and falls through RUN_OVER -> MAIN_MENU (2026-08-31: was IDLE — see
+         * [returnToMenu]) on the timers above. That is why BRIEFING needs no idle timeout of
+         * its own.
          *
-         * ZERO OR LESS MEANS NO BRIEFING AT ALL — IDLE goes straight to PLAYING, exactly as
-         * it did before this state existed. That is the natural reading of the parameter, it
-         * gives a one-constant way to switch the briefing off if it proves too slow in front
-         * of a real queue, and it is what lets every test written before BRIEFING keep
-         * asserting what it always asserted.
+         * ZERO OR LESS MEANS NO BRIEFING AT ALL — MAIN_MENU's `menuAction` goes straight to
+         * PLAYING (2026-08-31: this used to be IDLE's press; see the class doc's IDLE
+         * amendment — the shortcut moved with it). That is the natural reading of the
+         * parameter, it gives a one-constant way to switch the briefing off if it proves too
+         * slow in front of a real queue, and it is what lets every test written before
+         * BRIEFING keep asserting what it always asserted.
          */
         const val BRIEFING_SECONDS = 5f
 
@@ -481,15 +601,28 @@ class RunLifecycle(
         const val BRIEFING_DWELL_SECONDS = 0.75f
 
         /**
-         * Total time (from entering RUN_OVER, dwell included) before falling back to IDLE
-         * with no input at all — 2.5s dwell + 15s of true idle.
+         * Total time (from entering RUN_OVER, dwell included) before falling back with no
+         * input at all — 2.5s dwell + 15s of true idle. The VALUE is untouched by this task;
+         * only its destination moved from IDLE to MAIN_MENU (2026-08-31 — see
+         * [returnToMenu]).
          */
         const val IDLE_TIMEOUT_SECONDS = 17.5f
 
         /**
+         * How long the main menu waits, untouched, before falling back to the attract screen.
+         *
+         * Longer than [IDLE_TIMEOUT_SECONDS] on purpose: attract mode is a screensaver whose
+         * job is to recover an abandoned cabinet, while the menu is somewhere a person is
+         * actively reading and deciding. Timing out of it as briskly as attract times out
+         * would yank the screen away from someone halfway through choosing a resolution.
+         */
+        const val MENU_IDLE_TIMEOUT_SECONDS = 45f
+
+        /**
          * Time in ENTER_INITIALS, with no input at all, before auto-submitting whatever
-         * letters were set and returning to IDLE — see the ENTER_INITIALS state doc for
-         * why this auto-submits rather than discarding.
+         * letters were set and returning to the menu (2026-08-31: was IDLE — see
+         * [returnToMenu]) — see the ENTER_INITIALS state doc for why this auto-submits
+         * rather than discarding.
          */
         const val INITIALS_IDLE_TIMEOUT_SECONDS = 15f
 
