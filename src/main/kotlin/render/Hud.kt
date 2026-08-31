@@ -194,6 +194,16 @@ object Hud
     // MARGIN_FRACTION were ever retuned for the other HUD elements.
     private const val LEGEND_MARGIN_FRACTION = 0.02f
 
+    /** The SHOW FPS readout's own inset from the top-right corner. Equal to
+     * [LEGEND_MARGIN_FRACTION]/[MARGIN_FRACTION] for the identical reason those two are equal
+     * to each other - a coincidence of the same authored margin, kept as its own constant so a
+     * future retune of one never silently moves this. */
+    private const val FPS_MARGIN_FRACTION = 0.02f
+
+    /** Small: this is a diagnostic, not a HUD element a player is meant to read mid-dive.
+     * Between the legend (0.016) and the tape's graduation labels (0.014). */
+    private const val FPS_FONT_FRACTION = 0.015f
+
     private val cold = Color(0.75f, 0.85f, 1f)
     private val danger = Color(1f, 0.25f, 0.2f)
 
@@ -532,6 +542,28 @@ object Hud
     fun legendRightX(w: Float, h: Float): Float = w - h * LEGEND_MARGIN_FRACTION
 
     /**
+     * Where the frame-rate readout's text ENDS — right-aligned in the TOP-right corner.
+     *
+     * Shares [LEGEND_MARGIN_FRACTION] with the legend rather than declaring a margin of its own,
+     * so the two read as inset by the same amount from opposite corners; a second, nearly-equal
+     * constant is how that alignment silently drifts. Height-derived like everything else here,
+     * because `engine.window.width/height` are physical framebuffer pixels and the display's
+     * aspect ratio is not known in advance.
+     */
+    fun fpsRightX(w: Float, h: Float): Float = w - h * LEGEND_MARGIN_FRACTION
+
+    /**
+     * Top of the frame-rate readout's text box. Text grows DOWNWARD from its anchor, the same
+     * convention every layout object in this project uses, so the block occupies
+     * `fpsTopY .. fpsTopY + h * FPS_FONT_FRACTION`.
+     *
+     * Top-right rather than bottom-right deliberately: the legend already owns the bottom margin,
+     * and the depth tape runs down the right-hand side during a run — the top corner is the one
+     * area no in-run element claims.
+     */
+    fun fpsTopY(h: Float): Float = h * LEGEND_MARGIN_FRACTION
+
+    /**
      * Half the width of a rounded rectangle at a row [dy] from its centre — the whole geometry
      * of [fillRoundedRect], pulled out because it is the part that can be wrong.
      *
@@ -657,6 +689,31 @@ object Hud
             text,
             legendRightX(w, h), legendBaselineY(h),
             h * LEGEND_FONT_FRACTION, h, legendInk, xOrigin = 1f
+        )
+    }
+
+    /**
+     * Top-right, small — the SHOW FPS readout (`GameSettings.showFps`, drawn from
+     * `EnPustTil.renderGame` in every lifecycle state, unlike everything else in this file,
+     * which only appears once a run exists). Provably clear of every other element the same
+     * way `renderControlLegend`'s own doc argues [legendRightX]/[legendBaselineY] are: HELD
+     * hangs BELOW the diver and can never reach the top strip, BANKED and the clock box are
+     * top-LEFT, and [FPS_MARGIN_FRACTION] (0.02, same inset as the legend's own margin — a
+     * coincidence, not shared tuning, exactly as [LEGEND_MARGIN_FRACTION]'s own comment argues
+     * for the identical reason) keeps this well above [TAPE_TOP_FRACTION] (0.10), where the
+     * depth tape's right-edge furniture begins.
+     *
+     * [text] is a CACHED, pre-formatted string — see `EnPustTil.rebuildFpsHint`'s own doc for
+     * why the render path must never call `String.format` per frame (CLAUDE.md's no-per-frame-
+     * allocation rule; `String.format` parses the format string and boxes every argument). This
+     * function only draws whatever it is handed.
+     */
+    fun renderFpsReadout(surface: Surface, text: String, w: Float, h: Float)
+    {
+        surface.drawTextWithOutline(
+            text,
+            fpsRightX(w, h), fpsTopY(h),
+            h * FPS_FONT_FRACTION, h, legendInk, xOrigin = 1f
         )
     }
 

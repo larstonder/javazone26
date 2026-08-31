@@ -304,4 +304,25 @@ class AttractScreenTest
         for ((name, value) in anchors)
             assertTrue(value > 0f && value < 1f, "$name = $value is not a screen fraction")
     }
+    @Test
+    fun `the fps readout is drawable at every value it can produce, including the ones that break it`() {
+        // fpsReadout is a FUNCTION, so it cannot live in ScreenText.all() and the font-range
+        // sweep above cannot reach it - the same blind spot BoothStatus.line sits in. This is
+        // that coverage. A stray non-ASCII character here would render as NOTHING AT ALL, with
+        // no glyph and no advance, and the readout would simply be absent with no error.
+        //
+        // The awkward inputs are the point: 0 and negative are what a probe reports before its
+        // first sample window closes, and NaN is what an uninitialised or divided-by-zero
+        // sample looks like. Each must produce drawable text rather than "NaN" arithmetic
+        // leaking into a format string or an exception on the render path.
+        val values = floatArrayOf(0f, -1f, Float.NaN, 0.5f, 4.4f, 16.66f, 73.7f, 1000f)
+        for (v in values) {
+            val text = ScreenText.fpsReadout(v)
+            assertTrue(text.isNotEmpty(), "fpsReadout($v) produced an empty string")
+            for (ch in text)
+                assertTrue(ch.code in 0x20..0x11F,
+                    "fpsReadout($v) contains U+%04X, which the default font renders as nothing".format(ch.code))
+        }
+    }
+
 }

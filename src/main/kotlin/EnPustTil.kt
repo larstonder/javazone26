@@ -845,6 +845,27 @@ object ScreenText
      * exercise their widest form. Used only by the test; cheap enough not to warrant
      * hiding behind a flag.
      */
+    /**
+     * The frame-rate readout's text, built from a sampled p50 frame time in milliseconds.
+     *
+     * A FUNCTION rather than a constant, so it cannot live in [all] and cannot be covered by
+     * the font-range sweep that walks it — the same position [render.BoothStatus.line] is in,
+     * and `AttractScreenTest` says so explicitly at its own exclusion. What keeps it safe is
+     * that every character it can emit is ASCII: digits, a full stop, a space, and the two
+     * literal words below. No em dash, no ellipsis, no curly quote — the default font draws
+     * only U+0020..U+011F and renders anything above it as NOTHING AT ALL, silently.
+     * `ScreenTextTest` asserts that for a spread of values rather than trusting this comment.
+     *
+     * Shows milliseconds AND the implied rate because one of the two is always the one you
+     * wanted: milliseconds is what a budget is expressed in, fps is what a player recognises.
+     */
+    fun fpsReadout(p50Ms: Float): String
+    {
+        if (!(p50Ms > 0f)) return "-- MS"          // written this way round so NaN lands here too
+        val fps = 1000f / p50Ms
+        return "%.1f MS  %.0f FPS".format(p50Ms, fps)
+    }
+
     fun all(): List<String> = listOf(
         SEPARATOR,
         TITLE,
@@ -1269,6 +1290,22 @@ class EnPustTil : PulseEngineGame()
      * must be started explicitly rather than relying on the engine's own hook).
      */
     private var frameProbe: FrameProbe? = null
+
+    /**
+     * The frame-rate readout's composed string, and the p50 it was composed from.
+     *
+     * Cached for the reason every hint string on this class is cached: the readout is drawn on
+     * EVERY frame it is enabled, and `String.format` parses its format string and boxes each
+     * argument, so composing per frame would allocate in the render path for a number that only
+     * changes once a second (see FrameProbe's sampling window). `lastFpsP50` is the guard - the
+     * string is rebuilt only when the sampled value actually moves.
+     *
+     * Float equality is the right test here and not a bug: this compares a value against the
+     * literal copy of itself taken last frame, not two independently computed floats, so it is
+     * exact until FrameProbe writes a genuinely different sample.
+     */
+    private var fpsReadoutText: String = ""
+    private var lastFpsP50: Float = Float.NaN
 
     // The seed driving both today's water column ([DiveSim]) and which leaderboard rows
     // count as "today's" (ScoreRepository.topN filters entries by seed — see
@@ -2818,6 +2855,30 @@ class EnPustTil : PulseEngineGame()
                 VentLabel.render(hud, sim, worldCamera, pixelsPerMetre, h)
                 drawInitialsEntryScreen(hud, w, h)
             }
+        }
+
+        // The frame-rate readout, if the player has asked for one on the GRAPHICS page.
+        //
+        // AFTER the state dispatch above, so it sits over whichever screen is showing rather
+        // than under it, and on the SAME `hud` surface as everything else here - never on
+        // mainSurface, which GlobalIlluminationSystem multiplies by the light map and which
+        // would leave this near-invisible in the abyss, exactly where a player debugging a
+        // frame-rate problem would be looking.
+        //
+        // Deliberately NOT labelled "GPU" in any form: engine.data.gpuRenderTimeMs is CPU wall
+        // time around drawFrame + swapBuffers despite its name, and real GPU timing does not
+        // exist on this platform (glQueryCounter is unimplemented in Apple's GL shim, so
+        // gpuProfiling yields an 85-scope tree of zeroes). What this shows is frame period.
+        val probe = frameProbe
+        if (gameSettings.showFps && probe != null)
+        {
+            val p50 = probe.currentP50Ms
+            if (p50 != lastFpsP50)
+            {
+                lastFpsP50 = p50
+                fpsReadoutText = ScreenText.fpsReadout(p50)
+            }
+            Hud.renderFpsReadout(hud, fpsReadoutText, w, h)
         }
 
         // Dev-only diagnostic overlay for finding 4 (the arcade encoder risk): completely

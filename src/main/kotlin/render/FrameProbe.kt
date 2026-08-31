@@ -71,6 +71,19 @@ class FrameProbe(private val sampleWindowSeconds: Float = 1f) : Service()
     private var count = 0
     private var elapsed = 0f
 
+    /**
+     * The most recently completed sample window's p50 frame time, in milliseconds — 0f until
+     * the first full window closes. Set inside [onRender]'s existing once-a-second block, from
+     * the SAME `percentile(samples, count, 0.5f)` call the `[FRAME]` log line's own p50 comes
+     * from, so the on-screen SHOW FPS readout (`EnPustTil.renderGame`) and the log line it is
+     * meant to be checked against (task-8-brief.md's own verification step) can never disagree
+     * about the same window. Deliberately NOT recomputed every frame — it only changes once a
+     * window closes, exactly as often as the log line does — so a reader should expect this to
+     * hold still for up to [sampleWindowSeconds] at a time, not update smoothly.
+     */
+    var currentP50Ms: Float = 0f
+        private set
+
     override fun onCreate(engine: PulseEngine)
     {
         // Not redundant with engine.service.add(). See the class doc: a Service that does not
@@ -88,8 +101,10 @@ class FrameProbe(private val sampleWindowSeconds: Float = 1f) : Service()
 
         if (count > 0)
         {
+            val p50 = percentile(samples, count, 0.5f)
+            currentP50Ms = p50
             println(formatLine(
-                p50 = percentile(samples, count, 0.5f),
+                p50 = p50,
                 p95 = percentile(samples, count, 0.95f),
                 worst = percentile(samples, count, 1.0f),
                 frames = count
