@@ -83,4 +83,30 @@ class UpdateGameOrderingTest
             "opened, with nothing ever drawn (CRITICAL C3, final review)."
         )
     }
+    @Test
+    fun `updateMainMenu primes the menu model, so the press that opened the menu is not re-read as confirm`() {
+        // A SOURCE SCAN, because the bug it guards lives at a SEAM no unit test reaches.
+        //
+        // `MenuModel` reads LEVELS and edges them itself, and `MenuModel.update` only runs on
+        // frames where the menu is already showing. So on the frame the menu OPENS, `wasConfirm`
+        // is stale-false — and `reset()` guarantees it — while the button that opened the menu is
+        // still physically down, because a human press spans five to ten frames. The next frame
+        // therefore sees a false confirm EDGE on row 0, which is START DIVE: the menu flashes for
+        // one frame and the player is dropped into a dive. Finding C1.
+        //
+        // `MenuModel.prime(...)` seeds the `was*` fields from the live levels so that a level
+        // already held produces no edge. `MenuModelTest` covers prime's BODY; nothing covered its
+        // CALL SITE, and the call site is where the defect actually was — reverting just this one
+        // line left all 887 tests green. That is the hole this closes, in the same style as the
+        // deferred-menu-action scan above.
+        val source = File("src/main/kotlin/EnPustTil.kt").readText()
+        val updateMainMenu = source.substringAfter("private fun updateMainMenu", "")
+        assertTrue(updateMainMenu.isNotEmpty(), "updateMainMenu not found — this scan needs rethinking")
+
+        val body = updateMainMenu.substringBefore("private fun ")
+        assertTrue(body.contains("menuModel.prime("),
+            "updateMainMenu does not call menuModel.prime(); the press that opens the menu will " +
+            "be re-read as a confirm on the next frame and start a dive (finding C1)")
+    }
+
 }

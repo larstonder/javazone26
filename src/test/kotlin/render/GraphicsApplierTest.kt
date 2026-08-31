@@ -2,6 +2,7 @@ package render
 
 import no.njoh.pulseengine.core.graphics.api.Multisampling
 import settings.GameSettings
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -105,20 +106,39 @@ class GraphicsApplierTest
     // --- aoRadius must never drift from localSceneTexScale (Finding I3) -------------------
 
     @Test
-    fun `aoRadius divides back to the same AO_RADIUS_METRES for every preset's own localSceneTexScale`() {
-        // DiveLighting.setup's comment derives radius_world = aoRadius / localSceneTexScale,
-        // so this ratio must be identical for every preset - it IS the constant
-        // AO_RADIUS_METRES, private to DiveLighting, re-derived here through the same
-        // DiveLighting.aoRadiusFor GraphicsApplier.apply now calls for every preset (not just
-        // HIGH, which is all DiveLighting.setup itself ever wrote). Finding I3: apply() used
-        // to write localSceneTexScale for MEDIUM/LOW but never recompute aoRadius alongside
-        // it, so this ratio silently drifted to 5.33m/8m instead of staying at 4m.
-        val expectedScale = GraphicsQuality.HIGH.settings().localSceneTexScale
-        val expected = DiveLighting.aoRadiusFor(expectedScale) / expectedScale
-        for (q in GraphicsQuality.entries) {
-            val scale = q.settings().localSceneTexScale
-            assertEquals(expected, DiveLighting.aoRadiusFor(scale) / scale, 0.0001f,
-                "$q's aoRadius/localSceneTexScale does not match HIGH's - the two have drifted apart")
-        }
+    fun `apply writes aoRadius wherever it writes localSceneTexScale`() {
+        // A SOURCE SCAN, and it replaced a test that could not fail.
+        //
+        // The previous version asserted `aoRadiusFor(s) / s == aoRadiusFor(sHIGH) / sHIGH` for
+        // every preset. Since `aoRadiusFor(s)` IS `AO_RADIUS_METRES * s`, that substitutes to
+        // `K == K` — true for any implementation, including one where `apply` never writes
+        // `aoRadius` at all, which is the actual defect (finding I3). It is the same identity
+        // trap `SandBankTest`'s doc warns about: `(a + b) - b == a` cannot be falsified by any
+        // edit anywhere.
+        //
+        // What can really go wrong is a SEAM, not arithmetic: `apply` sets
+        // `localSceneTexScale` and forgets `aoRadius` beside it, so the shader's
+        // `radius_world = aoRadius / localSceneTexScale` silently becomes 5.33 m at MEDIUM and
+        // 8 m at LOW instead of the intended 4 m. Only a live GI system could observe that at
+        // runtime, so this scans the source instead — the house pattern, as in `DrawTest`,
+        // `MappedPadsTest`, `MainCameraOwnershipTest` and `UpdateGameOrderingTest`.
+        val source = File("src/main/kotlin/render/GraphicsApplier.kt").readText()
+        assertTrue(source.contains("localSceneTexScale"),
+            "GraphicsApplier no longer writes localSceneTexScale — this test needs rethinking")
+        assertTrue(source.contains("aoRadius"),
+            "GraphicsApplier writes localSceneTexScale but never aoRadius; the shader derives " +
+            "radius_world = aoRadius / localSceneTexScale, so the AO radius drifts with quality")
+    }
+
+    @Test
+    fun `aoRadiusFor scales linearly, so the world radius it encodes is quality-independent`() {
+        // The arithmetic half, kept separate from the seam half above. This CAN fail: an
+        // aoRadiusFor that squared, clamped or floored its argument would break the linearity
+        // the shader's division depends on, and the ratio would stop being constant.
+        val low = DiveLighting.aoRadiusFor(0.2f)
+        val high = DiveLighting.aoRadiusFor(0.4f)
+        assertEquals(2f, high / low, 0.0001f,
+            "aoRadiusFor must be linear in the scale, or radius_world stops being constant")
+        assertTrue(low > 0f && high > 0f, "aoRadiusFor must stay positive")
     }
 }

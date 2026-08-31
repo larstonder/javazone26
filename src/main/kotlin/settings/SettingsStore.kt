@@ -64,7 +64,14 @@ class EngineSettingsStore(private val engine: PulseEngine) : SettingsStore
         catch (e: Exception)
         {
             Logger.warn { "Could not read $FILE_NAME (${e.message}); using default settings" }
-            defaultForThisBoot()
+            // .clamped() HERE TOO, and it stopped being optional when defaultForThisBoot() started
+            // deriving from live config. It was harmless while this returned GameSettings.DEFAULT,
+            // which is valid by construction - but `frameCap` now comes from engine.config
+            // .targetFps, and a machine running a value that is not on the FRAME_CAPS ladder (75,
+            // say) would hand GraphicsApplier an unclamped record on the corrupt-file path only.
+            // GameSettings' own contract is that a loaded value is always clamped; both exits of
+            // this function have to honour it, not just the happy one.
+            defaultForThisBoot().clamped()
         }
 
     /**
