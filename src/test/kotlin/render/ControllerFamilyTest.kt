@@ -2,6 +2,7 @@ package render
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 
 /**
  * What a GLFW device name is allowed to mean.
@@ -126,7 +127,13 @@ class ControllerFamilyTest
             "Arcade Fightstick",
             "2 Axis 8 Button Gamepad",
             "Logitech Dual Action",
-            "Nintendo Switch Pro Controller",
+            // "Nintendo Switch Pro Controller" USED TO BE HERE and was removed on 2026-08-31,
+            // deliberately: it now resolves to ControllerFamily.NINTENDO. It was listed as a
+            // fall-through only because no Nintendo family existed yet, not because falling
+            // through was ever right for it - a Switch pad's bottom button is printed B while
+            // SDL calls it A, so GENERIC told that player to press a button whose legend belongs
+            // to a different one. See NintendoControllerFamilyTest, which now pins the opposite
+            // expectation, and NintendoControlHintsTest for the legend itself.
             "Wireless Controller"
         )
         for (name in names)
@@ -146,5 +153,48 @@ class ControllerFamilyTest
             ControllerFamily.PLAYSTATION,
             ControllerFamily.familyFor("PowerA Wired Controller for Xbox and PS4")
         )
+    }
+}
+
+/**
+ * The NINTENDO family, added when a Switch Pro Controller reached this project and every screen
+ * told the player to press a button that does something else.
+ */
+class NintendoControllerFamilyTest
+{
+    /** The literal `glfwGetGamepadName(0)` on the owner's own pad over Bluetooth, measured. */
+    @Test
+    fun `the real Switch Pro name over Bluetooth resolves to NINTENDO`()
+    {
+        assertEquals(
+            ControllerFamily.NINTENDO,
+            ControllerFamily.familyFor("Nintendo Switch Pro Controller")
+        )
+    }
+
+    @Test
+    fun `Joy-Cons and bare Switch names resolve too`()
+    {
+        assertEquals(ControllerFamily.NINTENDO, ControllerFamily.familyFor("Joy-Con (L)"))
+        assertEquals(ControllerFamily.NINTENDO, ControllerFamily.familyFor("Switch Pro Controller"))
+    }
+
+    /**
+     * The token that was deliberately NOT used. Both of these are real SDL database entries for
+     * PlayStation-layout pads; matching "pro controller" would relabel their face buttons into
+     * Nintendo legends, which is the "a wrong guess is worse than no guess" failure the class doc
+     * warns about.
+     */
+    @Test
+    fun `third-party Pro Controllers are not mistaken for Nintendo pads`()
+    {
+        assertNotEquals(ControllerFamily.NINTENDO, ControllerFamily.familyFor("Revolution Pro Controller"))
+        assertNotEquals(ControllerFamily.NINTENDO, ControllerFamily.familyFor("Thrustmaster eSwap Pro Controller"))
+    }
+
+    @Test
+    fun `an unrecognised pad is still GENERIC`()
+    {
+        assertEquals(ControllerFamily.GENERIC, ControllerFamily.familyFor("USB Gamepad"))
     }
 }

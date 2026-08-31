@@ -107,6 +107,15 @@ class MappedPads(private val reader: StateReader)
          * must not throw: a throw here reaches `CallbackGuard` and costs a whole frame of
          * input.
          */
+        /**
+         * Called once at the top of every [MappedPads.refresh], before any [readMapped].
+         *
+         * Exists for [MacGamepadStateReader], which pairs GameController slots to GLFW joystick
+         * ids BY POSITION and therefore needs to know where a frame begins. Defaulted to nothing
+         * so [GlfwGamepadStateReader] - which is stateless across a frame - is unaffected.
+         */
+        fun beginFrame() {}
+
         fun readMapped(joystickId: Int, buttons: ByteArray, axes: FloatArray): Boolean
 
         /**
@@ -189,6 +198,7 @@ class MappedPads(private val reader: StateReader)
     fun refresh(padIds: IntArray, count: Int)
     {
         live.fill(false)
+        reader.beginFrame()
 
         val n = min(count, padIds.size)
         for (i in 0 until n)

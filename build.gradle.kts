@@ -213,6 +213,37 @@ fun Task.requireMacOs()
         throw GradleException("$name builds a macOS app bundle and only runs on macOS.")
 }
 
+/**
+ * Compiles `tools/macpad/MacPadBridge.swift` into `build/macpad/macpadbridge` — the helper that
+ * reads `GameController.framework` for the macOS input bridge (`render/MacPadBridge.kt`).
+ *
+ * macOS ONLY, AND NON-FATAL BY DESIGN. It is wired into `run` so a dev build picks it up, but a
+ * machine with no Swift toolchain must still be able to run the game: `MacPadHelper.locate()`
+ * simply finds nothing and `EnPustTil.buildGamepadStateReader` falls back to the GLFW read that
+ * shipped before this existed. Windows never registers the task at all, so the `.exe` build is
+ * untouched by construction.
+ */
+val macPadBinary = layout.buildDirectory.file("macpad/macpadbridge")
+
+tasks.register<Exec>("buildMacPadBridge") {
+    group = "build"
+    description = "Compiles the macOS GameController helper into build/macpad/macpadbridge."
+    // `onlyIf` rather than a conditional `register`: the task still EXISTS on Windows (so
+    // `dependsOn` below resolves and the build script stays one shape), it simply does nothing.
+    onlyIf { org.gradle.internal.os.OperatingSystem.current().isMacOsX }
+    val source = layout.projectDirectory.file("tools/macpad/MacPadBridge.swift")
+    inputs.file(source)
+    outputs.file(macPadBinary)
+    doFirst { macPadBinary.get().asFile.parentFile.mkdirs() }
+    commandLine(
+        "swiftc", "-O",
+        "-o", macPadBinary.get().asFile.absolutePath,
+        source.asFile.absolutePath
+    )
+}
+
+tasks.named("run") { dependsOn("buildMacPadBridge") }
+
 tasks.register<Exec>("buildMacRelease") {
     group = "release"
     description = "Builds a self-contained release/macos/$macAppName.app via jpackage."
@@ -230,6 +261,9 @@ tasks.register<Exec>("buildMacRelease") {
     // so the unstripped pulse-engine jar supplies the dylibs. Package the fat jar ALONE and the
     // .app dies in GLFW init with no native library at all.
     dependsOn(tasks.installDist)
+    // The macOS GameController helper ships INSIDE the bundle - see the doLast below, and
+    // `render/MacPadBridge.kt` for why the game needs a second input path on macOS at all.
+    dependsOn("buildMacPadBridge")
 
     // NOTE `project.name`, not `name`: inside a task configuration block the implicit receiver is
     // the Task, whose `name` is "buildMacRelease".
@@ -275,6 +309,43 @@ tasks.register<Exec>("buildMacRelease") {
             "--dest", macReleaseDir.asFile.absolutePath
         )
         args(macSigningArgs)
+    }
+
+    /**
+     * Drops `macpadbridge` into the bundle's own `Contents/MacOS`, which is where
+     * `MacPadHelper.candidatePaths` looks first (`java.home` inside a jpackage app-image is
+     * `<app>.app/Contents/runtime/Contents/Home`, so the two are four levels apart - asserted by
+     * `MacPadHelperTest`).
+     *
+     * AFTER jpackage, not before, because jpackage refuses to write into an existing app-image
+     * and builds `Contents/` itself. The consequence is that when signing is enabled the bundle
+     * has already been signed by the time the helper lands, so the helper is signed on its own
+     * and the bundle is then re-signed - adding a file to a signed bundle invalidates its
+     * signature, and an invalid signature is worse than none: Gatekeeper reports it as damaged
+     * rather than merely unsigned.
+     *
+     * A MISSING HELPER IS NOT A BUILD FAILURE. `MacPadHelper.locate()` finding nothing degrades
+     * to the GLFW read that shipped before this existed, so a machine without a Swift toolchain
+     * still produces a working bundle - it just produces one where a Switch Pro Controller does
+     * not work, which is exactly where this project was before.
+     */
+    doLast {
+        val helper = macPadBinary.get().asFile
+        if (!helper.exists())
+        {
+            logger.warn("buildMacRelease: ${'$'}helper was not built - the bundle will fall back to the GLFW gamepad read.")
+            return@doLast
+        }
+        val target = macAppDir.file("Contents/MacOS/${'$'}{helper.name}").asFile
+        helper.copyTo(target, overwrite = true)
+        target.setExecutable(true)
+
+        val identity = (findProperty("macSigningIdentity") as String?)?.takeIf { it.isNotBlank() }
+        if (identity != null)
+        {
+            exec { commandLine("codesign", "--force", "--sign", identity, target.absolutePath) }
+            exec { commandLine("codesign", "--force", "--deep", "--sign", identity, macAppDir.asFile.absolutePath) }
+        }
     }
 }
 

@@ -103,6 +103,41 @@ object ControlHints
         "RIGHT_THUMB" to "R3"
     )
 
+    /**
+     * NINTENDO IS THE ONE FAMILY THAT RENAMES THE FACE BUTTONS INTO EACH OTHER, and that is the
+     * whole reason it exists rather than being folded into GENERIC.
+     *
+     * SDL - and therefore `GamepadButton`, application.cfg's button map and every binding in
+     * this game - names the face buttons by POSITION, where `A` is the BOTTOM one. Nintendo
+     * prints them in the opposite arrangement: the bottom button is B and the right one is A,
+     * the left is Y and the top is X. So a Switch pad is the only case where the correct legend
+     * for `A` is the string "B", which reads like a bug and is not one.
+     *
+     * Measured rather than assumed, twice over. `GCExtendedGamepad` reported `buttons=[B]` on 81
+     * of 81 presses of the physical bottom button, i.e. Apple names a Nintendo pad by its
+     * printed label while SDL names by position; and GLFW's own bundled Switch mapping resolves
+     * `a:b0` onto that same bottom button. `tools/macpad/MacPadBridge.swift` performs the
+     * matching swap on the input side, so the binding and the legend agree by construction: the
+     * button this screen calls B is the button that fires `kickButton = A`.
+     *
+     * PLUS AND MINUS ARE SPELLED OUT, unlike the shoulder rows. `+` and `-` are plain ASCII and
+     * would survive the font (the reason PLAYSTATION_LABELS spells CROSS is that U+2715 would
+     * not), so this is a legibility choice and not a technical one: `PRESS -` at arcade viewing
+     * distance reads as a dash or a typo, while `PRESS MINUS` cannot.
+     */
+    private val NINTENDO_LABELS = mapOf(
+        "A" to "B",
+        "B" to "A",
+        "X" to "Y",
+        "Y" to "X",
+        "START" to "PLUS",
+        "BACK" to "MINUS",
+        "LEFT_BUMPER" to "L",
+        "RIGHT_BUMPER" to "R",
+        "LEFT_THUMB" to "L STICK",
+        "RIGHT_THUMB" to "R STICK"
+    )
+
     private val XBOX_LABELS = mapOf(
         "START" to "MENU",
         "BACK" to "VIEW",
@@ -118,7 +153,7 @@ object ControlHints
      * new label ships uncovered.
      */
     private val FAMILY_LABELLED_BUTTONS: List<String> =
-        (PLAYSTATION_LABELS.keys + XBOX_LABELS.keys).toList()
+        (PLAYSTATION_LABELS.keys + XBOX_LABELS.keys + NINTENDO_LABELS.keys).toList()
 
     /**
      * A `GamepadButton` name rendered for a screen at arcade viewing distance.
@@ -143,6 +178,7 @@ object ControlHints
         {
             ControllerFamily.PLAYSTATION -> PLAYSTATION_LABELS[buttonName]
             ControllerFamily.XBOX -> XBOX_LABELS[buttonName]
+            ControllerFamily.NINTENDO -> NINTENDO_LABELS[buttonName]
             ControllerFamily.GENERIC -> null
         }
         return legend ?: buttonName.replace('_', ' ')

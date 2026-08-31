@@ -43,6 +43,7 @@ enum class ControllerFamily
 {
     PLAYSTATION,
     XBOX,
+    NINTENDO,
     GENERIC;
 
     companion object
@@ -75,6 +76,23 @@ enum class ControllerFamily
         )
 
         /**
+         * DELIBERATELY NOT `"pro controller"`, which is the obvious token and the wrong one:
+         * Nacon's `Revolution Pro Controller` and `Thrustmaster eSwap Pro Controller` both carry
+         * it and neither is a Nintendo pad, so it would relabel two PlayStation-layout
+         * controllers into Nintendo legends - the "wrong guess is worse than no guess" failure
+         * this class's doc names. Both real names reaching this project spell the vendor or the
+         * console out: `glfwGetGamepadName` returns `"Nintendo Switch Pro Controller"` on the
+         * owner's own pad over Bluetooth (measured), and GameController's `productCategory`
+         * reads `"Switch Pro Controller"`.
+         */
+        private val NINTENDO_TOKENS = arrayOf(
+            "nintendo",
+            "switch",
+            "joy-con",
+            "joycon"
+        )
+
+        /**
          * Case-insensitive substring match on the GLFW device name. `null`, blank and anything
          * unrecognised are [GENERIC] — see the class doc for why that fallback is the safe one.
          *
@@ -98,6 +116,10 @@ enum class ControllerFamily
             for (token in XBOX_TOKENS)
             {
                 if (deviceName.contains(token, ignoreCase = true)) return XBOX
+            }
+            for (token in NINTENDO_TOKENS)
+            {
+                if (deviceName.contains(token, ignoreCase = true)) return NINTENDO
             }
             return GENERIC
         }

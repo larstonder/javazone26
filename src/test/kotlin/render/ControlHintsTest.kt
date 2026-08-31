@@ -354,3 +354,62 @@ class ControlHintsTest
         assertTrue(exit.startsWith("HOLD"), "the hold is the instruction: $exit")
     }
 }
+
+/**
+ * The Nintendo legend. The face rows are the ones with teeth: they map a `GamepadButton` name
+ * onto a DIFFERENT letter, which is unique to this family and reads like a bug until you know
+ * that SDL names by position and Nintendo prints by label.
+ */
+class NintendoControlHintsTest
+{
+    @Test
+    fun `the face buttons are renamed into each other, not left alone`()
+    {
+        assertEquals("B", ControlHints.labelFor("A", ControllerFamily.NINTENDO), "SDL A is the bottom button, printed B")
+        assertEquals("A", ControlHints.labelFor("B", ControllerFamily.NINTENDO), "SDL B is the right button, printed A")
+        assertEquals("Y", ControlHints.labelFor("X", ControllerFamily.NINTENDO), "SDL X is the left button, printed Y")
+        assertEquals("X", ControlHints.labelFor("Y", ControllerFamily.NINTENDO), "SDL Y is the top button, printed X")
+    }
+
+    /**
+     * The swap must be an involution: applying the family's own table twice returns the original
+     * name. A one-way rename would mean some screen somewhere prints a button that does not
+     * exist, and that is exactly the class of bug this family was added to remove.
+     */
+    @Test
+    fun `the face swap is symmetric`()
+    {
+        for (name in listOf("A", "B", "X", "Y"))
+        {
+            val once = ControlHints.labelFor(name, ControllerFamily.NINTENDO)
+            assertEquals(name, ControlHints.labelFor(once, ControllerFamily.NINTENDO))
+        }
+    }
+
+    @Test
+    fun `start and back are spelled out rather than printed as glyphs`()
+    {
+        assertEquals("PLUS", ControlHints.labelFor("START", ControllerFamily.NINTENDO))
+        assertEquals("MINUS", ControlHints.labelFor("BACK", ControllerFamily.NINTENDO))
+    }
+
+    @Test
+    fun `the shoulders are L and R`()
+    {
+        assertEquals("L", ControlHints.labelFor("LEFT_BUMPER", ControllerFamily.NINTENDO))
+        assertEquals("R", ControlHints.labelFor("RIGHT_BUMPER", ControllerFamily.NINTENDO))
+    }
+
+    /**
+     * Other families must be untouched by this addition — a Nintendo swap leaking into the
+     * DualSense legend would silently invert the one pad this project had already measured and
+     * shipped against.
+     */
+    @Test
+    fun `the other families are unchanged`()
+    {
+        assertEquals("CROSS", ControlHints.labelFor("A", ControllerFamily.PLAYSTATION))
+        assertEquals("A", ControlHints.labelFor("A", ControllerFamily.XBOX))
+        assertEquals("A", ControlHints.labelFor("A", ControllerFamily.GENERIC))
+    }
+}

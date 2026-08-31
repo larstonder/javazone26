@@ -38,6 +38,9 @@ import render.Hud
 import render.IridescenceRenderer
 import render.LifecycleInputEdges
 import render.LightEmitter
+import render.MacGamepadStateReader
+import render.MacPadBridge
+import render.MacPadHelper
 import render.MappedPads
 import render.MenuAction
 import render.MenuItemId
@@ -1766,7 +1769,41 @@ class EnPustTil : PulseEngineGame()
      * Constructed here rather than lazily so its one native `GLFWGamepadState` exists before
      * the first frame; freed in [destroyGame].
      */
-    private val mappedPads = MappedPads(GlfwGamepadStateReader())
+    private val mappedPads = MappedPads(buildGamepadStateReader())
+
+    /**
+     * Picks the gamepad reader for this machine: the macOS GameController bridge when it is
+     * available, the plain GLFW read everywhere else.
+     *
+     * WHY MACOS NEEDS A SECOND READER AT ALL. On macOS 26 a Nintendo Switch Pro Controller
+     * cannot be read through GLFW, which is Pulse Engine's only input path. macOS claims the pad
+     * into `GameController.framework`; over USB the HID device GLFW is left with emits
+     * un-handshaken garbage (227 distinct states in 4 s with nobody touching it), and over
+     * Bluetooth it is a VIRTUAL device that enumerates perfectly - `isGamepad = true`, correct
+     * GUID, `SDL-mapped` in the boot diagnostic - and never delivers a single report. That
+     * second one is the dangerous shape: every diagnostic this project already had said the pad
+     * was fine. See [MacPadBridge] and
+     * `docs/superpowers/specs/2026-08-31-macos-gamecontroller-input-design.md`.
+     *
+     * EVERY FAILURE HERE DEGRADES TO TODAY'S BEHAVIOUR. Not macOS, no helper binary, a helper
+     * that will not start, a helper that dies mid-session - all of them end at
+     * [GlfwGamepadStateReader], which is what shipped before this existed. A booth cabinet with
+     * an odd button map beats a dead one; the same argument [MappedPads.StateReader.readRaw]
+     * already makes one layer down.
+     *
+     * Called from a field initialiser, so it must not touch `engine` - it reads only system
+     * properties and the filesystem.
+     */
+    private fun buildGamepadStateReader(): MappedPads.StateReader
+    {
+        val glfw = GlfwGamepadStateReader()
+        if (!MacPadHelper.isMacOs()) return glfw
+
+        val helper = MacPadHelper.locate() ?: return glfw
+        val bridge = MacPadBridge(helper)
+        if (!bridge.start()) return glfw
+        return MacGamepadStateReader(bridge, glfw)
+    }
 
     /**
      * Puts the diver at [depthPin], if there is one. Called after EVERY `DiveSim` construction.
