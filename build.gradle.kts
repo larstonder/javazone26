@@ -333,10 +333,10 @@ tasks.register<Exec>("buildMacRelease") {
         val helper = macPadBinary.get().asFile
         if (!helper.exists())
         {
-            logger.warn("buildMacRelease: ${'$'}helper was not built - the bundle will fall back to the GLFW gamepad read.")
+            logger.warn("buildMacRelease: $helper was not built - the bundle will fall back to the GLFW gamepad read.")
             return@doLast
         }
-        val target = macAppDir.file("Contents/MacOS/${'$'}{helper.name}").asFile
+        val target = macAppDir.file("Contents/MacOS/${helper.name}").asFile
         helper.copyTo(target, overwrite = true)
         target.setExecutable(true)
 
