@@ -176,7 +176,33 @@ class GraphicsApplier(private val engine: PulseEngine)
      */
     fun reassertVsync(enabled: Boolean)
     {
-        GLFW.glfwSwapInterval(if (enabled) 1 else 0)
+        // QUEUED, NOT CALLED DIRECTLY - a direct `GLFW.glfwSwapInterval` here was wrong twice.
+        //
+        // 1. WRONG THREAD. This runs from `updateGame`, i.e. the engine's "game" thread
+        //    (`gameLoopMode` defaults to MULTITHREADED and nothing in this project overrides it),
+        //    while `glfwSwapInterval` needs the GL context, which is current on the MAIN thread.
+        //    A GLFW call from the wrong thread fails silently - no error, no log - which is the
+        //    exact failure mode this file's own doc warns about two paragraphs up.
+        // 2. WRONG TIME. `updateScreenMode` does not act immediately; it parks a lambda that runs
+        //    on the next frame's `initFrame` and calls `createWindow()`, which re-runs
+        //    `glfwSwapInterval(0)`. A direct call from here lands BEFORE that, and is erased by it.
+        //
+        // `ResizableWindow` exists to solve exactly this: it drains its own queue AFTER
+        // `super.initFrame` has run the engine's queued window recreation, on the main thread,
+        // with the current handle. Routing through it is what makes this function do anything.
+        //
+        // Falls back to the direct call when the window is not a `ResizableWindow` - the engine
+        // can be constructed with a plain `WindowImpl`, and a best-effort attempt beats silently
+        // doing nothing at all. It is logged, because a vsync toggle that quietly does nothing is
+        // precisely the bug this whole function exists to prevent.
+        val window = engine.window
+        if (window is ResizableWindow)
+            window.requestSwapInterval(if (enabled) 1 else 0)
+        else
+        {
+            Logger.warn { "Window is not a ResizableWindow; setting vsync directly, which may not take" }
+            GLFW.glfwSwapInterval(if (enabled) 1 else 0)
+        }
     }
 
     companion object

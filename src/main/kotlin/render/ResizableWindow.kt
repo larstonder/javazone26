@@ -103,8 +103,24 @@ class ResizableWindow : WindowImpl()
      */
     override fun initFrame(engineInternal: PulseEngineInternal)
     {
+        // SUPER FIRST, THEN OUR QUEUE - and the order is the whole correctness of this class.
+        //
+        // `WindowImpl.initFrame` drains the ENGINE's own `onInitFrame` list, and that list is
+        // where `updateScreenMode` parks its work. That lambda calls `createWindow()`, which
+        // (a) produces a NEW GLFW window handle and (b) re-runs `glfwSwapInterval(0)` - the only
+        // call to that function anywhere in the jar.
+        //
+        // So draining ours first, as this did originally, is wrong twice over in the same frame
+        // a player toggles fullscreen: the swap interval we set is immediately reset to 0 by the
+        // recreation, and the size we set is applied to a handle that is then thrown away. Both
+        // failures are silent - no error, no log - and would surface as "vsync randomly stops
+        // working" and "the resolution setting sometimes does nothing".
+        //
+        // Running super first means `windowHandle` below is the CURRENT handle and our swap
+        // interval is the last one applied in the frame.
+        super.initFrame(engineInternal)
+
         pending.takeSize()?.let { (w, h) -> GLFW.glfwSetWindowSize(windowHandle, w, h) }
         pending.takeSwapInterval()?.let { GLFW.glfwSwapInterval(it) }
-        super.initFrame(engineInternal)
     }
 }
