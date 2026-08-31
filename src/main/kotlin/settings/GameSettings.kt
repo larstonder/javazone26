@@ -99,8 +99,17 @@ data class GameSettings(
          * than an import of `render` - this class is meant to have no dependency on the render
          * package at all (see the class doc on why `quality` is a String), so the names are
          * checked against the real enum by hand rather than referenced live. Keep in sync with
-         * `render/GraphicsQuality.kt`'s `LOW, MEDIUM, HIGH`. */
-        private val KNOWN_QUALITIES: Set<String> = setOf("LOW", "MEDIUM", "HIGH")
+         * `render/GraphicsQuality.kt`'s `LOW, MEDIUM, HIGH`.
+         *
+         * `internal`, not `private`: this hand-kept duplicate can drift silently from the real
+         * enum (a fourth preset added to `GraphicsQuality` would make this set start rejecting
+         * it as unknown, degrading it to the default with no error anywhere) - `render`'s
+         * `GraphicsApplierTest` asserts the two stay equal, which needs to read this set rather
+         * than re-derive it, or the check would just restate the literal instead of catching
+         * drift. `internal` rather than `public` because the only reader outside this file is a
+         * test in the same Gradle module, exactly like `dive.DiveSim`'s `internal fun debug*`
+         * hooks. */
+        internal val KNOWN_QUALITIES: Set<String> = setOf("LOW", "MEDIUM", "HIGH")
 
         /** Fullscreen at 1920x1200 measured 1.74x faster than windowed at 2048x1152 - the same
          * pixel count - most likely macOS compositor bypass. Matches the shipping
