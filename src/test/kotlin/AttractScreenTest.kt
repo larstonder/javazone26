@@ -1,6 +1,7 @@
 import booth.CallbackSites
 import render.BoothStatus
 import render.Framing
+import render.Hud
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -325,4 +326,47 @@ class AttractScreenTest
         }
     }
 
+    @Test
+    fun `the fps readout clears the booth status line it now shares the bottom-left corner with`() {
+        // THE ONE COLLISION THE MOVE TO BOTTOM-LEFT COULD ACTUALLY CREATE (2026-08-31). The
+        // readout used to sit top-right; it is bottom-left now, and the booth status line has
+        // been flush in that corner since it was written — dim, small, and the one thing an
+        // attendant looks for when a cabinet misbehaves. They would print through each other on
+        // every attract-screen frame, because Hud.renderFpsReadout is drawn in EVERY lifecycle
+        // state (after renderGame's `when`), attract included.
+        //
+        // THE TEST LIVES HERE, IN THE DEFAULT PACKAGE, AND HAS TO. `AttractLayout` is declared in
+        // EnPustTil.kt at the source root, so `render.Hud` cannot import it and cannot express
+        // this relationship itself (Hud.FPS_BOTTOM_FRACTION's own doc says so and points here) —
+        // the same package split `Framing.SEA_FLOOR_DEPTH` and `SandBank.QUAD_BOTTOM_DEPTH` are
+        // held together across by a test rather than by an expression. HudTest is in `render` and
+        // could not see AttractLayout either.
+        //
+        // Asserted as a RELATIONSHIP at a real screen height, not against copied literals: a
+        // retune of either STATUS_FONT, STATUS_Y, FPS_FONT_FRACTION or FPS_BOTTOM_FRACTION that
+        // closes the gap fails here, which is the whole point of not writing 0.965 down twice.
+        val h = 1080f
+        val fpsTop = Hud.fpsTopY(h)
+        val fpsBottom = fpsTop + h * Hud.FPS_FONT_FRACTION
+        val statusTop = h * AttractLayout.STATUS_Y
+
+        assertTrue(
+            fpsBottom < statusTop,
+            "the fps readout's text box ends at ${'$'}fpsBottom but the booth status line starts at " +
+            "${'$'}statusTop - they overlap. Both are bottom-left and both are drawn on the attract " +
+            "screen, so a player with SHOW FPS on would read the two through each other, and the " +
+            "status line is what an attendant reads to diagnose the cabinet."
+        )
+        assertTrue(
+            fpsBottom > h * 0.9f,
+            "the fps readout's text box ends at ${'$'}fpsBottom, which is not in the bottom tenth of " +
+            "the screen - it was asked to be in the BOTTOM-left corner, and a test that only " +
+            "checked it clears the status line would pass with the readout back at the top."
+        )
+        assertTrue(
+            Hud.fpsLeftX(1920f, h) < h * 0.05f,
+            "the fps readout no longer starts near the LEFT edge - see fpsLeftX. A right-aligned " +
+            "or centred anchor would clear the status line vertically and still be the wrong corner."
+        )
+    }
 }

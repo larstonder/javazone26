@@ -194,15 +194,40 @@ object Hud
     // MARGIN_FRACTION were ever retuned for the other HUD elements.
     private const val LEGEND_MARGIN_FRACTION = 0.02f
 
-    /** The SHOW FPS readout's own inset from the top-right corner. Equal to
+    /** The SHOW FPS readout's own inset from the LEFT edge. Equal to
      * [LEGEND_MARGIN_FRACTION]/[MARGIN_FRACTION] for the identical reason those two are equal
      * to each other - a coincidence of the same authored margin, kept as its own constant so a
-     * future retune of one never silently moves this. */
+     * future retune of one never silently moves this.
+     *
+     * IT IS NOW ACTUALLY READ. This constant was declared with exactly this doc while
+     * [fpsLeftX]'s predecessor used [LEGEND_MARGIN_FRACTION] instead — the two happened to be
+     * equal, so the contradiction was invisible and the "kept as its own constant" promise was
+     * not being kept by anything. */
     private const val FPS_MARGIN_FRACTION = 0.02f
 
+    /**
+     * The readout's inset from the BOTTOM edge, measured to the BOTTOM of its text box (so its
+     * top anchor is `1 - this - `[FPS_FONT_FRACTION]).
+     *
+     * WHY IT IS NOT [FPS_MARGIN_FRACTION]: THE BOTTOM-LEFT CORNER IS ALREADY OCCUPIED. The booth
+     * status line (`EnPustTil.drawBoothStatusLine`, at `AttractLayout.STATUS_Y`) sits flush in
+     * that corner on every attract-screen frame, and this readout is drawn in EVERY lifecycle
+     * state — including that one — so a flush-to-the-corner inset would print the two lines
+     * through each other. This value stacks the readout one clear font-height above it instead.
+     * The relationship is asserted in the DEFAULT package (`AttractScreenTest`), not here:
+     * `AttractLayout` lives in the root package and this file cannot import it, which is the same
+     * split `Framing.SEA_FLOOR_DEPTH` and `SandBank.QUAD_BOTTOM_DEPTH` are held together across.
+     */
+    private const val FPS_BOTTOM_FRACTION = 0.035f
+
     /** Small: this is a diagnostic, not a HUD element a player is meant to read mid-dive.
-     * Between the legend (0.016) and the tape's graduation labels (0.014). */
-    private const val FPS_FONT_FRACTION = 0.015f
+     * Between the legend (0.016) and the tape's graduation labels (0.014).
+     *
+     * internal (not private) for the same reason [TAPE_TOP_FRACTION] is: a test asserts that
+     * the readout's text box CLEARS the booth status line, and a box has a bottom only if its
+     * height is readable — `AttractScreenTest` would otherwise have to hardcode a copy of this
+     * number, which is exactly the drift the assertion exists to catch. */
+    internal const val FPS_FONT_FRACTION = 0.015f
 
     private val cold = Color(0.75f, 0.85f, 1f)
     private val danger = Color(1f, 0.25f, 0.2f)
@@ -556,26 +581,41 @@ object Hud
     fun legendRightX(w: Float, h: Float): Float = w - h * LEGEND_MARGIN_FRACTION
 
     /**
-     * Where the frame-rate readout's text ENDS — right-aligned in the TOP-right corner.
+     * Where the frame-rate readout's text BEGINS — left-aligned in the BOTTOM-left corner.
      *
-     * Shares [LEGEND_MARGIN_FRACTION] with the legend rather than declaring a margin of its own,
-     * so the two read as inset by the same amount from opposite corners; a second, nearly-equal
-     * constant is how that alignment silently drifts. Height-derived like everything else here,
-     * because `engine.window.width/height` are physical framebuffer pixels and the display's
-     * aspect ratio is not known in advance.
+     * Takes `w` it does not use, deliberately: every other screen-anchored function in this file
+     * takes `(w, h)`, the call site passes both, and dropping the parameter would make this the
+     * one anchor whose signature had to be remembered separately. Height-derived like everything
+     * else here, because `engine.window.width/height` are physical framebuffer pixels and the
+     * display's aspect ratio is not known in advance — a width-derived inset would be a
+     * different physical distance on every panel.
      */
-    fun fpsRightX(w: Float, h: Float): Float = w - h * LEGEND_MARGIN_FRACTION
+    @Suppress("UNUSED_PARAMETER")
+    fun fpsLeftX(w: Float, h: Float): Float = h * FPS_MARGIN_FRACTION
 
     /**
      * Top of the frame-rate readout's text box. Text grows DOWNWARD from its anchor, the same
      * convention every layout object in this project uses, so the block occupies
      * `fpsTopY .. fpsTopY + h * FPS_FONT_FRACTION`.
      *
-     * Top-right rather than bottom-right deliberately: the legend already owns the bottom margin,
-     * and the depth tape runs down the right-hand side during a run — the top corner is the one
-     * area no in-run element claims.
+     * MOVED FROM THE TOP-RIGHT CORNER (2026-08-31, at the owner's request). The doc that stood
+     * here argued for top-right on the grounds that "the legend already owns the bottom margin,
+     * and the depth tape runs down the right-hand side during a run". Both halves are still
+     * true and neither is an objection to this corner: the legend is top-RIGHT (see
+     * [renderControlLegend]'s own doc, which explains at length why it is not bottom-left), and
+     * the tape is on the other side of the screen entirely.
+     *
+     * WHAT THIS CORNER IS NOT PROVABLY CLEAR OF, stated rather than glossed, because
+     * [renderControlLegend]'s doc rejected this exact corner for this exact reason: HELD hangs
+     * [HELD_OFFSET_METRES] below a diver whose x roams the whole column, at a font that grows
+     * with the haul, so a big haul carried up the left-hand wall CAN reach these numerals. That
+     * is accepted here where it was not accepted for the legend, and the asymmetry is the
+     * point: the legend is a first-timer's only instruction and has to be readable in front of
+     * a queue, while this is a diagnostic a player opts into on the GRAPHICS page and can turn
+     * off again in two presses. The booth status line is the collision that is NOT accepted —
+     * see [FPS_BOTTOM_FRACTION], which stacks this above it.
      */
-    fun fpsTopY(h: Float): Float = h * LEGEND_MARGIN_FRACTION
+    fun fpsTopY(h: Float): Float = h * (1f - FPS_BOTTOM_FRACTION - FPS_FONT_FRACTION)
 
     /**
      * Half the width of a rounded rectangle at a row [dy] from its centre — the whole geometry
@@ -707,15 +747,11 @@ object Hud
     }
 
     /**
-     * Top-right, small — the SHOW FPS readout (`GameSettings.showFps`, drawn from
+     * Bottom-left, small — the SHOW FPS readout (`GameSettings.showFps`, drawn from
      * `EnPustTil.renderGame` in every lifecycle state, unlike everything else in this file,
-     * which only appears once a run exists). Provably clear of every other element the same
-     * way `renderControlLegend`'s own doc argues [legendRightX]/[legendBaselineY] are: HELD
-     * hangs BELOW the diver and can never reach the top strip, BANKED and the clock box are
-     * top-LEFT, and [FPS_MARGIN_FRACTION] (0.02, same inset as the legend's own margin — a
-     * coincidence, not shared tuning, exactly as [LEGEND_MARGIN_FRACTION]'s own comment argues
-     * for the identical reason) keeps this well above [TAPE_TOP_FRACTION] (0.10), where the
-     * depth tape's right-edge furniture begins.
+     * which only appears once a run exists). See [fpsTopY] for what this corner is and is not
+     * clear of; the one element it MUST clear is the booth status line, which shares the corner
+     * on every attract-screen frame, and [FPS_BOTTOM_FRACTION] is what stacks it above that.
      *
      * [text] is a CACHED, pre-formatted string — see `EnPustTil.rebuildFpsHint`'s own doc for
      * why the render path must never call `String.format` per frame (CLAUDE.md's no-per-frame-
@@ -726,8 +762,12 @@ object Hud
     {
         surface.drawTextWithOutline(
             text,
-            fpsRightX(w, h), fpsTopY(h),
-            h * FPS_FONT_FRACTION, h, legendInk, xOrigin = 1f
+            fpsLeftX(w, h), fpsTopY(h),
+            // xOrigin = 0: LEFT-aligned, so the text grows rightward from the margin and the
+            // readout's left edge stays put as the numbers change width. Right-aligning it (as
+            // this did in the top-right corner) would pin the wrong end and leave the digits
+            // walking towards the screen edge whenever the frame time gained a character.
+            h * FPS_FONT_FRACTION, h, legendInk, xOrigin = 0f
         )
     }
 
