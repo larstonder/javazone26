@@ -14,7 +14,13 @@ enum class MenuPage { ROOT, GRAPHICS }
 enum class MenuItemId
 {
     START_DIVE, GRAPHICS, LEADERBOARD, QUIT,
-    QUALITY, RESOLUTION, RENDER_SCALE, FULLSCREEN, FRAME_CAP, VSYNC, SHOW_FPS, BACK
+    QUALITY,
+    // The six live GI knobs (gi-knobs-brief.md) — grouped right after QUALITY, the preset they
+    // belong to and the row that writes all six of them at once, rather than at the end of the
+    // page beside the unrelated window/display rows below. Touching any one of these sets
+    // GameSettings.quality to "CUSTOM"; see EnPustTil.stepGameSettings.
+    LIGHT_MAP_SCALE, SCENE_SCALE, GLOBAL_SCALE, MAX_CASCADES, RAY_QUALITY, OFF_SCREEN_RAYS,
+    RESOLUTION, RENDER_SCALE, FULLSCREEN, FRAME_CAP, VSYNC, SHOW_FPS, BACK
 }
 
 /** What confirming or nudging a row produces. [MenuModel.update] returns exactly one of these
@@ -243,7 +249,10 @@ class MenuModel
         )
 
         private val GRAPHICS_ITEMS = listOf(
-            MenuItemId.QUALITY, MenuItemId.RESOLUTION, MenuItemId.RENDER_SCALE,
+            MenuItemId.QUALITY,
+            MenuItemId.LIGHT_MAP_SCALE, MenuItemId.SCENE_SCALE, MenuItemId.GLOBAL_SCALE,
+            MenuItemId.MAX_CASCADES, MenuItemId.RAY_QUALITY, MenuItemId.OFF_SCREEN_RAYS,
+            MenuItemId.RESOLUTION, MenuItemId.RENDER_SCALE,
             MenuItemId.FULLSCREEN, MenuItemId.FRAME_CAP, MenuItemId.VSYNC,
             MenuItemId.SHOW_FPS, MenuItemId.BACK
         )
@@ -252,7 +261,10 @@ class MenuModel
          * deliberately excluded even though it lives on GRAPHICS — it is an action row, not a
          * value row. */
         private val VALUE_ITEMS = setOf(
-            MenuItemId.QUALITY, MenuItemId.RESOLUTION, MenuItemId.RENDER_SCALE,
+            MenuItemId.QUALITY,
+            MenuItemId.LIGHT_MAP_SCALE, MenuItemId.SCENE_SCALE, MenuItemId.GLOBAL_SCALE,
+            MenuItemId.MAX_CASCADES, MenuItemId.RAY_QUALITY, MenuItemId.OFF_SCREEN_RAYS,
+            MenuItemId.RESOLUTION, MenuItemId.RENDER_SCALE,
             MenuItemId.FULLSCREEN, MenuItemId.FRAME_CAP, MenuItemId.VSYNC, MenuItemId.SHOW_FPS
         )
     }

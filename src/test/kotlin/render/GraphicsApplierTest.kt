@@ -59,7 +59,7 @@ class GraphicsApplierTest
     // --- GameSettings <-> GraphicsQuality drift guard ------------------------------------
 
     @Test
-    fun `GameSettings accepts exactly the quality names GraphicsQuality declares`() {
+    fun `GameSettings accepts exactly the quality names GraphicsQuality declares, plus CUSTOM`() {
         // GameSettings.KNOWN_QUALITIES is a hand-kept duplicate of GraphicsQuality.entries'
         // names (see that field's doc for why it cannot just import render.GraphicsQuality: it
         // would create a settings <-> render package cycle). A relationship test, not a
@@ -67,10 +67,29 @@ class GraphicsApplierTest
         // an entry the other does not, which is exactly the drift a fourth preset would cause -
         // GameSettings.clamped() would silently degrade the new preset to the default with no
         // error anywhere else in the codebase.
-        val fromQualityEnum = GraphicsQuality.entries.map { it.name }.toSet()
+        //
+        // UPDATED, NOT DELETED (gi-knobs-brief.md, 2026-08-31): "CUSTOM" joined
+        // KNOWN_QUALITIES the moment the six GI knobs became independently touchable, but it is
+        // deliberately NOT a GraphicsQuality entry (see GraphicsQuality's class doc — it names
+        // a real preset with real, measured numbers, and CUSTOM names the absence of one) and
+        // must never resolve to one in qualityFor (checked by the next test). So the drift
+        // guard's equality now has to add CUSTOM back on the GraphicsQuality side to hold — the
+        // instant a FIFTH quality-shaped string appears anywhere without a matching update on
+        // the other side, this still catches it.
+        val fromQualityEnum = GraphicsQuality.entries.map { it.name }.toSet() + GameSettings.CUSTOM_QUALITY
         assertEquals(fromQualityEnum, GameSettings.KNOWN_QUALITIES,
-            "GameSettings.KNOWN_QUALITIES has drifted from GraphicsQuality.entries - " +
+            "GameSettings.KNOWN_QUALITIES has drifted from GraphicsQuality.entries + CUSTOM - " +
             "update the hand-kept set in settings/GameSettings.kt")
+    }
+
+    @Test
+    fun `qualityFor never resolves CUSTOM to a real preset`() {
+        // The other half of the drift guard above: CUSTOM must degrade through qualityFor's
+        // existing catch (GraphicsQuality.valueOf("CUSTOM") throws) to the compiled default,
+        // exactly like any other unknown name - never silently become a real preset, which
+        // would make "CUSTOM" a lie the moment it round-tripped through this function.
+        assertEquals(GraphicsQuality.valueOf(GameSettings.DEFAULT.quality),
+            GraphicsApplier.qualityFor(GameSettings.CUSTOM_QUALITY))
     }
 
     // --- HUD multisampling: GiSettings.hudMultisampling (Int) -> Multisampling (enum) ------

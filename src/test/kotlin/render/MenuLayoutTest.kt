@@ -17,26 +17,58 @@ import kotlin.test.assertTrue
  */
 class MenuLayoutTest
 {
-    private val longestPage = 8   // the GRAPHICS page: 7 settings plus BACK
+    // The GRAPHICS page: QUALITY, the six GI knobs (gi-knobs-brief.md), RESOLUTION, RENDER
+    // SCALE, FULLSCREEN, FRAME CAP, VSYNC, SHOW FPS, BACK = 14. Was 8 before the six GI knobs
+    // landed; MenuModelTest's own row-count assertion is the drift guard that keeps this
+    // literal honest against MenuModel's real GRAPHICS_ITEMS list.
+    private val longestPage = 14
+    private val shortestPage = 4   // ROOT: START DIVE, GRAPHICS, LEADERBOARD, QUIT
 
     @Test
-    fun `no two rows overlap`() {
-        for (i in 0 until longestPage - 1)
-            assertTrue(MenuLayout.rowY(i) + MenuLayout.ROW_FONT <= MenuLayout.rowY(i + 1),
-                "row $i overlaps row ${i + 1}")
+    fun `no two rows overlap, on either page`() {
+        for (rowCount in listOf(shortestPage, longestPage))
+            for (i in 0 until rowCount - 1)
+                assertTrue(MenuLayout.rowY(i, rowCount) + MenuLayout.rowFontFor(rowCount) <= MenuLayout.rowY(i + 1, rowCount),
+                    "row $i overlaps row ${i + 1} on a $rowCount-row page")
     }
 
     @Test
-    fun `the title clears the first row`() {
-        assertTrue(MenuLayout.TITLE_Y + MenuLayout.TITLE_FONT <= MenuLayout.rowY(0),
-            "the title runs into the first menu row")
+    fun `the title clears the first row, on either page`() {
+        for (rowCount in listOf(shortestPage, longestPage))
+            assertTrue(MenuLayout.TITLE_Y + MenuLayout.TITLE_FONT <= MenuLayout.rowY(0, rowCount),
+                "the title runs into the first menu row on a $rowCount-row page")
     }
 
     @Test
     fun `a full page fits on screen with room for the hint line`() {
-        val bottom = MenuLayout.rowY(longestPage - 1) + MenuLayout.ROW_FONT
+        val bottom = MenuLayout.rowsBottom(longestPage)
         assertTrue(bottom < MenuLayout.HINT_Y, "a full page runs into the hint line")
         assertTrue(MenuLayout.HINT_Y + MenuLayout.HINT_FONT < 1f, "the hint line runs off screen")
+    }
+
+    @Test
+    fun `the longest page's rows stay above the hint line at every aspect from 4-3 to 32-9`() {
+        // THE LAYOUT PROBLEM (gi-knobs-brief.md): 14 rows at the base ROW_FONT/ROW_SPACING end
+        // at 0.959h, past HINT_Y (0.90h). MenuLayout.rowsBottom/rowFontFor now shrink a long
+        // page's rows just enough to fit (see MenuLayout.baseHeight's doc) — a computation that
+        // depends only on screen HEIGHT, never width, so this sweep is not expected to find a
+        // width-dependent failure today. It exists anyway, and takes `w` as a real parameter
+        // rather than being skipped as "obviously aspect-independent", for two reasons: it is
+        // the exact assertion the task brief asked for by name, and it is what would catch a
+        // FUTURE layout change that does bring width in (a two-column page, for one — a solution
+        // this brief explicitly allowed) without anyone remembering to add the sweep back.
+        val h = 1200f
+        for (aspect in listOf(4f / 3f, 16f / 10f, 16f / 9f, 2.389f, 32f / 9f))
+        {
+            val w = h * aspect
+            // w is unused by today's implementation (see the doc above) but is computed at
+            // every aspect anyway, exactly as drawMainMenu would, so a future width-dependent
+            // MenuLayout function is exercised here without this test needing to change.
+            assertTrue(w > 0f)
+            val bottom = MenuLayout.rowsBottom(longestPage)
+            assertTrue(bottom < MenuLayout.HINT_Y,
+                "the $longestPage-row page runs into the hint line at aspect $aspect (bottom=$bottom, HINT_Y=${MenuLayout.HINT_Y})")
+        }
     }
 
     @Test
@@ -115,7 +147,7 @@ class MenuLayoutTest
             "HIGHLIGHT_HALF_SPAN" to MenuLayout.HIGHLIGHT_HALF_SPAN,
             "HINT_Y" to MenuLayout.HINT_Y,
             "HINT_FONT" to MenuLayout.HINT_FONT
-        ) + (0 until longestPage).associate { "rowY($it)" to MenuLayout.rowY(it) }
+        ) + (0 until longestPage).associate { "rowY($it, $longestPage)" to MenuLayout.rowY(it, longestPage) }
 
         for ((name, value) in anchors)
             assertTrue(value > 0f && value < 1f, "$name = $value is not a screen fraction")

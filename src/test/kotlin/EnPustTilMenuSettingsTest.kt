@@ -110,4 +110,134 @@ class EnPustTilMenuSettingsTest
         val settings = GameSettings.DEFAULT
         assertEquals(settings, stepGameSettings(settings, MenuItemId.BACK, +1))
     }
+
+    // --- The six live GI knobs (gi-knobs-brief.md) ---------------------------------------
+    // "One source of truth": selecting a named preset writes all six fields at once; touching
+    // any one of the six individually sets quality to CUSTOM and leaves the rest alone.
+
+    @Test
+    fun `selecting a preset via QUALITY writes all six GI knobs from that preset`() {
+        // Starting from CUSTOM values that agree with none of the three presets, so a stray
+        // pass-through (the field just happening to already hold the right number) cannot hide
+        // a bug in the copy.
+        val custom = GameSettings.DEFAULT.copy(
+            quality = "CUSTOM",
+            lightTexScale = 0.2f, localSceneTexScale = 0.2f, globalSceneTexScale = 0.1f,
+            maxCascades = 8, bilinearFix = true, traceWorldRays = true
+        )
+        // custom.quality = "CUSTOM" is off GraphicsQuality's ladder, so the QUALITY step falls
+        // back to DEFAULT's index (HIGH) before applying delta - stepping -1 from there lands
+        // one preset down, MEDIUM, exercising a real preset that is neither the start nor the
+        // fallback.
+        val stepped = stepGameSettings(custom, MenuItemId.QUALITY, -1)
+        val medium = GraphicsQuality.MEDIUM.settings()
+
+        assertEquals("MEDIUM", stepped.quality)
+        assertEquals(medium.lightTexScale, stepped.lightTexScale)
+        assertEquals(medium.localSceneTexScale, stepped.localSceneTexScale)
+        assertEquals(medium.globalSceneTexScale, stepped.globalSceneTexScale)
+        assertEquals(medium.maxCascades, stepped.maxCascades)
+        assertEquals(medium.bilinearFix, stepped.bilinearFix)
+        assertEquals(medium.traceWorldRays, stepped.traceWorldRays)
+    }
+
+    @Test
+    fun `touching a numeric GI knob sets quality to CUSTOM and leaves the other five knobs alone`() {
+        val start = GameSettings.DEFAULT.copy(quality = "HIGH")
+        val stepped = stepGameSettings(start, MenuItemId.LIGHT_MAP_SCALE, -1)
+
+        assertEquals("CUSTOM", stepped.quality)
+        assertEquals(GameSettings.LIGHT_TEX_SCALES[GameSettings.LIGHT_TEX_SCALES.indexOf(start.lightTexScale) - 1],
+            stepped.lightTexScale)
+        // The other five knobs are untouched by a LIGHT_MAP_SCALE step.
+        assertEquals(start.localSceneTexScale, stepped.localSceneTexScale)
+        assertEquals(start.globalSceneTexScale, stepped.globalSceneTexScale)
+        assertEquals(start.maxCascades, stepped.maxCascades)
+        assertEquals(start.bilinearFix, stepped.bilinearFix)
+        assertEquals(start.traceWorldRays, stepped.traceWorldRays)
+    }
+
+    @Test
+    fun `scene scale, global scale and max cascades each clamp at both ends of their own ladder and set CUSTOM`() {
+        val atMinScene = GameSettings.DEFAULT.copy(quality = "HIGH", localSceneTexScale = GameSettings.SCENE_TEX_SCALES.first())
+        val steppedMinScene = stepGameSettings(atMinScene, MenuItemId.SCENE_SCALE, -1)
+        assertEquals(GameSettings.SCENE_TEX_SCALES.first(), steppedMinScene.localSceneTexScale)
+        assertEquals("CUSTOM", steppedMinScene.quality)
+
+        val atMaxGlobal = GameSettings.DEFAULT.copy(quality = "HIGH", globalSceneTexScale = GameSettings.GLOBAL_TEX_SCALES.last())
+        val steppedMaxGlobal = stepGameSettings(atMaxGlobal, MenuItemId.GLOBAL_SCALE, +1)
+        assertEquals(GameSettings.GLOBAL_TEX_SCALES.last(), steppedMaxGlobal.globalSceneTexScale)
+        assertEquals("CUSTOM", steppedMaxGlobal.quality)
+
+        val atMaxCascades = GameSettings.DEFAULT.copy(quality = "HIGH", maxCascades = GameSettings.MAX_CASCADES_STEPS.last())
+        val steppedMaxCascades = stepGameSettings(atMaxCascades, MenuItemId.MAX_CASCADES, +1)
+        assertEquals(GameSettings.MAX_CASCADES_STEPS.last(), steppedMaxCascades.maxCascades)
+        assertEquals("CUSTOM", steppedMaxCascades.quality)
+    }
+
+    @Test
+    fun `ray quality and off-screen rays toggle regardless of delta sign and set CUSTOM`() {
+        val start = GameSettings.DEFAULT.copy(quality = "HIGH", bilinearFix = false, traceWorldRays = false)
+
+        val rayOn = stepGameSettings(start, MenuItemId.RAY_QUALITY, +1)
+        assertTrue(rayOn.bilinearFix)
+        assertEquals("CUSTOM", rayOn.quality)
+        val rayOnNegativeDelta = stepGameSettings(start, MenuItemId.RAY_QUALITY, -1)
+        assertTrue(rayOnNegativeDelta.bilinearFix)
+
+        val raysOn = stepGameSettings(start, MenuItemId.OFF_SCREEN_RAYS, +1)
+        assertTrue(raysOn.traceWorldRays)
+        assertEquals("CUSTOM", raysOn.quality)
+    }
+
+    // --- reconcileGiKnobsWithPreset: the settings.json migration bug, found by actually looking
+    // at the booted game (see that function's own doc for the full empirical trace) --------
+
+    @Test
+    fun `a preset-named settings file with zeroed GI knobs — the migration defect — is repaired to the real preset numbers`() {
+        // Reproduces EXACTLY what a settings.json written before this feature existed loads as
+        // (see reconcileGiKnobsWithPreset's doc): quality is a real, valid preset name, but the
+        // six GI fields are all at their JVM zero value rather than that preset's real numbers.
+        val migrated = GameSettings.DEFAULT.copy(
+            quality = "HIGH",
+            lightTexScale = 0f, localSceneTexScale = 0f, globalSceneTexScale = 0f,
+            maxCascades = 0, bilinearFix = false, traceWorldRays = false
+        )
+        val repaired = reconcileGiKnobsWithPreset(migrated)
+        val high = GraphicsQuality.HIGH.settings()
+
+        assertEquals("HIGH", repaired.quality)
+        assertEquals(high.lightTexScale, repaired.lightTexScale)
+        assertEquals(high.localSceneTexScale, repaired.localSceneTexScale)
+        assertEquals(high.globalSceneTexScale, repaired.globalSceneTexScale)
+        assertEquals(high.maxCascades, repaired.maxCascades)
+        assertEquals(high.bilinearFix, repaired.bilinearFix)
+        assertEquals(high.traceWorldRays, repaired.traceWorldRays)
+    }
+
+    @Test
+    fun `a genuine CUSTOM settings file is left untouched`() {
+        // A player who deliberately touched a knob saved quality = "CUSTOM" with the six real
+        // values they chose - reconcileGiKnobsWithPreset must not overwrite those with any
+        // preset's numbers, since "CUSTOM" matches no GraphicsQuality entry.
+        val custom = GameSettings.DEFAULT.copy(
+            quality = "CUSTOM",
+            lightTexScale = 0.5f, localSceneTexScale = 0.2f, globalSceneTexScale = 0.3f,
+            maxCascades = 8, bilinearFix = true, traceWorldRays = true
+        )
+        assertEquals(custom, reconcileGiKnobsWithPreset(custom))
+    }
+
+    @Test
+    fun `reconciling an already-correct preset file changes nothing`() {
+        val correct = GameSettings.DEFAULT.copy(quality = "MEDIUM").let {
+            val medium = GraphicsQuality.MEDIUM.settings()
+            it.copy(
+                lightTexScale = medium.lightTexScale, localSceneTexScale = medium.localSceneTexScale,
+                globalSceneTexScale = medium.globalSceneTexScale, maxCascades = medium.maxCascades,
+                bilinearFix = medium.bilinearFix, traceWorldRays = medium.traceWorldRays
+            )
+        }
+        assertEquals(correct, reconcileGiKnobsWithPreset(correct))
+    }
 }

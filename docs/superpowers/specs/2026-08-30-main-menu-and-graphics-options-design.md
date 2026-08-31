@@ -54,7 +54,7 @@ overlay — see §6.
 | Boot destination | **A real main menu**, not the attract screen |
 | Attract screen | Becomes the *idle fallback*; any press returns to the menu |
 | Booth hardening | **Relaxed for desktop, machinery kept.** Plain QUIT item; RUN_OVER returns to the menu. The exit-hold, idle timeouts and initials auto-submit stay in the code and stay tested. |
-| Options depth | **Presets plus a few key knobs.** GI internals sit behind the preset. |
+| Options depth | ~~Presets plus a few key knobs. GI internals sit behind the preset.~~ **REVERSED 2026-08-31** (`.superpowers/sdd/2026-08-30-main-menu-and-graphics-options/gi-knobs-brief.md`): the owner asked to expose the six live GI knobs directly (LIGHT MAP SCALE, SCENE SCALE, GLOBAL SCALE, MAX CASCADES, RAY QUALITY, OFF-SCREEN RAYS). Touching any one of them sets `quality = "CUSTOM"`; selecting a named preset still writes all six at once. `mergeCascades` stays hidden — turning it off breaks lighting outright, not merely cheaply — and GI on/off is still excluded (it deletes surfaces `DiveLighting` draws into). |
 | FPS readout | **Yes** — a built-in counter, toggleable from the menu |
 
 ### What "keep the machinery" means concretely
@@ -134,8 +134,11 @@ game state itself. That keeps the model pure and makes every transition assertab
 ### Items
 
 `ROOT`: `START DIVE`, `GRAPHICS`, `LEADERBOARD`, `QUIT`.
-`GRAPHICS`: `QUALITY`, `RESOLUTION`, `RENDER SCALE`, `FULLSCREEN`, `FRAME CAP`, `VSYNC`,
-`SHOW FPS`, `BACK`.
+`GRAPHICS` (14 rows since the "Options depth" reversal above): `QUALITY`, `LIGHT MAP SCALE`,
+`SCENE SCALE`, `GLOBAL SCALE`, `MAX CASCADES`, `RAY QUALITY`, `OFF-SCREEN RAYS`, `RESOLUTION`,
+`RENDER SCALE`, `FULLSCREEN`, `FRAME CAP`, `VSYNC`, `SHOW FPS`, `BACK`. The six GI knobs sit
+right after `QUALITY` — the preset row they belong to and the one that writes all six at once —
+rather than at the end beside the unrelated window/display rows.
 
 A `MenuItem` is either an **action** (confirm fires it) or a **cycler** (left/right steps through
 a fixed list of values). No free text, no sliders — a cycler over a declared value list is what a

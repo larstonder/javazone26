@@ -150,10 +150,63 @@ fun stepGameSettings(current: GameSettings, item: MenuItemId, delta: Int): GameS
 {
     MenuItemId.QUALITY ->
     {
+        // `names` is GraphicsQuality.entries' three real presets - CUSTOM is deliberately not
+        // among them (GameSettings.KNOWN_QUALITIES' doc), so a current.quality of "CUSTOM" (or
+        // any other off-ladder value) falls into the SAME `.indexOf(...) < 0` fallback every
+        // other ladder here already has, landing on DEFAULT's position (HIGH) before stepping -
+        // no CUSTOM-specific branch needed.
         val names = GraphicsQuality.entries.map { it.name }
         val fromIndex = names.indexOf(current.quality).let { if (it < 0) names.indexOf(GameSettings.DEFAULT.quality) else it }
-        current.copy(quality = names[(fromIndex + delta).coerceIn(0, names.lastIndex)])
+        val newQuality = names[(fromIndex + delta).coerceIn(0, names.lastIndex)]
+        // SELECTING A NAMED PRESET WRITES ALL SIX GI KNOBS AT ONCE (gi-knobs-brief.md,
+        // "Structure: one source of truth") - this is the one place `GraphicsQuality.X
+        // .settings()` is read from the menu's own logic (GraphicsApplier.apply never reads it
+        // for these six fields, see that class's doc) precisely because writing GameSettings
+        // itself, here, is what keeps the displayed six knob values and the applied state from
+        // ever disagreeing - a player who selects HIGH must see HIGH's real numbers on the six
+        // rows below it, not whatever CUSTOM values were sitting there a moment ago.
+        val preset = GraphicsQuality.valueOf(newQuality).settings()
+        current.copy(
+            quality = newQuality,
+            lightTexScale = preset.lightTexScale,
+            localSceneTexScale = preset.localSceneTexScale,
+            globalSceneTexScale = preset.globalSceneTexScale,
+            maxCascades = preset.maxCascades,
+            bilinearFix = preset.bilinearFix,
+            traceWorldRays = preset.traceWorldRays
+        )
     }
+    // --- The six live GI knobs (gi-knobs-brief.md) -------------------------------------
+    // Same index-into-the-canonical-ladder shape as every ladder above, PLUS one thing none of
+    // them do: setting quality = "CUSTOM". That is the other half of "one source of truth" -
+    // touching any one of these six means the displayed preset name can no longer claim to
+    // describe what is actually applied, so it stops claiming to.
+    MenuItemId.LIGHT_MAP_SCALE ->
+    {
+        val scales = GameSettings.LIGHT_TEX_SCALES
+        val fromIndex = scales.indexOf(current.lightTexScale).let { if (it < 0) scales.indexOf(GameSettings.DEFAULT.lightTexScale) else it }
+        current.copy(lightTexScale = scales[(fromIndex + delta).coerceIn(0, scales.lastIndex)], quality = GameSettings.CUSTOM_QUALITY)
+    }
+    MenuItemId.SCENE_SCALE ->
+    {
+        val scales = GameSettings.SCENE_TEX_SCALES
+        val fromIndex = scales.indexOf(current.localSceneTexScale).let { if (it < 0) scales.indexOf(GameSettings.DEFAULT.localSceneTexScale) else it }
+        current.copy(localSceneTexScale = scales[(fromIndex + delta).coerceIn(0, scales.lastIndex)], quality = GameSettings.CUSTOM_QUALITY)
+    }
+    MenuItemId.GLOBAL_SCALE ->
+    {
+        val scales = GameSettings.GLOBAL_TEX_SCALES
+        val fromIndex = scales.indexOf(current.globalSceneTexScale).let { if (it < 0) scales.indexOf(GameSettings.DEFAULT.globalSceneTexScale) else it }
+        current.copy(globalSceneTexScale = scales[(fromIndex + delta).coerceIn(0, scales.lastIndex)], quality = GameSettings.CUSTOM_QUALITY)
+    }
+    MenuItemId.MAX_CASCADES ->
+    {
+        val steps = GameSettings.MAX_CASCADES_STEPS
+        val fromIndex = steps.indexOf(current.maxCascades).let { if (it < 0) steps.indexOf(GameSettings.DEFAULT.maxCascades) else it }
+        current.copy(maxCascades = steps[(fromIndex + delta).coerceIn(0, steps.lastIndex)], quality = GameSettings.CUSTOM_QUALITY)
+    }
+    MenuItemId.RAY_QUALITY -> current.copy(bilinearFix = !current.bilinearFix, quality = GameSettings.CUSTOM_QUALITY)
+    MenuItemId.OFF_SCREEN_RAYS -> current.copy(traceWorldRays = !current.traceWorldRays, quality = GameSettings.CUSTOM_QUALITY)
     MenuItemId.RESOLUTION ->
     {
         val resolutions = GameSettings.RESOLUTIONS
@@ -178,6 +231,55 @@ fun stepGameSettings(current: GameSettings, item: MenuItemId, delta: Int): GameS
     MenuItemId.VSYNC -> current.copy(vsync = !current.vsync)
     MenuItemId.SHOW_FPS -> current.copy(showFps = !current.showFps)
     else -> current
+}
+
+/**
+ * Re-syncs the six GI knobs to [settings]' OWN named preset whenever [settings.quality] IS a
+ * real [GraphicsQuality] name (never for `"CUSTOM"`, and harmlessly a no-op for any other
+ * unrecognised string too) — called once, from [EnPustTil.onCreate] right after
+ * [settings.SettingsStore.load], so [gameSettings] never starts a session with a preset LABEL
+ * that disagrees with its own six numbers.
+ *
+ * WHY THIS EXISTS, AND WHY [settings.GameSettings.clamped] ALONE CANNOT DO IT: verified
+ * empirically against a REAL `~/EnPustTil/settings.json` written before this feature existed
+ * (i.e. missing all six new keys) — loading it through the actual booted game showed QUALITY
+ * reading "HIGH" while LIGHT MAP SCALE/SCENE SCALE/GLOBAL SCALE/MAX CASCADES silently read
+ * 0.20/0.20/0.10/6, the SMALLEST rung on each ladder, not HIGH's real 0.4/0.4/0.15/6. Traced to
+ * the engine's own `jsonMapper` (decompiled `DataImpl`'s `<clinit>`: a plain
+ * `com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build()`, no extra config beyond
+ * `FAIL_ON_UNKNOWN_PROPERTIES = false`): jackson-module-kotlin's missing-required-parameter
+ * check relies on a null sentinel to tell "the JSON never had this key" apart from "the key was
+ * present with value zero", and a Kotlin PRIMITIVE constructor parameter (`Float`/`Int`/
+ * `Boolean`, never boxed here) has no such sentinel — so an absent key silently becomes the
+ * JVM's own zero value (0.0f/0/false) instead of throwing the way a missing REFERENCE-typed
+ * property would. `GameSettings.clamped()`'s `nearestOnLadder(0f, ...)` then does exactly what
+ * it is supposed to and snaps that zero to the nearest real rung — it has no way to tell "the
+ * player genuinely chose the bottom of the ladder" apart from "this field was never in the
+ * file", because by the time `clamped()` sees it, that distinction is already gone.
+ *
+ * `GameSettings.clamped()` itself cannot fix this even in principle: it is explicitly forbidden
+ * from importing [render.GraphicsQuality] (see that class's doc on why `quality` is a `String`
+ * and not an enum — a `settings` <-> `render` package cycle), so it has no way to look up what
+ * HIGH's real numbers actually are. This function lives in the default package specifically
+ * because it is the one place that already imports both.
+ *
+ * A settings.json a PLAYER wrote through this menu never needs this: [EnPustTil.stepGameSettings]
+ * keeps the six knobs and the preset name in lockstep on every edit (selecting a preset writes
+ * all six; touching one sets `"CUSTOM"`), so the only way the two can legitimately disagree on
+ * disk is a file from before this feature existed — exactly the migration case this covers.
+ */
+fun reconcileGiKnobsWithPreset(settings: GameSettings): GameSettings
+{
+    val preset = GraphicsQuality.entries.firstOrNull { it.name == settings.quality } ?: return settings
+    val expected = preset.settings()
+    return settings.copy(
+        lightTexScale = expected.lightTexScale,
+        localSceneTexScale = expected.localSceneTexScale,
+        globalSceneTexScale = expected.globalSceneTexScale,
+        maxCascades = expected.maxCascades,
+        bilinearFix = expected.bilinearFix,
+        traceWorldRays = expected.traceWorldRays
+    )
 }
 
 /**
@@ -864,6 +966,27 @@ object ScreenText
     const val MENU_LEADERBOARD = "LEADERBOARD"
     const val MENU_QUIT = "QUIT"
     const val MENU_QUALITY = "QUALITY"
+
+    // The six live GI knobs (2026-08-31, gi-knobs-brief.md) - see EnPustTil.stepGameSettings
+    // and MenuItemId's own doc for why they sit right after MENU_QUALITY on the page.
+    const val MENU_LIGHT_MAP_SCALE = "LIGHT MAP SCALE"
+    const val MENU_SCENE_SCALE = "SCENE SCALE"
+    const val MENU_GLOBAL_SCALE = "GLOBAL SCALE"
+    const val MENU_MAX_CASCADES = "MAX CASCADES"
+    const val MENU_RAY_QUALITY = "RAY QUALITY"
+
+    /**
+     * TRAP 2 (gi-knobs-brief.md), DOCUMENTED HERE RATHER THAN ON SCREEN: turning this OFF does
+     * NOT remove `gi_global_scene`/`gi_global_sdf`'s ~13-pass jump-flood chain on its own — see
+     * `GraphicsApplier`'s class doc, trap 2. The saving only shows up once GLOBAL SCALE is also
+     * lowered; a player who flips this alone and expects a frame-rate change will see none. A
+     * label-only row has no room to say that (and the default font renders nothing above
+     * U+011F, so no footnote glyph could ride along with it either) - the honest place for this
+     * warning is the code that owns the tradeoff, which a player-facing string cannot be. If a
+     * future revision of this screen grows room for a sub-line, this is the row it belongs to.
+     */
+    const val MENU_OFF_SCREEN_RAYS = "OFF-SCREEN RAYS"
+
     const val MENU_RESOLUTION = "RESOLUTION"
     const val MENU_RENDER_SCALE = "RENDER SCALE"
     const val MENU_FULLSCREEN = "FULLSCREEN"
@@ -926,6 +1049,12 @@ object ScreenText
         MENU_LEADERBOARD,
         MENU_QUIT,
         MENU_QUALITY,
+        MENU_LIGHT_MAP_SCALE,
+        MENU_SCENE_SCALE,
+        MENU_GLOBAL_SCALE,
+        MENU_MAX_CASCADES,
+        MENU_RAY_QUALITY,
+        MENU_OFF_SCREEN_RAYS,
         MENU_RESOLUTION,
         MENU_RENDER_SCALE,
         MENU_FULLSCREEN,
@@ -1536,6 +1665,17 @@ class EnPustTil : PulseEngineGame()
     // [rebuildMenuValueHints] whenever [gameSettings] changes — today that is only once, from
     // [onCreate], because nothing yet mutates gameSettings after construction.
     private var menuValueQuality: String = ""
+
+    // The six live GI knobs' cached value strings (2026-08-31, gi-knobs-brief.md) - same
+    // no-per-frame-allocation reason as the six above, and the same rebuild-on-change contract:
+    // never formatted in drawMainMenu, only here.
+    private var menuValueLightMapScale: String = ""
+    private var menuValueSceneScale: String = ""
+    private var menuValueGlobalScale: String = ""
+    private var menuValueMaxCascades: String = ""
+    private var menuValueRayQuality: String = ""
+    private var menuValueOffScreenRays: String = ""
+
     private var menuValueResolution: String = ""
     private var menuValueRenderScale: String = ""
     private var menuValueFullscreen: String = ""
@@ -1745,7 +1885,11 @@ class EnPustTil : PulseEngineGame()
         // under the env var (Task 8) — the env var and the setting are two independent ways
         // to turn the same instrument on.
         settingsStore = EngineSettingsStore(engine)
-        gameSettings = settingsStore.load()
+        // reconcileGiKnobsWithPreset: see that function's own doc for the empirically-observed
+        // reason this is not redundant with SettingsStore.load's own .clamped() call — a
+        // settings.json written before the six GI knobs existed loads with them silently
+        // zeroed, and clamped() alone cannot tell that apart from a deliberate CUSTOM choice.
+        gameSettings = reconcileGiKnobsWithPreset(settingsStore.load())
 
         // Resolved FIRST: sim/scoreRepository below are constructed from this value, and
         // application.cfg (loaded by the engine before onCreate runs — see dailySeed's
@@ -3165,14 +3309,17 @@ class EnPustTil : PulseEngineGame()
         )
         Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
         val selectedIndex = menuModel.selectedIndex
-        val fontSize = h * MenuLayout.ROW_FONT
+        // A FUNCTION OF THE PAGE'S OWN ROW COUNT, not the flat MenuLayout.ROW_FONT constant —
+        // see MenuLayout.rowFontFor's doc (the gi-knobs layout fix): GRAPHICS' 14 rows shrink
+        // just enough to stay above HINT_Y, ROOT's 4 rows are untouched.
+        val fontSize = h * MenuLayout.rowFontFor(items.size)
         val highlightHalfWidth = h * MenuLayout.HIGHLIGHT_HALF_SPAN
         val highlightPad = fontSize * MenuLayout.HIGHLIGHT_PAD_FRACTION
 
         for (index in items.indices)
         {
             val item = items[index]
-            val y = h * MenuLayout.rowY(index)
+            val y = h * MenuLayout.rowY(index, items.size)
 
             if (index == selectedIndex)
             {
@@ -3221,6 +3368,12 @@ class EnPustTil : PulseEngineGame()
         MenuItemId.LEADERBOARD -> ScreenText.MENU_LEADERBOARD
         MenuItemId.QUIT -> ScreenText.MENU_QUIT
         MenuItemId.QUALITY -> ScreenText.MENU_QUALITY
+        MenuItemId.LIGHT_MAP_SCALE -> ScreenText.MENU_LIGHT_MAP_SCALE
+        MenuItemId.SCENE_SCALE -> ScreenText.MENU_SCENE_SCALE
+        MenuItemId.GLOBAL_SCALE -> ScreenText.MENU_GLOBAL_SCALE
+        MenuItemId.MAX_CASCADES -> ScreenText.MENU_MAX_CASCADES
+        MenuItemId.RAY_QUALITY -> ScreenText.MENU_RAY_QUALITY
+        MenuItemId.OFF_SCREEN_RAYS -> ScreenText.MENU_OFF_SCREEN_RAYS
         MenuItemId.RESOLUTION -> ScreenText.MENU_RESOLUTION
         MenuItemId.RENDER_SCALE -> ScreenText.MENU_RENDER_SCALE
         MenuItemId.FULLSCREEN -> ScreenText.MENU_FULLSCREEN
@@ -3241,6 +3394,12 @@ class EnPustTil : PulseEngineGame()
     private fun menuValueFor(item: MenuItemId): String = when (item)
     {
         MenuItemId.QUALITY -> menuValueQuality
+        MenuItemId.LIGHT_MAP_SCALE -> menuValueLightMapScale
+        MenuItemId.SCENE_SCALE -> menuValueSceneScale
+        MenuItemId.GLOBAL_SCALE -> menuValueGlobalScale
+        MenuItemId.MAX_CASCADES -> menuValueMaxCascades
+        MenuItemId.RAY_QUALITY -> menuValueRayQuality
+        MenuItemId.OFF_SCREEN_RAYS -> menuValueOffScreenRays
         MenuItemId.RESOLUTION -> menuValueResolution
         MenuItemId.RENDER_SCALE -> menuValueRenderScale
         MenuItemId.FULLSCREEN -> menuValueFullscreen
@@ -3929,6 +4088,17 @@ class EnPustTil : PulseEngineGame()
     private fun rebuildMenuValueHints()
     {
         menuValueQuality = gameSettings.quality
+        // "%.2f" - two decimal places, plain ASCII digits and a full stop, well inside the
+        // default font's U+0020..U+011F atlas (CLAUDE.md). Matches the brief's own example
+        // ("a knob value like '0.40' is ASCII and fine") rather than the renderScale row's
+        // roundToInt-to-percent treatment just below: these three are GI scale FACTORS, not a
+        // percentage of anything, so showing the raw factor is the more honest read-out.
+        menuValueLightMapScale = "%.2f".format(gameSettings.lightTexScale)
+        menuValueSceneScale = "%.2f".format(gameSettings.localSceneTexScale)
+        menuValueGlobalScale = "%.2f".format(gameSettings.globalSceneTexScale)
+        menuValueMaxCascades = "${gameSettings.maxCascades}"
+        menuValueRayQuality = if (gameSettings.bilinearFix) ScreenText.MENU_ON else ScreenText.MENU_OFF
+        menuValueOffScreenRays = if (gameSettings.traceWorldRays) ScreenText.MENU_ON else ScreenText.MENU_OFF
         menuValueResolution = "${gameSettings.windowWidth}x${gameSettings.windowHeight}"
         // roundToInt(), not toInt(): 0.85f is not exactly representable in IEEE 754, and
         // toInt()'s truncation is the one rounding mode that can turn a value landing at

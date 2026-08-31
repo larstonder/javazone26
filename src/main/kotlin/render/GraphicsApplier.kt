@@ -100,7 +100,38 @@ class GraphicsApplier(private val engine: PulseEngine)
      */
     fun apply(settings: GameSettings, gi: GlobalIlluminationSystem?)
     {
-        val giSettings = qualityFor(settings.quality).settings()
+        // THE SIX LIVE GI KNOBS COME FROM settings, NEVER FROM THE RESOLVED PRESET
+        // (2026-08-31, gi-knobs-brief.md — this reverses the original "presets, not individual
+        // knobs" decision; see this branch's spec section 1). `GameSettings` is the one source
+        // of truth: selecting a named QUALITY preset WRITES these six fields from
+        // `GraphicsQuality.X.settings()` (EnPustTil.stepGameSettings' QUALITY case), and
+        // touching any one of them individually sets `quality = "CUSTOM"` and leaves the rest —
+        // so by the time this function runs, `settings`' own six fields are ALWAYS what should
+        // be applied, whether the player is on a named preset or has drifted off it. Reading
+        // them from `qualityFor(settings.quality).settings()` instead, as this function used to
+        // for every GI field, would silently re-apply the OLD preset's numbers over a CUSTOM
+        // player choice every single frame the settings screen calls this — the displayed value
+        // and the applied value would disagree, which is the exact bug CUSTOM exists to prevent.
+        //
+        // bloom/hudMultisampling are the two exceptions: neither is one of the six exposed
+        // knobs (see GiSettings and this class's own doc — bloom cannot currently do anything at
+        // all, and hudMultisampling has no live call site yet), and every shipped preset already
+        // agrees on both (bloom=false, hudMultisampling=0) — so they still come from the
+        // resolved preset. `qualityFor("CUSTOM")` degrades to `GraphicsQuality.valueOf
+        // (GameSettings.DEFAULT.quality)` (HIGH) via its existing catch, which carries the same
+        // bloom/hudMultisampling values every OTHER preset does, so CUSTOM reads exactly as
+        // sanely here as LOW/MEDIUM/HIGH do.
+        val presetOnlySettings = qualityFor(settings.quality).settings()
+        val giSettings = GiSettings(
+            lightTexScale = settings.lightTexScale,
+            localSceneTexScale = settings.localSceneTexScale,
+            globalSceneTexScale = settings.globalSceneTexScale,
+            maxCascades = settings.maxCascades,
+            bilinearFix = settings.bilinearFix,
+            traceWorldRays = settings.traceWorldRays,
+            bloom = presetOnlySettings.bloom,
+            hudMultisampling = presetOnlySettings.hudMultisampling
+        )
 
         if (gi != null)
         {
