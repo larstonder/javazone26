@@ -31,6 +31,26 @@ sealed interface MenuAction
     object ShowLeaderboard : MenuAction
     object Quit : MenuAction
     object Back : MenuAction
+
+    /**
+     * BACK pressed on the ROOT page — "close this menu", if the caller has anything to close.
+     *
+     * ADDED 2026-08-31 with the pause menu. Root-page back used to return [None] and the rule
+     * it encoded ("a player pressing B at the top level is a no-op, not an accidental exit")
+     * is UNCHANGED: this class still does nothing itself, and a caller that ignores this
+     * action behaves exactly as every caller did before it existed. What changed is that the
+     * SAME menu is now also what a paused run sits behind (`RunLifecycle.runHeld`), and there
+     * root-page back means "give me my run back" — `EnPustTil` maps it to
+     * `RunLifecycle.resumeRun()`, which is itself a no-op unless a run is held.
+     *
+     * It has to be an action rather than a pause edge `RunLifecycle` reads for itself: the
+     * shipped default puts the pad's pause and confirm on the same physical button, so a pause
+     * edge cannot tell "close the menu" apart from "pick this row". Routing it through the
+     * menu means only the ROOT page's own unconsumed back reaches the lifecycle — on GRAPHICS
+     * the very same press is [Back], and pages the menu grows later get first refusal too.
+     */
+    object CloseMenu : MenuAction
+
     object None : MenuAction
 
     /** Emitted when left/right nudges a value-carrying row. [delta] is always +1 or -1 —
@@ -228,8 +248,10 @@ class MenuModel
             else
             {
                 // Back on ROOT must never crash or quit — a player pressing B at the top
-                // level is a no-op, not an accidental exit.
-                MenuAction.None
+                // level is a no-op, not an accidental exit. It is REPORTED rather than
+                // swallowed since 2026-08-31 so a caller with a menu to close can close it;
+                // see [MenuAction.CloseMenu], which is inert for every caller that does not.
+                MenuAction.CloseMenu
             }
         }
 

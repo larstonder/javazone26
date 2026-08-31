@@ -962,6 +962,19 @@ object ScreenText
     // are, and belong here with everything else this object owns.
 
     const val MENU_START_DIVE = "START DIVE"
+
+    /**
+     * The SAME row as [MENU_START_DIVE], relabelled while a run is being held behind this
+     * menu (`RunLifecycle.runHeld` — Esc mid-run opens the main menu rather than a separate
+     * pause screen). Confirming it resumes the dive instead of starting one, so the label has
+     * to say so: "START DIVE" over a frozen run would read as an offer to throw it away.
+     *
+     * A second constant rather than a `MenuItemId` of its own, because it is not a second row:
+     * `MenuModel`'s ROOT list, its indices and its `START_DIVE` action are all unchanged, and
+     * only [EnPustTil.menuItemLabel] branches. A second id would have to be added to the row
+     * list, which would move every row below it on the one screen a player navigates blind.
+     */
+    const val MENU_CONTINUE = "CONTINUE"
     const val MENU_GRAPHICS = "GRAPHICS"
     const val MENU_LEADERBOARD = "LEADERBOARD"
     const val MENU_QUIT = "QUIT"
@@ -1045,6 +1058,7 @@ object ScreenText
         BRIEFING_SKIP_SUFFIX,
         briefingCountdown(5),
         MENU_START_DIVE,
+        MENU_CONTINUE,
         MENU_GRAPHICS,
         MENU_LEADERBOARD,
         MENU_QUIT,
@@ -1597,6 +1611,23 @@ class EnPustTil : PulseEngineGame()
      * per-frame recomposition.
      */
     private var hintMenuLegend: String = ""
+
+    /**
+     * "PRESS <button>  ·  <button> to resume" — the SAME legend as [hintMenuLegend], for the
+     * frames where the menu is drawn over a run held behind it (`RunLifecycle.runHeld`). Only
+     * the second half differs, and it has to: on the resting menu the back button backs out of
+     * a page, on the pause menu it hands the dive back (`MenuAction.CloseMenu` ->
+     * `RunLifecycle.resumeRun`), and "to go back" understates that badly enough that a player
+     * would sooner sit on the menu than risk it.
+     *
+     * Built from the same [pauseButton] label [hintMenuResume] is, NOT [pauseButtonAlt]'s (which
+     * is what [hintPauseResume] carries, for the old cabinet-style pause screen): the button
+     * that actually resumes a held run is the one `updateMainMenu` reads as `padBack`, and that
+     * is `pauseButton` — see CRITICAL C2 in that function's doc. A second cached field rather
+     * than a branch composing a string in `drawMainMenu`, for the no-per-frame-allocation reason
+     * every hint on this class is cached for.
+     */
+    private var hintPauseMenuLegend: String = ""
 
     /**
      * Pure navigation state for the main menu (see [render.MenuModel]'s class doc for why it is
@@ -2732,10 +2763,18 @@ class EnPustTil : PulseEngineGame()
         }
         val exitHeld = engine.input.isPressed(Key.Q) || padExitHeld
 
-        // THE MENU'S OWN NAVIGATION, DRIVEN ONLY WHILE MAIN_MENU IS ACTUALLY ON SCREEN. Gating
+        // THE MENU'S OWN NAVIGATION, DRIVEN ONLY WHILE THE MENU IS ACTUALLY ON SCREEN. Gating
         // here means updateMainMenu's pad walk is skipped entirely on every other screen, which
         // is most of the game's runtime; updateMainMenu itself does not re-check the state.
-        val inMainMenuNow = lifecycle.state == RunLifecycleState.MAIN_MENU
+        //
+        // TWO STATES SHOW THIS MENU (2026-08-31). MAIN_MENU is the boot/resting screen, and
+        // PAUSED-from-a-run is the same menu drawn over the frozen dive with its first row
+        // reading CONTINUE (RunLifecycle.runHeld — Esc mid-run opens the main menu rather than
+        // a second, separate pause screen that would have to grow its own copy of GRAPHICS,
+        // LEADERBOARD and QUIT). PAUSED-from-ATTRACT is deliberately NOT included: that is the
+        // technician's cabinet menu, it still draws drawPauseScreen with its exit-hold bar, and
+        // it has no rows to navigate.
+        val inMainMenuNow = lifecycle.state == RunLifecycleState.MAIN_MENU || lifecycle.runHeld
         // FRESHLY (RE)ENTERED, NOT MERELY OPEN — see wasInMainMenu's own doc for the stale-
         // selection bug this prevents. Computed BEFORE updateMainMenu runs and handed to it
         // (rather than resetting menuModel here directly, as this used to), because CRITICAL
@@ -3101,7 +3140,14 @@ class EnPustTil : PulseEngineGame()
             // so the queue can still read the board while a technician has the menu open.
             RunLifecycleState.PAUSED ->
             {
-                if (lifecycle.pausedFromIdle) drawIdleScreen(hud, w, h)
+                if (lifecycle.pausedFromIdle)
+                {
+                    // The technician's cabinet menu, unchanged: attract screen, then the plain
+                    // pause screen with its exit-hold bar. There is no run to hold and no rows
+                    // to navigate, so it does not want the main menu on top of it.
+                    drawIdleScreen(hud, w, h)
+                    drawPauseScreen(hud, w, h)
+                }
                 else
                 {
                     Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
@@ -3111,8 +3157,21 @@ class EnPustTil : PulseEngineGame()
                     // clearest statement that the run is being HELD, not ended. A legend that
                     // vanished on pause would contradict that.
                     Hud.renderControlLegend(hud, hintLegend, w, h)
+
+                    // THE PAUSE SCREEN FOR A PLAYER IS THE MAIN MENU (2026-08-31). The scrim is
+                    // drawPauseScreen's own — same PauseLayout.SCRIM_ALPHA, same authoredAlphaFor
+                    // (the HUD surface stores alpha SQUARED, see Hud.authoredAlphaFor), so the
+                    // held run reads exactly as held as it did before this screen changed: dim
+                    // enough that the text wins, transparent enough that the stopped clock and
+                    // the full ring of bubbles are still visible through it.
+                    //
+                    // Issued here rather than by drawMainMenu, because the resting main menu must
+                    // NOT have it: that screen is the game's own front page over live water, and
+                    // a scrim there would say "stopped" about a machine that is waiting.
+                    hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(PauseLayout.SCRIM_ALPHA))
+                    hud.fillRect(0f, 0f, w, h)
+                    drawMainMenu(hud, w, h)
                 }
-                drawPauseScreen(hud, w, h)
             }
 
             RunLifecycleState.RUN_OVER ->
@@ -3278,9 +3337,16 @@ class EnPustTil : PulseEngineGame()
     private fun drawMainMenu(hud: Surface, w: Float, h: Float)
     {
         val centreX = w * 0.5f
+        // A RUN HELD BEHIND THIS MENU IS TITLED "PAUSED", NOT WITH THE GAME'S NAME. The row
+        // list underneath is the same list, and CONTINUE plus the frozen HUD behind the scrim
+        // both already say what has happened — but the title is the largest thing on screen,
+        // and a player who hit Esc mid-dive reading their game's own front-page title has every
+        // reason to think the run is gone. Both strings are fixed ScreenText constants and both
+        // are in ScreenText.all(), so AttractScreenTest sweeps them for the font atlas.
+        val runHeld = lifecycle.runHeld
 
         hud.drawTextWithOutline(
-            ScreenText.TITLE,
+            if (runHeld) ScreenText.PAUSED_TITLE else ScreenText.TITLE,
             centreX, h * MenuLayout.TITLE_Y,
             h * MenuLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -3354,7 +3420,18 @@ class EnPustTil : PulseEngineGame()
         }
 
         hud.drawTextWithOutline(
-            hintMenuLegend,
+            // "ESC to go back" is what BACK does on the resting menu; on a held run's ROOT
+            // page the same key gives the dive back, and "to resume" is the word for that.
+            // Both are the already-cached, device- and family-aware hints (rebuildControlHints).
+            //
+            // THE PAGE CHECK IS NOT COSMETIC, and it was found by photographing the screen
+            // rather than by reading the code. On the GRAPHICS page that same button is
+            // consumed by the menu itself — MenuModel returns `Back` there and `CloseMenu`
+            // only from ROOT, which is exactly what stops Esc dropping a player into the water
+            // mid-page — so a legend reading "to resume" on GRAPHICS promises something the
+            // button does not do, on the one line whose whole job is to say which control does
+            // what. That is the defect ControlHints was extracted to end (see its class doc).
+            if (runHeld && page == MenuPage.ROOT) hintPauseMenuLegend else hintMenuLegend,
             centreX, h * MenuLayout.HINT_Y,
             h * MenuLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
@@ -3363,7 +3440,11 @@ class EnPustTil : PulseEngineGame()
     /** The fixed row label for [item] — see [ScreenText]'s MENU_* group. */
     private fun menuItemLabel(item: MenuItemId): String = when (item)
     {
-        MenuItemId.START_DIVE -> ScreenText.MENU_START_DIVE
+        // The one row whose label is not fixed: it reads CONTINUE while a run is held behind
+        // this menu, because confirming it then resumes the dive rather than starting one. Same
+        // row, same index, same MenuAction — see ScreenText.MENU_CONTINUE for why this is a
+        // relabel and not a second MenuItemId.
+        MenuItemId.START_DIVE -> if (lifecycle.runHeld) ScreenText.MENU_CONTINUE else ScreenText.MENU_START_DIVE
         MenuItemId.GRAPHICS -> ScreenText.MENU_GRAPHICS
         MenuItemId.LEADERBOARD -> ScreenText.MENU_LEADERBOARD
         MenuItemId.QUIT -> ScreenText.MENU_QUIT
@@ -4078,6 +4159,12 @@ class EnPustTil : PulseEngineGame()
         // See hintMenuLegend's field doc for why this concatenates two already-cached,
         // already-swept composites rather than issuing fresh ControlHints calls.
         hintMenuLegend = hintPressStart + ScreenText.SEPARATOR + hintMenuResume
+        // The pause-menu variant. ControlHints.resume over the SAME menuBackLabel — the button
+        // updateMainMenu reads as `padBack` and therefore the one that actually resumes a held
+        // run — so this names a working control for the same reason hintMenuResume does. Every
+        // string it can produce is already swept: ControlHints.all() carries resume(...) at
+        // every family label, exactly as it carries goBack(...).
+        hintPauseMenuLegend = hintPressStart + ScreenText.SEPARATOR + ControlHints.resume(arcadeHints, menuBackLabel)
     }
 
     /**
@@ -4363,9 +4450,31 @@ class EnPustTil : PulseEngineGame()
                 // direct call rather than a case RunLifecycle interprets from MenuAction.
                 // CRITICAL C3: this is exactly the case that needed to move after
                 // lifecycle.update — see this function's own class doc.
+                //
+                // FROM THE PAUSE MENU THIS ABANDONS THE RUN, deliberately and knowingly.
+                // viewLeaderboard enters IDLE, which fires justReturnedToIdle, which rebuilds
+                // DiveSim in updateGame — so a player who picks LEADERBOARD mid-dive gets the
+                // attract screen and the board, and loses the dive. That is the one route out
+                // of a held run that is neither "keep playing" nor "close the game", and a row
+                // that silently did nothing on this screen would be worse: the alternative
+                // considered was leaving it inert while a run is held, which is a dead row on
+                // the one screen a player navigates blind.
                 lifecycle.viewLeaderboard()
             MenuAction.StartDive ->
-                {}  // Already folded into menuStartDive at the call site — nothing left to do.
+                // Two different things share this row and this action. With no run held it is
+                // START DIVE, already folded into menuStartDive at the call site and consumed
+                // by lifecycle.update itself — nothing left to do here, and resumeRun is a
+                // no-op in that case anyway (it checks runHeld). With a run held it is
+                // CONTINUE (ScreenText.MENU_CONTINUE), and this is what hands the dive back.
+                lifecycle.resumeRun()
+            MenuAction.CloseMenu ->
+                // BACK/Esc on the root page. Inert on the resting main menu — MenuModel's own
+                // "back on ROOT is a no-op, not an accidental exit" rule is unchanged, and
+                // resumeRun enforces it by checking runHeld — and on the pause menu it is what
+                // makes Esc-then-Esc give a player their run back. RunLifecycle deliberately no
+                // longer resumes a held run on its own pause edge; see that branch for why the
+                // pad's shared Options button made that unsafe.
+                lifecycle.resumeRun()
             MenuAction.None -> {}
         }
     }

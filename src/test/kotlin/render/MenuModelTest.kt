@@ -71,11 +71,36 @@ class MenuModelTest
     }
 
     @Test
-    fun `back on ROOT is a no-op rather than a crash or a quit`() {
-        // A player pressing B on the top-level menu must not exit the game by accident.
+    fun `back on ROOT closes the menu rather than quitting or changing page`() {
+        // A player pressing B on the top-level menu must not exit the game by accident, and
+        // must not leave the page they are on.
+        //
+        // AMENDMENT (2026-08-31, the pause menu): this used to assert MenuAction.None. The
+        // action is now CloseMenu, which is a REPORT and not a decision — this class still does
+        // nothing itself, and a caller that ignores it behaves exactly as every caller did
+        // before the case existed. What the assertion protects is unchanged and is the whole
+        // reason the test is here: root-page back must never be Quit, and must never move the
+        // page. Asserting the exact type rather than "not Quit" is what would catch a future
+        // edit that routed this row somewhere new.
         val action = press(back = true)
         assertEquals(MenuPage.ROOT, menu.page)
-        assertIs<MenuAction.None>(action)
+        assertIs<MenuAction.CloseMenu>(action)
+    }
+
+    @Test
+    fun `back on GRAPHICS goes back a page and does NOT report a close`() {
+        // The other side of CloseMenu, and the property that makes it safe for EnPustTil to
+        // wire straight to RunLifecycle.resumeRun(): a sub-page consumes back itself, so the
+        // same Esc that resumes a held run from the root page cannot resume it from GRAPHICS —
+        // it leaves the page instead. Without this, a player who opened GRAPHICS mid-dive and
+        // pressed Esc would be dropped back into the water rather than back to the row list.
+        press(down = true)                        // ROOT: START_DIVE -> GRAPHICS
+        assertIs<MenuAction.None>(press(confirm = true))
+        assertEquals(MenuPage.GRAPHICS, menu.page)
+
+        val action = press(back = true)
+        assertEquals(MenuPage.ROOT, menu.page)
+        assertIs<MenuAction.Back>(action)
     }
 
     @Test

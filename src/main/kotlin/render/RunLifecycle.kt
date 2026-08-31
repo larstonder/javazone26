@@ -43,6 +43,14 @@ enum class RunLifecycleState { MAIN_MENU, IDLE, BRIEFING, PLAYING, PAUSED, RUN_O
  *              [simulationAdvances] for the part that makes a mid-run pause airtight
  *              rather than merely visual, and the companion constants for the two
  *              judgement calls (auto-dismiss, exit-by-hold) this state encodes.
+ *              AMENDMENT (2026-08-31): the two halves of this state now show DIFFERENT
+ *              screens and leave by different routes. From IDLE it is the technician's
+ *              cabinet menu, unchanged: `drawPauseScreen`, closed by a second pause edge,
+ *              exit by hold. From PLAYING it is the MAIN MENU with its first row reading
+ *              CONTINUE ([runHeld]) — `EnPustTil` drives `MenuModel` from here exactly as
+ *              it does in MAIN_MENU — and it is left by [resumeRun], [viewLeaderboard] or
+ *              the menu's QUIT row rather than by a pause edge. See the pause-edge branch
+ *              in [update] for why that edge had to stop resuming a held run.
  * - RUN_OVER — the "RUN OVER" screen. For the first [dwellSeconds] no input can restart —
  *              this is what guarantees the final score is actually readable even if a
  *              button is being held or mashed the instant the clock hits zero. After the
@@ -207,6 +215,28 @@ class RunLifecycle(
     val pausedFromIdle: Boolean get() = resumeState == RunLifecycleState.IDLE
 
     /**
+     * Whether a RUN is currently being held behind the menu — PAUSED, entered from PLAYING
+     * rather than from attract. The exact complement of [pausedFromIdle] within PAUSED, and
+     * false in every other state.
+     *
+     * WHAT THIS IS FOR (2026-08-31). The pause screen a PLAYER sees is now the main menu
+     * itself, with its first row reading CONTINUE instead of START DIVE: `EnPustTil` gates
+     * `updateMainMenu`/`applyMenuAction`/`drawMainMenu` on `MAIN_MENU || runHeld`, so one
+     * navigable screen serves both. The technician's cabinet menu ([pausedFromIdle]) keeps
+     * `drawPauseScreen` and its exit-hold bar unchanged.
+     *
+     * Deliberately derived rather than stored, for the same reason [pausedFromIdle] is: there
+     * is exactly one piece of state behind both ([resumeState]), and a second boolean tracking
+     * the same fact is a second thing to forget to clear on a transition.
+     *
+     * Exposed as its own property rather than leaving the call site to write
+     * `state == PAUSED && !pausedFromIdle`: that expression is a rule about which screen is on
+     * show, and it belongs next to the states it talks about — the same argument
+     * [simulationAdvances] and [spriteAnimates] are properties for.
+     */
+    val runHeld: Boolean get() = state == RunLifecycleState.PAUSED && !pausedFromIdle
+
+    /**
      * Whether the caller MUST advance [dive.DiveSim] this frame. EnPustTil's `onFixedUpdate`
      * is gated on exactly this and nothing else, which is what makes a pause airtight
      * instead of cosmetic: `DiveSim.tick` is the single place the clock counts down and air
@@ -346,7 +376,8 @@ class RunLifecycle(
      * @param pausePressed whether the pause/back input (Esc) reads pressed THIS frame — a
      *   level reading, edge-detected here exactly like [anyInputPressed], so a key held
      *   down toggles once and not sixty times a second. Consulted in IDLE and PLAYING (to
-     *   open the pause screen) and in PAUSED (to leave it again).
+     *   open the pause screen) and in PAUSED — where, since 2026-08-31, it leaves only the
+     *   technician's cabinet menu; a HELD RUN leaves through [resumeRun]. See that branch.
      * @param exitHeld whether the exit input reads pressed this frame. The ONLY lifecycle
      *   input read as a level and not edge-detected, deliberately: what it measures is
      *   duration, and duration is what makes the exit safe (see [EXIT_HOLD_SECONDS]).
@@ -362,7 +393,9 @@ class RunLifecycle(
      * @param menuInputActive whether ANY of the menu's six raw input levels (up/down/
      *   left/right/confirm/back — see `EnPustTil.updateMainMenu`) read true THIS frame,
      *   regardless of whether it produced an edge or a [MenuAction]. Consulted only in
-     *   MAIN_MENU, and deliberately a LEVEL rather than an edge: [MENU_IDLE_TIMEOUT_SECONDS]
+     *   MAIN_MENU and — since 2026-08-31, where the same menu is what a held run sits
+     *   behind ([runHeld]) — in PAUSED, and deliberately a LEVEL rather than an edge:
+     *   [MENU_IDLE_TIMEOUT_SECONDS] (and, in PAUSED, [PAUSE_IDLE_TIMEOUT_SECONDS])
      *   is an INACTIVITY timeout (Finding I4, final review) — a player holding a direction,
      *   or repeatedly nudging FRAME CAP, must keep resetting the clock for exactly as long as
      *   they keep doing it, not just on the frame a hold began. Defaulted to `false` so every
@@ -474,6 +507,16 @@ class RunLifecycle(
                 // must reset the instant the key comes up.
                 exitHeldSeconds = if (exitHeld) exitHeldSeconds + dt else 0f
 
+                // A HELD RUN'S PAUSE SCREEN IS THE MAIN MENU (2026-08-31, see [runHeld]), so
+                // the auto-resume clock has to measure INACTIVITY here for the identical
+                // reason MAIN_MENU's own timeout does (Finding I4): a player halfway through
+                // choosing a render scale must not have their run resumed underneath them at
+                // [PAUSE_IDLE_TIMEOUT_SECONDS]. Harmless for the technician's cabinet menu,
+                // which still draws `drawPauseScreen` and has no menu input to report —
+                // `EnPustTil` only ever passes this parameter true while a navigable menu is
+                // actually on screen.
+                if (menuInputActive) timeInState = 0f
+
                 if (exitHeld && !exitAlreadyRequested && exitHeldSeconds >= exitHoldSeconds)
                 {
                     // Stay in PAUSED. The application is closing; everything should remain
@@ -481,7 +524,29 @@ class RunLifecycle(
                     exitRequested = true
                     exitAlreadyRequested = true
                 }
-                else if (pauseEdge || timeInState >= pauseIdleTimeoutSeconds)
+                // A PAUSE EDGE NOW CLOSES ONLY THE TECHNICIAN'S CABINET MENU. It used to
+                // close both, and that stopped being safe the moment a held run started
+                // showing the main menu ([runHeld]): the SHIPPED DEFAULT puts `pauseButtonAlt`
+                // and `restartButton` on the same physical button (Options — deliberately, see
+                // `EnPustTil.gamepadButtonCollisionWarnings`' own doc), so one Options press on
+                // the pause menu raises the menu's CONFIRM and this pause edge in the SAME
+                // frame. Resuming here would then fire on every confirm the player made:
+                // picking GRAPHICS would drop them back into the water instead of opening the
+                // page, and picking QUIT would resume a run on its way out.
+                //
+                // A held run leaves through [resumeRun] instead, which `EnPustTil` calls for
+                // the CONTINUE row and for BACK on the menu's root page. Nothing is lost from
+                // the keyboard, where the two are separate keys anyway: Esc arrives at the
+                // open menu as `MenuModel`'s own `back`, root-page back returns
+                // `MenuAction.CloseMenu`, and that calls [resumeRun] — so Esc-then-Esc still
+                // gives a player their run back, exactly as [EXIT_HOLD_SECONDS]' doc promises.
+                //
+                // `pausePressed` is still fed to this class unsuppressed every frame, and that
+                // matters: `wasPausePressed` keeps tracking the real level, so a pause button
+                // still held at the instant the run resumes reads as STILL HELD in PLAYING
+                // rather than as a fresh press, and cannot immediately re-pause the run it just
+                // resumed.
+                else if ((pauseEdge && pausedFromIdle) || timeInState >= pauseIdleTimeoutSeconds)
                 {
                     // Both resumes are the same transition on purpose — see
                     // PAUSE_IDLE_TIMEOUT_SECONDS for why the timeout resumes rather than
@@ -543,7 +608,30 @@ class RunLifecycle(
      */
     fun viewLeaderboard()
     {
-        if (state == RunLifecycleState.MAIN_MENU) enter(RunLifecycleState.IDLE)
+        if (state == RunLifecycleState.MAIN_MENU || runHeld) enter(RunLifecycleState.IDLE)
+    }
+
+    /**
+     * Hand a held run back to the player — the pause menu's CONTINUE row, and BACK/Esc on
+     * that menu's root page (`MenuAction.CloseMenu`). Both routes are `EnPustTil`'s to call,
+     * for the same reason [viewLeaderboard] is: `MenuModel` is engine-free and has no notion
+     * of a `RunLifecycleState`, and `EnPustTil` is what already owns both objects and
+     * translates one's output into calls on the other.
+     *
+     * The transition is byte-identical to the one the auto-resume timeout takes —
+     * `enter(resumeState, resuming = true)` — so [justStarted] stays false and the caller does
+     * NOT build a fresh `DiveSim`. A resume that restarted the run instead is the single worst
+     * thing this screen could do to a player, which is why `resuming returns to the run rather
+     * than restarting it` asserts it from here.
+     *
+     * A no-op unless a run is actually held ([runHeld]). The technician's cabinet menu still
+     * closes on its own pause edge in [update] and must not be reachable from here, and a
+     * defensive no-op is safer on a menu-only path than an assertion — same ruling as
+     * [viewLeaderboard]'s.
+     */
+    fun resumeRun()
+    {
+        if (runHeld) enter(resumeState, resuming = true)
     }
 
     private fun finishInitials()

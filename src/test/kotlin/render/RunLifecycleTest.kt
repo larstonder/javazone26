@@ -502,12 +502,135 @@ class RunLifecycleTest
     fun `resuming returns to the run rather than restarting it`() {
         // A resume that set justStarted would have EnPustTil build a fresh DiveSim and throw
         // away the dive — the single worst thing a pause screen could do to a player.
+        //
+        // AMENDMENT (2026-08-31, the pause menu): this used to resume with `pausePressed`.
+        // A held run now leaves through resumeRun() instead — EnPustTil calls it for the
+        // menu's CONTINUE row and for BACK on its root page — because the shipped default puts
+        // the pad's pause and confirm on the same physical button, so a pause edge could not
+        // tell "close the menu" apart from "pick this row". The property under test is
+        // untouched: whatever resumes must not restart.
         val lc = newLifecycle()
         enterPausedRun(lc)
-        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        lc.resumeRun()
         assertEquals(RunLifecycleState.PLAYING, lc.state)
         assertFalse(lc.justStarted, "resume must NOT construct a new DiveSim")
         assertTrue(lc.simulationAdvances)
+    }
+
+    @Test
+    fun `a pause edge no longer resumes a held run, so a shared Options button cannot`() {
+        // THE DEFECT THIS PREVENTS, and it is a shipped-default one rather than a hypothetical:
+        // DEFAULT_PAUSE_BUTTON_ALT and DEFAULT_RESTART_BUTTON are BOTH START (Options on a
+        // DualSense) on purpose, so one Options press on the pause menu raises the menu's
+        // CONFIRM and a pause edge in the SAME frame. While a pause edge still resumed, picking
+        // GRAPHICS on that menu dropped the player back into the water instead of opening the
+        // page, and picking QUIT resumed a run on its way out.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state, "a held run must not resume on a pause edge")
+        assertTrue(lc.runHeld)
+    }
+
+    @Test
+    fun `a pause edge still closes the technician's cabinet menu`() {
+        // The other half of the branch above: the fromIdle pause screen still draws
+        // drawPauseScreen, has no rows to navigate, and must keep closing on its own key.
+        // Without this, narrowing that branch to `pauseEdge && pausedFromIdle` could be
+        // narrowed all the way to `false` and nothing would notice.
+        val lc = warmToIdle(newLifecycle())
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state)
+        assertTrue(lc.pausedFromIdle)
+        assertFalse(lc.runHeld, "the cabinet menu holds no run, so nothing is there to resume")
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+    }
+
+    @Test
+    fun `resumeRun does nothing from anywhere but a held run`() {
+        // resumeRun is public and reachable from EnPustTil's menu handling on EVERY frame the
+        // menu is open, including the frames where the menu is the RESTING main menu and there
+        // is no run behind it at all (BACK on the root page emits MenuAction.CloseMenu there
+        // too). A resumeRun that acted regardless would send a player who pressed Esc on the
+        // boot screen straight into a PLAYING state with a surface-sitting DiveSim and no
+        // briefing — from the menu, from attract, and from the cabinet menu alike.
+        val lc = newLifecycle()
+        lc.resumeRun()
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
+
+        warmToIdle(lc)
+        lc.resumeRun()
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state)
+        assertTrue(lc.pausedFromIdle)
+        lc.resumeRun()
+        assertEquals(RunLifecycleState.PAUSED, lc.state, "the cabinet menu must not resume a run that does not exist")
+    }
+
+    @Test
+    fun `runHeld is true only for a run paused from PLAYING`() {
+        // The property EnPustTil gates the whole pause menu on — which screen is drawn, whether
+        // MenuModel is driven at all, and whether the first row reads CONTINUE or START DIVE.
+        // Wrong in either direction it is a visible defect: false while a run is held leaves a
+        // player looking at a menu whose CONTINUE row is missing, and true anywhere else puts a
+        // "PAUSED" title over a screen with nothing paused behind it.
+        val lc = newLifecycle()
+        assertFalse(lc.runHeld, "MAIN_MENU")
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertFalse(lc.runHeld, "PLAYING")
+
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = false)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, pausePressed = true)
+        assertEquals(RunLifecycleState.PAUSED, lc.state)
+        assertTrue(lc.runHeld, "PAUSED from a run")
+
+        lc.resumeRun()
+        assertFalse(lc.runHeld, "resumed")
+    }
+
+    @Test
+    fun `browsing the pause menu keeps the run held instead of resuming it underneath`() {
+        // PAUSE_IDLE_TIMEOUT_SECONDS used to measure time since entry, which was correct while
+        // this screen had two lines and no rows. It is the main menu now, with a GRAPHICS page
+        // a player can spend a while on, and a resume that fired at 20 s would put the diver
+        // back in the water mid-decision — the exact defect Finding I4 fixed for MAIN_MENU's own
+        // timeout, arriving through the other door. Drives well past the timeout with menu input
+        // arriving every frame, as a held direction or a repeatedly nudged row does.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        repeat((PAUSE_IDLE_TIMEOUT * 60).toInt() * 3) {
+            lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false, menuInputActive = true)
+        }
+        assertEquals(RunLifecycleState.PAUSED, lc.state, "menu input must reset the auto-resume clock every frame it arrives")
+
+        // And the timeout is still armed, not disabled: stop touching it and it resumes.
+        repeat((PAUSE_IDLE_TIMEOUT * 60).toInt() + 2) {
+            lc.update(dt = 1f / 60f, anyInputPressed = false, runOver = false)
+        }
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+        assertFalse(lc.justStarted)
+    }
+
+    @Test
+    fun `the pause menu's leaderboard row abandons the run and returns to attract`() {
+        // The one route out of a held run that is neither "keep playing" nor "close the game".
+        // viewLeaderboard used to be MAIN_MENU-only, which left LEADERBOARD as a dead row on the
+        // pause menu — the worst outcome on a screen a player navigates blind. justReturnedToIdle
+        // is what EnPustTil rebuilds DiveSim on, so asserting it is asserting that the abandoned
+        // run is actually discarded rather than left frozen behind the attract screen.
+        val lc = newLifecycle()
+        enterPausedRun(lc)
+        lc.viewLeaderboard()
+        assertEquals(RunLifecycleState.IDLE, lc.state)
+        assertTrue(lc.justReturnedToIdle, "EnPustTil must rebuild DiveSim, or attract shows the abandoned dive")
+        assertFalse(lc.justStarted)
     }
 
     @Test
