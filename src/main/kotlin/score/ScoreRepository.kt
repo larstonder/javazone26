@@ -25,10 +25,16 @@ import kotlin.random.Random
  * `engine.config.saveDirectory/scoreboard.json`). Every registered score triggers a
  * SYNCHRONOUS save-and-promote on the calling thread — see [saveAndPromote] for why this
  * supersedes an earlier async design — plus, at most once every [BACKUP_INTERVAL_MS], a
- * rolling timestamped backup (`scoreboard-backup-<epoch>.json`, still async — see
- * [maybeRollBackup]) — two days of booth scores in one un-backed-up file is a single
- * point of failure. [onDestroy] runs the same synchronous save-and-promote, so a clean
- * shutdown cannot lose the tail of scores registered since the last one.
+ * rolling timestamped backup (`scoreboard-backup-<epoch>.json`, written by [writeBackup]
+ * — also synchronous now, see [maybeRollBackup]) — two days of booth scores in one
+ * un-backed-up file is a single point of failure. [onDestroy] runs the same synchronous
+ * save-and-promote, so a clean shutdown cannot lose the tail of scores registered since
+ * the last one.
+ *
+ * DESTRUCTION: [clearBoard] is the one path that deliberately removes scores. It takes an
+ * UNCONDITIONAL backup first and refuses to wipe anything if that backup fails — see its
+ * doc for why the obvious backup call ([maybeRollBackup]) would silently have written
+ * nothing at all.
  *
  * THE SEAM: [store] is normally built from the engine in [onCreate] — see
  * [EngineScoreStore] for what was verified (by decompiling `DataImpl`) about its
@@ -185,28 +191,141 @@ class ScoreRepository(
      * Now that [saveAndPromote] is synchronous on the calling thread (see its doc for
      * why), the concurrent-write race this originally closed cannot happen on the live
      * file's path any more — a genuinely sequential caller cannot collide with itself.
-     * Kept anyway as belt-and-braces: [maybeRollBackup] still saves through
-     * [ScoreStore.saveAsync] (deliberately — see its doc), the constant "scoreboard.json
-     * .tmp" this replaced is otherwise a standing invitation for the next call site added
-     * to this class to reintroduce the exact defect this task fixed, and it costs
-     * nothing to keep unique.
+     * Kept anyway as belt-and-braces: the constant "scoreboard.json.tmp" this replaced is
+     * otherwise a standing invitation for the next call site added to this class to
+     * reintroduce the exact defect this task fixed — and one such call site has since
+     * been added ([clearBoard], which promotes through the very same [saveAndPromote]) —
+     * and it costs nothing to keep unique. (This paragraph used to cite [maybeRollBackup]
+     * as a still-async second writer; it goes through [writeBackup]'s synchronous
+     * [ScoreStore.saveSync] now, and writes a uniquely timestamped file rather than a
+     * temp one either way.)
      */
     private fun freshTempName(): String = "scoreboard.${java.util.UUID.randomUUID()}.tmp"
 
-    /** At most once every [BACKUP_INTERVAL_MS] — see the class doc for why. */
+    /**
+     * At most once every [BACKUP_INTERVAL_MS] — see the class doc for why.
+     *
+     * THE GATE IS THE WHOLE POINT OF THIS METHOD, AND IT IS ALSO THE REASON NOTHING
+     * DESTRUCTIVE MAY CALL IT. [lastBackupTimeMs] is initialised AT CONSTRUCTION, so the
+     * first [BACKUP_INTERVAL_MS] of every session this writes nothing whatsoever — a
+     * perfectly ordinary booth session that starts, runs for twenty minutes and has its
+     * board wiped has no backup file at all. [clearBoard] therefore calls [writeBackup]
+     * directly and checks what it returns.
+     */
     private fun maybeRollBackup(s: ScoreStore)
     {
         val now = System.currentTimeMillis()
         if (now - lastBackupTimeMs < BACKUP_INTERVAL_MS) return
         lastBackupTimeMs = now
 
+        // A missing periodic backup is not a lost score, so this does NOT go through
+        // onSaveFailure — that channel is what a technician greps for "SCORE NOT SAVED"
+        // and diluting it with a non-loss would be worse than useless. It is logged
+        // rather than discarded because the write it replaced (ScoreStore.saveAsync with
+        // an empty completion callback) could not report a failure AT ALL: the engine's
+        // saveObjectAsync only invokes its callback when the write succeeded, verified
+        // from bytecode — see EngineScoreStore's class doc.
+        if (!writeBackup(s)) Logger.warn { "Periodic scoreboard backup failed" }
+    }
+
+    /**
+     * One timestamped backup, UNCONDITIONALLY, synchronously, reporting whether it landed.
+     *
+     * Extracted from [maybeRollBackup] so the destructive [clearBoard] can have a backup
+     * that actually happens — that method's gate makes it useless as a safety net, and its
+     * doc says why.
+     *
+     * Two properties this needs and the old body did not have:
+     *
+     * 1. **No gate.** Every call writes.
+     * 2. **A `Boolean`.** [ScoreStore.saveSync] returns whether the write succeeded;
+     *    [ScoreStore.saveAsync]'s completion callback structurally cannot report a
+     *    failure, because `DataImpl.saveObjectAsync` is
+     *    `saveObject(…).takeIf { it }?.let { onComplete(data) }` — verified from the
+     *    resolved jar's bytecode, see [EngineScoreStore]'s class doc. That is the same
+     *    defect that moved the LIVE file off the async path (see [saveAndPromote]); this
+     *    is it being closed on the backup path too, which is why [maybeRollBackup] now
+     *    goes through here rather than keeping its own async write. The cost is a second
+     *    synchronous few-KB write once every [BACKUP_INTERVAL_MS], on a call stack
+     *    ([registerScore]) that is already blocking on a `saveSync` plus a rename — no
+     *    new class of cost, and it is nowhere near a gameplay frame.
+     *
+     * Each backup is its own uniquely-named file, never overwritten and never read back by
+     * this game — an interrupted backup write only ever damages that one timestamped file,
+     * never the live board or an earlier backup, so this deliberately skips the
+     * temp+promote dance [saveAndPromote] uses for the live file.
+     */
+    private fun writeBackup(s: ScoreStore): Boolean
+    {
         val snapshot = ScoreboardData(entries.toList())
-        val backupName = "scoreboard-backup-$now.json"
-        // Each backup is its own uniquely-named file, never overwritten and never read
-        // back by this game — an interrupted backup write only ever damages that one
-        // timestamped file, never the live board or an earlier backup, so this does not
-        // need the temp+promote dance saveAsync uses for the live file.
-        s.saveAsync(snapshot, backupName) { }
+        return s.saveSync(snapshot, "scoreboard-backup-${System.currentTimeMillis()}.json")
+    }
+
+    /**
+     * Remove every score earned under [seed] (today's by default) and persist the result.
+     *
+     * This is the `DELETE BOARD` menu row's engine — a technician wiping a practice board
+     * before the doors open, or clearing day one's rows off a display without touching the
+     * file they live in.
+     *
+     * **ONLY [seed] IS TOUCHED.** Every [ScoreEntry] carries the seed it was earned under
+     * (that is the entire day-two mechanism — see [topN] and `score/README.md`), so this
+     * filters rather than truncating. Day one cannot be destroyed by a delete performed on
+     * day two, and the test `clearing one seed leaves another seed's scores untouched`
+     * pins exactly that.
+     *
+     * **A BACKUP IS TAKEN FIRST, AND A FAILED BACKUP ABORTS THE WIPE.** This is the only
+     * irreversible operation in the package; performing it with no safety net is strictly
+     * worse than not performing it at all, so a `false` from [writeBackup] returns early
+     * with [entries] untouched.
+     *
+     * **DO NOT REACH FOR [maybeRollBackup] HERE** — it looks exactly like the right call
+     * and it is not. It early-returns unless [BACKUP_INTERVAL_MS] has elapsed since
+     * [lastBackupTimeMs], which is initialised at CONSTRUCTION, so for the first thirty
+     * minutes of every session it writes nothing at all and a wipe inside that window
+     * would be backed by no file whatsoever. It also wrote through
+     * [ScoreStore.saveAsync] with an empty callback, which cannot signal failure. Both
+     * halves are why [writeBackup] exists.
+     *
+     * @return whether the board was actually cleared. `false` means nothing was removed —
+     *   either there is no store, or the pre-wipe backup did not land.
+     */
+    fun clearBoard(seed: Long = todaySeed): Boolean
+    {
+        // Not `store ?: return onSaveFailure(…)`, the shape registerScore uses: that only
+        // reads as a return because registerScore returns Unit. Here it has to be spelled
+        // out, and `store` is a `var`, so it needs the local before the null check can
+        // smart-cast at all.
+        val s = store
+        if (s == null)
+        {
+            onSaveFailure("BOARD NOT CLEARED - no store available (clearBoard called before onCreate?)")
+            return false
+        }
+
+        // Deliberately NOT gated on `entries.any { it.seed == seed }`. An already-empty
+        // board still produces a backup and still rewrites the live file, which costs one
+        // small file and makes the operation's outcome independent of what happened to be
+        // in memory — a technician who presses DELETE BOARD twice gets the same story from
+        // the disk both times, rather than a second press that quietly does nothing.
+        if (!writeBackup(s))
+        {
+            onSaveFailure("BOARD NOT CLEARED - the pre-delete backup failed, refusing to wipe seed $seed")
+            return false
+        }
+
+        entries.removeAll { it.seed == seed }
+        // Same reasoning as registerScore's clear: the whole map, not just this seed's
+        // key. A booth day touches one or two seeds total and getOrPut recomputes
+        // whichever is next asked for, so clearing wholesale costs nothing and cannot
+        // leave a ranking behind that was computed from entries this repository no longer
+        // holds. Without this, topN would keep serving the deleted rows for the rest of
+        // the session.
+        rankedCache.clear()
+
+        saveAndPromote(s)
+        Logger.info { "Cleared the leaderboard for seed $seed - ${entries.size} score(s) remain" }
+        return true
     }
 
     /**

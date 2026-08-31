@@ -101,6 +101,26 @@ class ScoreRepositoryTest
             if (name == ScoreRepository.LIVE_FILE) blocked else File(blocked.parentFile, name)
     }
 
+    /**
+     * A store whose BACKUP writes fail and whose every other write succeeds — the seam
+     * `ScoreRepository.clearBoard`'s refusal is driven through.
+     *
+     * Matched on the `scoreboard-backup-` prefix rather than by failing `saveSync`
+     * wholesale, because failing every write would abort the wipe for the wrong reason:
+     * the live-file save would fail too, and the test would pass with the refusal deleted.
+     *
+     * Takes its delegate as a constructor PARAMETER rather than constructing one in the
+     * delegation expression, which also sidesteps the restriction [UnpromotableStore]'s
+     * doc records (Kotlin cannot name an inner class's constructor there) — and it is
+     * what lets a test reach the underlying [FakeStore] to inspect the directory
+     * afterwards.
+     */
+    private class NoBackupStore(val inner: FakeStore) : ScoreStore by inner
+    {
+        override fun saveSync(data: ScoreboardData, name: String): Boolean =
+            if (name.startsWith(BACKUP_PREFIX)) false else inner.saveSync(data, name)
+    }
+
     // Every test in this class creates at least one temp directory via tempDir() and none
     // of them cleaned up after themselves - nine leaked per run. Tracked here and swept
     // in tearDown, the same shape AtomicFileSwapTest already uses for its one shared dir.
@@ -292,5 +312,126 @@ class ScoreRepositoryTest
 
         assertEquals(listOf("NEW"), r.topN(10).map { it.initials })
         assertEquals(2, store.load(ScoreRepository.LIVE_FILE)!!.entries.size)
+    }
+
+    @Test
+    fun `clearing the board removes today's scores from the live file, not just from memory`()
+    {
+        // Both halves are load-bearing. Clearing only `entries` looks correct on screen
+        // and comes straight back on the next launch; promoting without clearing the
+        // in-memory list wipes the file under a board that still shows the rows.
+        val store = FakeStore(tempDir())
+        val r = repo(store, seed = 20260903L)
+        r.registerScore(initials = "AAA", score = 100)
+        r.registerScore(initials = "BBB", score = 200)
+
+        assertTrue(r.clearBoard(), "the wipe should have gone ahead")
+
+        assertEquals(emptyList(), r.topN(10))
+        assertEquals(emptyList(), store.load(ScoreRepository.LIVE_FILE)!!.entries)
+    }
+
+    @Test
+    fun `clearing one seed leaves another seed's scores untouched`()
+    {
+        // THE ONE THAT MATTERS MOST. Day one's rows live in the same file as day two's,
+        // separated only by the seed each entry carries (see `yesterday's scores stay on
+        // disk but off today's board` above, which is the read side of the same
+        // mechanism). A delete implemented as `entries.clear()` passes every other test
+        // in this block and destroys day one while day two is running.
+        val store = FakeStore(tempDir())
+        val r = repo(store, seed = 20260903L)
+        r.registerScore(initials = "OLD", score = 900, seed = 20260902L)
+        r.registerScore(initials = "NEW", score = 100, seed = 20260903L)
+
+        assertTrue(r.clearBoard(), "the wipe should have gone ahead")
+
+        assertEquals(emptyList(), r.topN(10), "today's board should be empty")
+        assertEquals(listOf("OLD"), r.topN(10, seed = 20260902L).map { it.initials })
+        assertEquals(
+            listOf("OLD"),
+            store.load(ScoreRepository.LIVE_FILE)!!.entries.map { it.initials },
+            "day one must survive on disk, not merely in memory"
+        )
+    }
+
+    @Test
+    fun `clearing the board leaves a backup holding the scores it destroyed`()
+    {
+        // The safety net, asserted by its CONTENTS and not merely by its existence: a
+        // backup written AFTER the wipe would be an empty file with a plausible name, and
+        // an existence-only assertion would happily accept it.
+        //
+        // Note what this also pins about the trap in ScoreRepository.clearBoard's doc:
+        // maybeRollBackup cannot produce this file. Its 30-minute gate is measured from
+        // construction, so within a test - and within the first half hour of any real
+        // session - it writes nothing at all, and this assertion is exactly what fails if
+        // someone "simplifies" clearBoard into calling it.
+        val store = FakeStore(tempDir())
+        val r = repo(store)
+        r.registerScore(initials = "AAA", score = 100)
+        r.registerScore(initials = "BBB", score = 200)
+
+        r.clearBoard()
+
+        val backups = store.listNames().filter { it.startsWith(BACKUP_PREFIX) }
+        assertEquals(1, backups.size, "expected exactly one pre-delete backup: ${store.listNames()}")
+        assertEquals(
+            listOf("AAA", "BBB"),
+            store.load(backups.single())!!.entries.map { it.initials },
+            "the backup must hold the PRE-wipe board, not the empty one that replaced it"
+        )
+    }
+
+    @Test
+    fun `a failed backup aborts the wipe and leaves the board intact`()
+    {
+        // A destructive, irreversible operation must not proceed when its safety net
+        // failed. Every other outcome here - wiping anyway, or wiping and reporting -
+        // loses a booth day's prize draw to a full disk.
+        val reported = mutableListOf<String>()
+        val inner = FakeStore(tempDir())
+        val r = ScoreRepository(
+            todaySeed = 1L,
+            store = NoBackupStore(inner),
+            onSaveFailure = { reported += it }
+        )
+        r.registerScore(initials = "AAA", score = 100)
+
+        assertEquals(false, r.clearBoard(), "a wipe with no backup must refuse")
+
+        assertEquals(listOf("AAA"), r.topN(10).map { it.initials }, "the in-memory board must survive")
+        assertEquals(
+            listOf("AAA"),
+            inner.load(ScoreRepository.LIVE_FILE)!!.entries.map { it.initials },
+            "the live file must survive"
+        )
+        assertEquals(1, reported.size, "the refusal must be reported exactly once: $reported")
+        assertTrue(reported.single().startsWith("BOARD NOT CLEARED"), reported.single())
+    }
+
+    @Test
+    fun `the ranked cache does not survive a clear`()
+    {
+        // topN serves a cached FULL ranking per seed (see rankedCache's doc) and the cache
+        // is only ever invalidated wholesale. A clear that forgets to do so keeps serving
+        // the deleted rows for the rest of the session - on the attract screen, every
+        // frame - while the file on disk is already empty. The first topN call here is not
+        // decoration: it is what puts the entry in the cache that the second call would
+        // otherwise be served from.
+        val store = FakeStore(tempDir())
+        val r = repo(store)
+        r.registerScore(initials = "AAA", score = 100)
+        assertEquals(listOf("AAA"), r.topN(10).map { it.initials }, "precondition: the cache is warm")
+
+        r.clearBoard()
+
+        assertEquals(emptyList(), r.topN(10), "topN served a ranking computed before the wipe")
+    }
+
+    private companion object
+    {
+        /** `ScoreRepository.writeBackup`'s filename shape: `scoreboard-backup-<epochMs>.json`. */
+        const val BACKUP_PREFIX = "scoreboard-backup-"
     }
 }

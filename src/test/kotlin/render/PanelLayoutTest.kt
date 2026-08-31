@@ -2,7 +2,9 @@ package render
 
 import AttractLayout
 import BriefingLayout
+import InitialsLayout
 import PauseLayout
+import RunOverLayout
 import ScreenText
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -20,11 +22,15 @@ import kotlin.test.assertTrue
  * than assumed away — the run-over screen's title-clearance case (see
  * `` `the run-over panel does not run into its own title` `` below).
  *
- * `run-over` and `initials entry` have no dedicated layout object in `EnPustTil.kt` (their
- * anchors are locals inside the two draw functions) — the constants restated here are copies of
- * those locals. That duplication is a real risk this test cannot remove, only narrow: if either
- * draw site's literals move, these tests silently stop describing the real screen. Flagged
- * rather than hidden.
+ * THE DUPLICATION THIS CLASS USED TO CARRY IS GONE (2026-08-31). The doc here read: "`run-over`
+ * and `initials entry` have no dedicated layout object in `EnPustTil.kt` (their anchors are
+ * locals inside the two draw functions) — the constants restated here are copies of those
+ * locals. That duplication is a real risk this test cannot remove, only narrow: if either draw
+ * site's literals move, these tests silently stop describing the real screen. Flagged rather
+ * than hidden." Both screens now have a real layout object — [RunOverLayout] and
+ * [InitialsLayout], siblings of [PauseLayout]/[BriefingLayout] — and this file IMPORTS them, so
+ * the risk is removed rather than narrowed: there is one copy of each number and the test reads
+ * it. The private `RunOverAnchors`/`InitialsAnchors` objects that stood in for them are deleted.
  */
 class PanelLayoutTest
 {
@@ -37,27 +43,6 @@ class PanelLayoutTest
 
     private fun halfWidthOf(text: String, fontFraction: Float) = text.length * EM * fontFraction * 0.5f
 
-    // --- Restated anchors for the two screens with no dedicated layout object ----------------
-    // Mirrors EnPustTil.kt's drawRunOverScreen/drawInitialsEntryScreen locals exactly - see
-    // this class's own doc for the duplication risk that comes with that.
-    private object RunOverAnchors
-    {
-        const val TITLE_Y = 0.5f
-        const val TITLE_FONT = 0.04f
-        const val HINT_Y = 0.5f + 0.045f
-        const val HINT_FONT = 0.022f
-    }
-
-    private object InitialsAnchors
-    {
-        const val TITLE_Y = 0.46f
-        const val TITLE_FONT = 0.032f
-        const val SLOTS_Y = 0.54f
-        const val SLOTS_FONT = 0.06f
-        const val HELP_Y = 0.6f
-        const val HELP_FONT = 0.02f
-    }
-
     private val HALO_BOTTOM = Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT
 
     // --- 1. Containment: the panel encloses its content box, with the declared padding --------
@@ -68,32 +53,72 @@ class PanelLayoutTest
     // panel's horizontal edges stay on screen, checked separately below per the task brief.
 
     @Test
-    fun `the main menu panel contains the row list and the hint legend, not the title`()
+    fun `the main menu panel contains the row list, and neither its title nor its hint legend`()
     {
         val h = 1200f
         val contentTop = h * MenuLayout.ROWS_TOP_Y
-        val contentBottom = h * (MenuLayout.HINT_Y + MenuLayout.HINT_FONT)
-        val titleBottom = h * (MenuLayout.TITLE_Y + MenuLayout.TITLE_FONT)
+        val model = MenuModel()
 
-        val panel = PanelLayout.bounds(
-            contentLeft = -h * MenuLayout.HIGHLIGHT_HALF_SPAN,
-            contentTop = contentTop,
-            contentRight = h * MenuLayout.HIGHLIGHT_HALF_SPAN,
-            contentBottom = contentBottom,
-            screenHeight = h,
-            minTop = titleBottom
-        )
+        // Swept over both pages since 2026-08-31: the highlight half-span - which is also the
+        // panel's own width at the draw site - became per-page when the shared 0.20 turned out
+        // to be too narrow for GRAPHICS' widest row and too wide for ROOT's four short words
+        // (see MenuLayout.HIGHLIGHT_HALF_SPAN_ROOT). Checking one page would leave the other's
+        // panel edge unasserted.
+        //
+        // AND OVER BOTH TITLE VARIANTS, and against the REAL contentBottom. This case used to
+        // pass `contentBottom = h * (HINT_Y + HINT_FONT)` while production passed
+        // `rowsBottom(items.size)` - a pre-existing drift the menu-polish plan lists under
+        // "deliberately not doing", which meant Task 7's grouped row block was not covered here
+        // at all. Both are now read the way drawMainMenu reads them, so this test describes the
+        // panel that is actually drawn.
+        for (page in MenuPage.entries)
+        {
+            val items = model.itemsOn(page)
+            val gaps = MenuLayout.groupGapsIn(items)
+            val halfSpan = h * MenuLayout.highlightHalfSpanFor(page)
+            val contentBottom = h * MenuLayout.rowsBottom(items.size, gaps)
 
-        val panelTop = panel.centreY - panel.height * 0.5f
-        val panelBottom = panel.centreY + panel.height * 0.5f
-        val panelLeft = panel.centreX - panel.width * 0.5f
-        val panelRight = panel.centreX + panel.width * 0.5f
+            for (runHeld in listOf(false, true))
+            {
+                val titleBottom = h * (MenuLayout.titleY(page, runHeld) + MenuLayout.titleFont(page, runHeld))
 
-        assertTrue(panelTop <= contentTop, "panel top ${panelTop} does not contain content top $contentTop")
-        assertTrue(panelBottom >= contentBottom, "panel bottom $panelBottom does not contain content bottom $contentBottom")
-        assertTrue(panelLeft <= -h * MenuLayout.HIGHLIGHT_HALF_SPAN, "panel does not contain the row list's left edge")
-        assertTrue(panelRight >= h * MenuLayout.HIGHLIGHT_HALF_SPAN, "panel does not contain the row list's right edge")
-        assertTrue(panelTop >= titleBottom, "the menu panel overlaps its own title")
+                val panel = PanelLayout.bounds(
+                    contentLeft = -halfSpan,
+                    contentTop = contentTop,
+                    contentRight = halfSpan,
+                    contentBottom = contentBottom,
+                    screenHeight = h,
+                    minTop = titleBottom
+                )
+
+                val panelTop = panel.centreY - panel.height * 0.5f
+                val panelBottom = panel.centreY + panel.height * 0.5f
+                val panelLeft = panel.centreX - panel.width * 0.5f
+                val panelRight = panel.centreX + panel.width * 0.5f
+                val label = "$page (runHeld=$runHeld)"
+
+                assertTrue(panelTop <= contentTop, "$label panel top $panelTop does not contain content top $contentTop")
+                assertTrue(panelBottom >= contentBottom, "$label panel bottom $panelBottom does not contain content bottom $contentBottom")
+                assertTrue(panelLeft <= -halfSpan, "$label panel does not contain the row list's left edge")
+                assertTrue(panelRight >= halfSpan, "$label panel does not contain the row list's right edge")
+                // 1e-3 px of slack, and it is load-bearing rather than defensive. The
+                // page-header title is deliberately sized so `titleY + titleFont` EQUALS the
+                // padded content top (see MenuLayout.TITLE_Y - 0.135 + 0.06 = 0.195 = 0.22 -
+                // 0.025), so `maxOf` is picking between two numbers that are equal in decimal
+                // and differ by ~1.8e-8 in float: 0.135f + 0.06f rounds up, 0.22f - 0.025f
+                // rounds down. Without the epsilon this case fails on the exact configuration
+                // it is meant to certify as correct.
+                assertTrue(panelTop >= titleBottom - 1e-3f, "the $label menu panel overlaps its own title")
+
+                // The legend is OUTSIDE this panel now, which is the Task 6 change: it tracks
+                // the panel's bottom edge instead of sitting at a fixed 0.90h, so a panel that
+                // grew to contain it would mean the two had collided.
+                assertTrue(
+                    h * MenuLayout.hintY(items.size, gaps) > panelBottom,
+                    "$label panel bottom $panelBottom has swallowed the hint legend"
+                )
+            }
+        }
     }
 
     @Test
@@ -146,11 +171,17 @@ class PanelLayoutTest
     }
 
     @Test
-    fun `the briefing panel contains the rows and rule, and grows to cover the countdown and skip lines`()
+    fun `the briefing panel contains the rows, facts and rule, and grows to cover the countdown and skip lines`()
     {
         val h = 1200f
-        val titleBottom = h * (BriefingLayout.TITLE_Y + BriefingLayout.TITLE_FONT)
-        val minTop = maxOf(titleBottom, h * HALO_BOTTOM)
+        // THE TITLE'S BOTTOM EDGE IS NOW THE WHOLE FLOOR. This was
+        // `maxOf(titleBottom, h * HALO_BOTTOM)`, mirroring a draw site that clamped the
+        // briefing panel out of the diver's halo band; that clamp was removed on 2026-08-31
+        // (Task 12) and this line has to follow it, or the test is checking containment for a
+        // panel the game does not draw. It was not merely stale — it FAILED, because the panel's
+        // real top (0.175h) is above the halo's bottom (0.54h) and the clamped one was not, so
+        // the clamped panel did not contain its own first row at 0.200h.
+        val minTop = h * (BriefingLayout.TITLE_Y + BriefingLayout.TITLE_FONT)
 
         val cases = listOf(
             "rule only" to (BriefingLayout.RULE_Y + BriefingLayout.RULE_FONT),
@@ -179,12 +210,16 @@ class PanelLayoutTest
     }
 
     @Test
-    fun `the run-over panel contains only the retry hint, not the title`()
+    fun `the run-over panel contains the score block and the retry hint, not the title`()
     {
+        // Was `contains only the retry hint`, and the "only" was true until 2026-08-31: the
+        // panel's content box now starts at the big score numeral (design doc SS3.5's "then
+        // enlarge"), so the title-clearance relationship below is being checked against a
+        // DIFFERENT and much taller content box than the one it was written for.
         val h = 1200f
-        val contentTop = h * RunOverAnchors.HINT_Y
-        val contentBottom = h * (RunOverAnchors.HINT_Y + RunOverAnchors.HINT_FONT)
-        val titleBottom = h * (RunOverAnchors.TITLE_Y + RunOverAnchors.TITLE_FONT)
+        val contentTop = h * RunOverLayout.SCORE_Y
+        val contentBottom = h * (RunOverLayout.HINT_Y + RunOverLayout.HINT_FONT)
+        val titleBottom = h * (RunOverLayout.TITLE_Y + RunOverLayout.TITLE_FONT)
 
         val panel = PanelLayout.bounds(
             contentLeft = -h * PanelLayout.RUN_OVER_HALF_SPAN,
@@ -197,6 +232,7 @@ class PanelLayoutTest
         val panelTop = panel.centreY - panel.height * 0.5f
         val panelBottom = panel.centreY + panel.height * 0.5f
 
+        assertTrue(panelTop <= contentTop, "panel top does not contain the score numeral")
         assertTrue(panelBottom >= contentBottom, "panel bottom does not contain the retry hint")
         assertTrue(panelTop >= titleBottom, "the run-over panel overlaps its own title")
     }
@@ -204,21 +240,24 @@ class PanelLayoutTest
     @Test
     fun `the run-over panel does not run into its own title`()
     {
-        // THE DEFECT NAIVE PADDING WOULD HAVE SHIPPED. The title's own text box
-        // (RunOverAnchors.TITLE_Y .. +TITLE_FONT) ends at 0.54h; the retry hint starts at
-        // 0.545h - a 0.005h gap far smaller than PanelLayout.PADDING_FRACTION (0.025h). Padding
-        // the hint's top edge naively would put the panel's top at 0.52h, inside the title's own
-        // box. This is exactly the fault the task brief says "only an eye catches" - caught here
-        // by the numbers instead, because nobody could look at a real frame. See
+        // THE DEFECT NAIVE PADDING WOULD HAVE SHIPPED, AND IT SURVIVED THE 2026-08-31 REBUILD
+        // OF THIS SCREEN RATHER THAN BEING DESIGNED OUT — which is why this test is still here
+        // and its numbers have moved. The title's own text box
+        // (RunOverLayout.TITLE_Y .. +TITLE_FONT) ends at 0.621h and the panel's content now
+        // starts at the score numeral, RunOverLayout.SCORE_Y = 0.645h. That is a 0.024h gap,
+        // still narrower than PanelLayout.PADDING_FRACTION (0.025h), so padding the numeral's
+        // top edge naively would once again put the panel's top edge inside "RUN OVER". (The
+        // pre-rebuild figures were 0.54h, 0.545h and a 0.005h gap.) This is exactly the fault
+        // the task brief says "only an eye catches" — caught here by the numbers instead. See
         // panel-report.md's "found by arithmetic" section.
         val h = 1200f
-        val titleBottom = h * (RunOverAnchors.TITLE_Y + RunOverAnchors.TITLE_FONT)
+        val titleBottom = h * (RunOverLayout.TITLE_Y + RunOverLayout.TITLE_FONT)
 
         val panel = PanelLayout.bounds(
             contentLeft = -h * PanelLayout.RUN_OVER_HALF_SPAN,
-            contentTop = h * RunOverAnchors.HINT_Y,
+            contentTop = h * RunOverLayout.SCORE_Y,
             contentRight = h * PanelLayout.RUN_OVER_HALF_SPAN,
-            contentBottom = h * (RunOverAnchors.HINT_Y + RunOverAnchors.HINT_FONT),
+            contentBottom = h * (RunOverLayout.HINT_Y + RunOverLayout.HINT_FONT),
             screenHeight = h,
             minTop = titleBottom
         )
@@ -232,12 +271,16 @@ class PanelLayoutTest
     }
 
     @Test
-    fun `the initials panel contains the slot line and the help line, not the title`()
+    fun `the initials panel contains the slot rects and the help line, not the title`()
     {
+        // "slot line" until 2026-08-31, when the single bracketed string became three rects
+        // (design doc SS3.6) - the content box's top edge is now the top of a RECTANGLE rather
+        // than the top of a text box, which is why InitialsLayout.SLOTS_TOP_Y replaced a
+        // SLOTS_Y that meant something subtly different.
         val h = 1200f
-        val contentTop = h * InitialsAnchors.SLOTS_Y
-        val contentBottom = h * (InitialsAnchors.HELP_Y + InitialsAnchors.HELP_FONT)
-        val titleBottom = h * (InitialsAnchors.TITLE_Y + InitialsAnchors.TITLE_FONT)
+        val contentTop = h * InitialsLayout.SLOTS_TOP_Y
+        val contentBottom = h * (InitialsLayout.HELP_Y + InitialsLayout.HELP_FONT)
+        val titleBottom = h * (InitialsLayout.TITLE_Y + InitialsLayout.TITLE_FONT)
 
         val panel = PanelLayout.bounds(
             contentLeft = -h * PanelLayout.INITIALS_HALF_SPAN,
@@ -250,9 +293,27 @@ class PanelLayoutTest
         val panelTop = panel.centreY - panel.height * 0.5f
         val panelBottom = panel.centreY + panel.height * 0.5f
 
-        assertTrue(panelTop <= contentTop, "panel top does not contain the slot line")
+        assertTrue(panelTop <= contentTop, "panel top does not contain the slot rects")
         assertTrue(panelBottom >= contentBottom, "panel bottom does not contain the help line")
         assertTrue(panelTop >= titleBottom, "the initials panel overlaps its own title")
+
+        // The slot BLOCK, which the content box above only bounds vertically. Horizontally the
+        // panel is sized by PanelLayout.INITIALS_HALF_SPAN and the slots are laid out from
+        // their own pitch, so the two could disagree without any other assertion here noticing
+        // - and the failure mode is a slot rect drawn straddling or outside the card's edge.
+        val panelLeft = panel.centreX - panel.width * 0.5f
+        val panelRight = panel.centreX + panel.width * 0.5f
+        val centreX = 0f
+        for (slot in 0 until InitialsLayout.SLOT_COUNT)
+        {
+            val slotCentre = InitialsLayout.slotCentreX(slot, centreX, h)
+            val halfSlot = h * InitialsLayout.SLOT_WIDTH * 0.5f
+            assertTrue(
+                slotCentre - halfSlot >= panelLeft && slotCentre + halfSlot <= panelRight,
+                "initials slot $slot spans ${slotCentre - halfSlot}..${slotCentre + halfSlot}, " +
+                    "outside the panel's $panelLeft..$panelRight"
+            )
+        }
     }
 
     // --- 2. On screen: no panel's edge leaves 0f..1f, at every aspect from 4:3 to 32:9 --------
@@ -265,7 +326,11 @@ class PanelLayoutTest
     {
         val aspects = listOf(4f / 3f, 16f / 10f, 16f / 9f, 2.389f, 32f / 9f)
         val halfSpans = mapOf(
-            "menu" to MenuLayout.HIGHLIGHT_HALF_SPAN,
+            // Both menu pages by name, not one entry for "menu": the span became per-page on
+            // 2026-08-31 and the wider of the two (GRAPHICS) is the one that could actually run
+            // off a 4:3 panel, so listing only ROOT would leave the risky one unchecked.
+            "menu ROOT" to MenuLayout.HIGHLIGHT_HALF_SPAN_ROOT,
+            "menu GRAPHICS" to MenuLayout.HIGHLIGHT_HALF_SPAN_GRAPHICS,
             "leaderboard" to AttractLayout.ROW_HALF_SPAN,
             "pause" to PanelLayout.PAUSE_HALF_SPAN,
             "briefing" to PanelLayout.BRIEFING_HALF_SPAN,
@@ -316,32 +381,25 @@ class PanelLayoutTest
         }
     }
 
-    @Test
-    fun `the briefing panel's top edge never rises into the diver halo band either`()
-    {
-        // Not required by the task brief, which names only the attract screen - added because
-        // BriefingLayout's own class doc places ROWS_TOP_Y just 0.03h below the halo's bottom
-        // edge, thinner than PanelLayout.PADDING_FRACTION (0.025h), so the same intrusion risk
-        // exists here even though nobody asked for it to be checked.
-        val h = 1200f
-        val titleBottom = h * (BriefingLayout.TITLE_Y + BriefingLayout.TITLE_FONT)
-        val minTop = maxOf(titleBottom, h * HALO_BOTTOM)
-
-        val panel = PanelLayout.bounds(
-            contentLeft = -h * PanelLayout.BRIEFING_HALF_SPAN,
-            contentTop = h * BriefingLayout.ROWS_TOP_Y,
-            contentRight = h * PanelLayout.BRIEFING_HALF_SPAN,
-            contentBottom = h * (BriefingLayout.RULE_Y + BriefingLayout.RULE_FONT),
-            screenHeight = h,
-            minTop = minTop
-        )
-        val panelTop = panel.centreY - panel.height * 0.5f
-        assertTrue(
-            panelTop >= h * HALO_BOTTOM - 1e-3f,
-            "the briefing panel's top ($panelTop) intrudes into the diver halo band " +
-                "(halo bottom = ${h * HALO_BOTTOM})"
-        )
-    }
+    // `the briefing panel's top edge never rises into the diver halo band either` STOOD HERE
+    // AND IS DELETED, NOT PORTED (2026-08-31, Task 12). It asserted exactly the constraint that
+    // has been removed — that `drawBriefingScreen`'s `minTop` clamps the briefing panel out of
+    // the diver's halo band — and there is no inverted form of it worth writing, because
+    // "the panel's top MAY be in the band" is a permission, not a property.
+    //
+    // Removing it is legitimate rather than convenient, and its own comment is the evidence: it
+    // opened "Not required by the task brief, which names only the attract screen - added
+    // because BriefingLayout's own class doc places ROWS_TOP_Y just 0.03h below the halo's
+    // bottom edge ... so the same intrusion risk exists even though nobody asked for it to be
+    // checked". It was a voluntary guard on a numeric coincidence between two constants, and
+    // BOTH of those constants have since moved: ROWS_TOP_Y is 0.200 and the clamp is gone.
+    //
+    // What replaces it is not nothing. `BriefingScreenTest`'s halo rule became a disjunction —
+    // clears above, clears below, OR IS INSIDE THE PANEL — so every briefing element is still
+    // held to a relationship with the diver, and the panel extent that third arm is measured
+    // against is computed with `PanelLayout.bounds` there, exactly as the tests above do here.
+    // The attract screen's own halo test, four lines up, is untouched: nothing about that
+    // screen changed and its panel has no card-over-the-diver argument to make.
 
     // --- 4. Width constants actually cover the worst-case string they claim to ---------------
     // Turns the arithmetic in PanelLayout's own KDoc into an assertion instead of a comment that
@@ -370,22 +428,49 @@ class PanelLayoutTest
     }
 
     @Test
-    fun `RUN_OVER_HALF_SPAN covers the widest play-again hint`()
+    fun `RUN_OVER_HALF_SPAN covers the widest play-again hint and the widest score`()
     {
+        // Two subjects since 2026-08-31: the numeral was added to this panel's content and at
+        // RunOverLayout.SCORE_FONT (0.105h) a five-digit score is within 5% of the hint's own
+        // requirement, so which of the two actually drives the constant is no longer obvious
+        // from reading it. Both are checked, and PanelLayout.RUN_OVER_HALF_SPAN's doc names
+        // the hint as the driver — if that ever stops being true, this test says so.
         val worst = ControlHints.playAgain(true, "LEFT BUMPER")
-        val needed = halfWidthOf(worst, RunOverAnchors.HINT_FONT)
+        val neededHint = halfWidthOf(worst, RunOverLayout.HINT_FONT)
+        // The widest score the game can show. Scoring is unbounded in principle, so this is the
+        // same worst case ScreenText.all() sweeps rather than a derived maximum.
+        val neededScore = halfWidthOf(ScreenText.bankedNumber(99999), RunOverLayout.SCORE_FONT)
+        val neededCaption = halfWidthOf(ScreenText.RUN_OVER_CAPTION, RunOverLayout.CAPTION_FONT)
+
         assertTrue(
-            PanelLayout.RUN_OVER_HALF_SPAN >= needed,
-            "\"$worst\" needs ${needed}h half-width but RUN_OVER_HALF_SPAN is only ${PanelLayout.RUN_OVER_HALF_SPAN}h"
+            PanelLayout.RUN_OVER_HALF_SPAN >= neededHint,
+            "\"$worst\" needs ${neededHint}h half-width but RUN_OVER_HALF_SPAN is only ${PanelLayout.RUN_OVER_HALF_SPAN}h"
+        )
+        assertTrue(
+            PanelLayout.RUN_OVER_HALF_SPAN >= neededScore,
+            "a five-digit score at SCORE_FONT needs ${neededScore}h half-width but " +
+                "RUN_OVER_HALF_SPAN is only ${PanelLayout.RUN_OVER_HALF_SPAN}h"
+        )
+        assertTrue(
+            PanelLayout.RUN_OVER_HALF_SPAN >= neededCaption,
+            "\"${ScreenText.RUN_OVER_CAPTION}\" needs ${neededCaption}h half-width but " +
+                "RUN_OVER_HALF_SPAN is only ${PanelLayout.RUN_OVER_HALF_SPAN}h"
         )
     }
 
     @Test
-    fun `INITIALS_HALF_SPAN covers the widest initials-help hint and the slot line`()
+    fun `INITIALS_HALF_SPAN covers the widest initials-help hint and the slot block`()
     {
+        // THE SECOND SUBJECT CHANGED, IT WAS NOT DROPPED. This used to measure
+        // `ScreenText.initialsSlots("AAA", 0)` — a composed 11-character string — against a
+        // 0.06h font. That function no longer exists (design doc SS3.6: the bracketed line
+        // became three rects), so the width bound it stood for is re-expressed as the thing
+        // that is actually drawn: the slot BLOCK's own half-span, which InitialsLayout derives
+        // from SLOT_WIDTH, SLOT_GAP and SLOT_COUNT rather than from any glyph estimate. Same
+        // relationship, a subject that can now be measured exactly instead of guessed at EM.
         val worstHelp = ControlHints.initialsHelp(true, "LEFT BUMPER")
-        val neededHelp = halfWidthOf(worstHelp, InitialsAnchors.HELP_FONT)
-        val neededSlots = halfWidthOf(ScreenText.initialsSlots("AAA", 0), InitialsAnchors.SLOTS_FONT)
+        val neededHelp = halfWidthOf(worstHelp, InitialsLayout.HELP_FONT)
+        val neededSlots = InitialsLayout.slotsHalfSpan()
 
         assertTrue(
             PanelLayout.INITIALS_HALF_SPAN >= neededHelp,
@@ -404,6 +489,7 @@ class PanelLayoutTest
     {
         val values = mapOf(
             "ALPHA" to PanelLayout.ALPHA,
+            "MENU_PLATE_ALPHA" to PanelLayout.MENU_PLATE_ALPHA,
             "PADDING_FRACTION" to PanelLayout.PADDING_FRACTION,
             "CORNER_RADIUS_FRACTION" to PanelLayout.CORNER_RADIUS_FRACTION,
             "PAUSE_HALF_SPAN" to PanelLayout.PAUSE_HALF_SPAN,
@@ -432,6 +518,21 @@ class PanelLayoutTest
         // draw at authored alpha `a` onto a blank surface stores `a^2`), so re-derived from
         // that same measurement for two stacked draws - `new = src^2 + dst*(1-src)`, where
         // `src` is the RAW (sqrt) value passed to setDrawColor, not the displayed one:
+        //
+        // SWEPT OVER BOTH PLATE ALPHAS since 2026-08-31. Hud.renderPanel gained a per-screen
+        // plate alpha and the main menu passes PanelLayout.MENU_PLATE_ALPHA, which is far closer
+        // to the ceiling this bound describes than the shared default ever was - and the main
+        // menu is drawn over PauseLayout.SCRIM_ALPHA on BOTH of its branches (the resting menu
+        // gained the same scrim in the same pass), so this is the composition it actually meets.
+        // Checking only ALPHA would leave the one value that could realistically cross the bound
+        // unchecked.
+        for ((name, alpha) in listOf("ALPHA" to PanelLayout.ALPHA, "MENU_PLATE_ALPHA" to PanelLayout.MENU_PLATE_ALPHA))
+        {
+            val src = kotlin.math.sqrt(alpha)
+            val over = alpha + PauseLayout.SCRIM_ALPHA * (1f - src)
+            assertTrue(over < 0.95f, "composed pause alpha $over from $name reads as opaque, not held")
+        }
+
         val panelSrc = kotlin.math.sqrt(PanelLayout.ALPHA)
         val composed = PanelLayout.ALPHA + PauseLayout.SCRIM_ALPHA * (1f - panelSrc)
         assertTrue(composed < 0.95f, "composed pause alpha $composed reads as opaque, not held")

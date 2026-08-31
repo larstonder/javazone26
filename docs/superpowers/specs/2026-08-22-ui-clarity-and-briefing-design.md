@@ -83,7 +83,26 @@ All twelve were taken by the owner on 2026-08-22, before any code was written.
 | Button names in hints | **Derived from live config** | A rebind updates the screen. Needs a `GamepadButton` → label map and a font-atlas test over every entry. |
 | Which hint set shows | **Gamepad presence wins** | No last-used-device tracking, no flicker, no debounce. |
 | Language | **English, as everything else already is** | The only Norwegian string stays the title, `"ÉN PUST TIL"`. |
-| Briefing content | **Controls plus the one core rule** | Air, the anglerfish and the point-of-no-return are deliberately NOT taught here. |
+| Briefing content | ~~**Controls plus the one core rule**~~ **SUPERSEDED 2026-08-31 — see note below** | ~~Air, the anglerfish and the point-of-no-return are deliberately NOT taught here.~~ |
+
+> **SUPERSEDED, 2026-08-31.** The briefing now teaches three facts as well as the controls:
+> carried pearls make you heavy and slow, deeper pearls are worth more, and the bubbles are your
+> air. `BRIEFING_SECONDS` moved 5f → 9f to pay for the reading time.
+>
+> **The reasoning behind the original exclusion was sound and simply stopped applying.** It rested
+> on reading time in front of a **queue**; the target moved from an unattended two-day arcade
+> cabinet to a desktop Mac with a controller on 2026-08-30, and there is no queue. Air was the
+> first of the three named exclusions and is now taught, because it is deliberately never shown as
+> a number (§6, §12), so the ring of bubbles is the only indicator the game has and nothing said
+> so. The weight rule is §4's central mechanic and had been taught on no screen at all.
+>
+> **The point-of-no-return is still NOT taught here** — the depth tape already marks it in-game,
+> and surfacing it in words needs a margin query out of `dive/Ascent.kt` that does not exist
+> (`Ascent` answers a boolean, not a distance). **The anglerfish is not mentioned anywhere**,
+> because it is being removed from the game.
+>
+> Recorded in `2026-08-04-en-pust-til-design.md` §17 and specified in
+> `2026-08-31-menu-visual-polish-design.md` §5.
 | Does a retry re-brief? | **No — attract only** | `IDLE → BRIEFING → PLAYING`; `RUN_OVER → PLAYING` stays direct. |
 | Skip guard | **0.75 s dwell** | Mirrors `RUN_OVER`'s proven `DWELL_SECONDS` shape. |
 | Countdown | **5 seconds** | |

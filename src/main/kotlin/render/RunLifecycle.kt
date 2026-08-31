@@ -719,8 +719,29 @@ class RunLifecycle(
          * parameter, it gives a one-constant way to switch the briefing off if it proves too
          * slow in front of a real queue, and it is what lets every test written before
          * BRIEFING keep asserting what it always asserted.
+         *
+         * RAISED FROM 5f TO 9f ON 2026-08-31, AND THE RAISE IS PART OF THE CONTENT CHANGE
+         * RATHER THAN A SEPARATE TUNING. The briefing gained three facts in the same pass
+         * (decision D3, `2026-08-31-menu-visual-polish-design.md` §5), taking it from six
+         * elements to nine. At 5 s that is 0.55 s per element and nobody reads that — adding
+         * content without paying for the reading time is precisely how a teaching screen
+         * becomes a screen everybody skips, at which point the content was worse than useless
+         * because it also cost the time.
+         *
+         * 5f WAS A QUEUE-THROUGHPUT NUMBER, chosen when this was a two-day unattended cabinet
+         * in front of a line of people and every second of briefing was a second the next
+         * player was not playing. CLAUDE.md's 2026-08-30 note records that the queue does not
+         * exist: this build runs on a desk, for one person at a time. Nothing is lost by the
+         * extra four seconds that was not already recoverable — [BRIEFING_DWELL_SECONDS] makes
+         * the screen skippable after 0.75 s, and a returning player who knows the game presses
+         * once and dives.
+         *
+         * The unattended-recovery guarantee this constant carries is UNAFFECTED in kind, only
+         * in duration: a player who walks away mid-briefing still starts a run, drowns, and
+         * falls through RUN_OVER -> MAIN_MENU on the timers above, four seconds later than
+         * before.
          */
-        const val BRIEFING_SECONDS = 5f
+        const val BRIEFING_SECONDS = 9f
 
         /**
          * How long the briefing ignores input before a press can skip it.

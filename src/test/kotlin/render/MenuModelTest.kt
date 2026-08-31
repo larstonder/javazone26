@@ -19,9 +19,13 @@ class MenuModelTest
 {
     private val menu = MenuModel()
 
+    // dt defaults to 0f here for the same reason MenuModel.update's own parameter does: most of
+    // these tests are about EDGE detection and have no hold to drive, and a zero dt accumulates
+    // nothing. The hold tests at the bottom pass it explicitly, one 60 Hz frame at a time.
     private fun press(up: Boolean = false, down: Boolean = false, left: Boolean = false,
-                      right: Boolean = false, confirm: Boolean = false, back: Boolean = false) =
-        menu.update(up, down, left, right, confirm, back)
+                      right: Boolean = false, confirm: Boolean = false, back: Boolean = false,
+                      dt: Float = 0f) =
+        menu.update(up, down, left, right, confirm, back, dt)
 
     private fun release() = menu.update(false, false, false, false, false, false)
 
@@ -218,8 +222,171 @@ class MenuModelTest
     fun `every item id is reachable from the root by navigation alone`() {
         // Guards against an item declared but never listed on a page - it would be dead code
         // that looks live.
-        val reachable = menu.itemsOn(MenuPage.ROOT) + menu.itemsOn(MenuPage.GRAPHICS)
+        //
+        // SWEEPS MenuPage.entries RATHER THAN NAMING THE PAGES. It listed ROOT and GRAPHICS by
+        // hand until 2026-08-31, which made it silently incomplete the moment a third page was
+        // added: a page whose rows were all unreachable would still have passed, because the
+        // test would not have looked at it. Enumerating the enum makes it self-maintaining.
+        val reachable = MenuPage.entries.flatMap { menu.itemsOn(it) }
         assertTrue(reachable.containsAll(MenuItemId.entries.toList()),
             "unreachable items: ${MenuItemId.entries - reachable.toSet()}")
+    }
+
+    // --- The LEADERBOARD page: CRITICAL back handling, and CRITICAL C1 in a new place -------
+
+    /** Walk ROOT to the LEADERBOARD row and confirm it, leaving CONFIRM STILL HELD - which is
+     * the physical truth one frame after any human press, and the whole premise of the hold
+     * tests below. Returns with the model on MenuPage.LEADERBOARD, row 0 = DELETE_BOARD. */
+    private fun openLeaderboardWithConfirmStillHeld() {
+        while (menu.selectedItem() != MenuItemId.LEADERBOARD) { press(down = true); release() }
+        press(confirm = true)
+        assertEquals(MenuPage.LEADERBOARD, menu.page)
+        assertEquals(MenuItemId.DELETE_BOARD, menu.selectedItem(),
+            "these tests are only meaningful if DELETE BOARD really is the row the page opens on")
+    }
+
+    @Test
+    fun `back on the LEADERBOARD page returns to ROOT and does NOT report a close`() {
+        // CRITICAL. MenuModel.update's back branch read `page == MenuPage.GRAPHICS` for as long
+        // as GRAPHICS was the only sub-page. On a third page that falls into the else and emits
+        // CloseMenu, which EnPustTil.applyMenuAction routes to lifecycle.resumeRun() - so Esc
+        // on the leaderboard page would DROP A PAUSED PLAYER BACK INTO THE WATER instead of
+        // returning them to the row list. The branch is `page != MenuPage.ROOT`; this is what
+        // fails if anyone narrows it back to a single named page.
+        openLeaderboardWithConfirmStillHeld()
+        release()
+
+        val action = press(back = true)
+        assertEquals(MenuPage.ROOT, menu.page)
+        assertIs<MenuAction.Back>(action,
+            "back on a sub-page must be consumed by the menu, never reported as CloseMenu")
+    }
+
+    @Test
+    fun `the press that OPENS the leaderboard page cannot delete the board`() {
+        // CRITICAL C1, IN A NEW PLACE, AND ITS CONSEQUENCE IS A WIPED LEADERBOARD.
+        //
+        // Confirming LEADERBOARD switches the page and sets selectedIndex = 0, and DELETE BOARD
+        // IS row 0. prime() is called only on menu ENTRY, never on a page switch. So the
+        // opening press - still physically down, since a human press is 5-10 frames and anyone
+        // resting a thumb on the button holds it far longer - lands on the delete row as a
+        // LEVEL. A naive "accumulate while confirm is held" rule wipes the board of a player
+        // who asked only to LOOK at it.
+        //
+        // Ten seconds of continuous hold here, nearly seven times the threshold: nothing.
+        openLeaderboardWithConfirmStillHeld()
+
+        repeat(600) {
+            assertIs<MenuAction.None>(press(confirm = true, dt = 1f / 60f),
+                "the still-held opening press must never reach the delete threshold")
+        }
+        assertEquals(0f, menu.deleteHoldProgress,
+            "an unarmed hold must read as zero progress, not as a bar creeping toward a wipe")
+
+        // And the page is still usable afterwards - the guard must not permanently disable the
+        // row, only require the player to let go and mean it.
+        release()
+        repeat(600) { press(confirm = true, dt = 1f / 60f) }
+        assertEquals(MenuPage.LEADERBOARD, menu.page)
+    }
+
+    @Test
+    fun `a fresh press after releasing does delete the board, exactly once`() {
+        // The other half of the test above: the guard is "release first", not "never". Without
+        // this pair, deleting the whole hold implementation would still pass the C1 test.
+        openLeaderboardWithConfirmStillHeld()
+        release()
+
+        var deletes = 0
+        // Five seconds of continuous hold - more than three times the threshold. A rule that
+        // zeroed the timer without disarming would fire again roughly every 1.5 s.
+        repeat(300) { if (press(confirm = true, dt = 1f / 60f) is MenuAction.DeleteBoard) deletes++ }
+        assertEquals(1, deletes,
+            "an irreversible wipe must fire once per deliberate hold, not on every frame past it")
+    }
+
+    @Test
+    fun `a confirm tap on DELETE BOARD does nothing at all`() {
+        // There is deliberately no press-to-delete path. MenuModel.update's confirm-edge `when`
+        // has no DELETE_BOARD arm, so it falls to `else -> MenuAction.None`; this asserts that
+        // rather than re-implementing it, because an arm added there later would be the exact
+        // regression - one stray tap wiping a booth day's scores.
+        openLeaderboardWithConfirmStillHeld()
+        release()
+
+        repeat(20) {
+            assertIs<MenuAction.None>(press(confirm = true, dt = 1f / 60f))
+            release()
+        }
+    }
+
+    @Test
+    fun `navigating off the delete row and back restarts the hold from zero`() {
+        // "Resets on navigation." Without it, a player could bank most of a hold on DELETE
+        // BOARD, move down to BACK to reconsider, move back up, and have the wipe fire almost
+        // immediately - a hold whose accumulated time survives the player changing their mind
+        // is not a deliberate gesture any more.
+        openLeaderboardWithConfirmStillHeld()
+        release()
+
+        // 1.4 s: just short of the 1.5 s threshold, so nothing has fired yet.
+        repeat(84) { assertIs<MenuAction.None>(press(confirm = true, dt = 1f / 60f)) }
+        assertTrue(menu.deleteHoldProgress > 0.8f, "the hold should be nearly complete by now")
+
+        press(down = true, confirm = true)                    // DELETE_BOARD -> BACK
+        assertEquals(MenuItemId.BACK, menu.selectedItem())
+        assertEquals(0f, menu.deleteHoldProgress, "navigation must zero the hold")
+
+        press(up = true, confirm = true)                      // BACK -> DELETE_BOARD
+        assertEquals(MenuItemId.DELETE_BOARD, menu.selectedItem())
+
+        // A single frame at the old near-threshold value must not tip it over.
+        assertIs<MenuAction.None>(press(confirm = true, dt = 1f / 60f))
+    }
+
+    @Test
+    fun `releasing part-way through the hold restarts it from zero`() {
+        openLeaderboardWithConfirmStillHeld()
+        release()
+
+        repeat(84) { press(confirm = true, dt = 1f / 60f) }   // 1.4 s, just short
+        assertTrue(menu.deleteHoldProgress > 0.8f)
+
+        release()
+        assertEquals(0f, menu.deleteHoldProgress, "releasing must zero the hold")
+
+        // Re-pressing starts a whole fresh 1.5 s, so 1.4 s of it still fires nothing.
+        repeat(84) { assertIs<MenuAction.None>(press(confirm = true, dt = 1f / 60f)) }
+    }
+
+    @Test
+    fun `leaving the leaderboard page abandons a hold in progress`() {
+        openLeaderboardWithConfirmStillHeld()
+        release()
+
+        repeat(84) { press(confirm = true, dt = 1f / 60f) }   // 1.4 s, just short
+        press(back = true)                                     // confirm released, back pressed
+        assertEquals(MenuPage.ROOT, menu.page)
+        assertEquals(0f, menu.deleteHoldProgress, "leaving the page must zero the hold")
+    }
+
+    @Test
+    fun `the delete hold and the exit hold are the same duration`() {
+        // The game's only two hold-to-confirm gestures, both guarding an irreversible act. A
+        // player who has learned one has learned the other; two different fill rates would read
+        // as two different kinds of commitment. This is what fails if someone edits one number.
+        assertEquals(RunLifecycle.EXIT_HOLD_SECONDS, MenuModel.DELETE_HOLD_SECONDS)
+    }
+
+    @Test
+    fun `confirming LEADERBOARD opens a page rather than abandoning a held run`() {
+        // It used to emit ShowLeaderboard, which EnPustTil routes to viewLeaderboard() -> IDLE
+        // -> justReturnedToIdle -> a fresh DiveSim, i.e. it threw a paused player's dive away
+        // to show them the board. As a page it just opens, like GRAPHICS.
+        while (menu.selectedItem() != MenuItemId.LEADERBOARD) { press(down = true); release() }
+        val action = press(confirm = true)
+        assertIs<MenuAction.None>(action, "the row opens a page; it must not report an action")
+        assertEquals(MenuPage.LEADERBOARD, menu.page)
+        assertEquals(0, menu.selectedIndex, "a freshly opened page starts at its first row")
     }
 }

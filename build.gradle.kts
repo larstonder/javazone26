@@ -237,6 +237,25 @@ tasks.register<Exec>("buildMacPadBridge") {
     doFirst { macPadBinary.get().asFile.parentFile.mkdirs() }
     commandLine(
         "swiftc", "-O",
+        // -target IS NOT OPTIONAL, and omitting it produces a bundle that works perfectly on the
+        // build machine and is silently dead everywhere older. swiftc with no -target stamps the
+        // binary's LC_BUILD_VERSION minos with the BUILDING machine's macOS version; built on
+        // Tahoe (26) the helper carries `minos 26.0` and dyld REFUSES TO LOAD IT on Sequoia (15).
+        //
+        // The failure looks like success right up to the last moment, which is why this cost a
+        // debugging session: the kernel execs the binary fine, so ProcessBuilder.start() returns
+        // and MacPadBridge logs "GameController bridge started" — then dyld terminates the process
+        // before main, stdout hits EOF, and DataInputStream.readFully throws an EOFException whose
+        // message is null. The only symptom in the log is `bridge stream ended (null)`, which
+        // reads like a helper that ran and quit rather than one that never started.
+        // (dyld's own explanation DOES reach the log — stderr is INHERITED at MacPadBridge.kt:97 —
+        // but it lands as an unprefixed line nobody greps for.)
+        //
+        // macos11 (Big Sur) is the floor rather than something older because the bundled runtime
+        // is aarch64-only anyway (see buildMacRelease), so nothing this ships can run on a Mac
+        // that predates Apple Silicon. Both GameController entry points the helper uses —
+        // GCController.controllers() and startWirelessControllerDiscovery — long predate it.
+        "-target", "arm64-apple-macos11",
         "-o", macPadBinary.get().asFile.absolutePath,
         source.asFile.absolutePath
     )

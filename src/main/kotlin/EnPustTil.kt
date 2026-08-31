@@ -65,7 +65,9 @@ import render.WaterRenderer
 import render.WaterSurface
 import render.drawTextWithOutline
 import render.fillRect
+import render.fillRectCentred
 import render.selectGameplayPad
+import score.ScoreEntry
 import score.ScoreRepository
 import settings.EngineSettingsStore
 import settings.GameSettings
@@ -927,31 +929,161 @@ object ScreenText
     /** Dev overlay (EPT_DEV only) — see [EnPustTil.renderGamepadOverlay]. Still drawn text. */
     const val UNMAPPED_JOYSTICK_WARNING = "!! joystick present but NOT gamepad-mapped${SEPARATOR}invisible to this game !!"
 
-    fun runOver(banked: Int) = "RUN OVER${SEPARATOR}BANKED $banked"
+    // --- The run-over summary ----------------------------------------------------------
+    //
+    // ONE LINE BECAME THREE ELEMENTS ON 2026-08-31, and `runOver(banked)` — which returned
+    // "RUN OVER (dot) BANKED n" — IS GONE rather than kept beside them. Two measured faults
+    // on shot 07 of the capture set, and the second is the one that matters:
+    //
+    //  - The middle dot is this project's "and also" separator (see SEPARATOR), which is the
+    //    right punctuation for a HUD legend listing three controls and the wrong one for an
+    //    end-of-run summary: joined that way, the single most important number in the game
+    //    reads as one more field in a status bar (design doc SS3.5).
+    //  - `BANKED n` WAS ALREADY ON SCREEN TWICE. `Hud.drawBanked` puts the same figure
+    //    top-left every frame of the run, and RUN_OVER draws the full HUD underneath this
+    //    screen (see renderGame's RUN_OVER branch). So the summary's job is not to REPEAT the
+    //    number, it is to make it the thing on screen — which is a size and position change,
+    //    not a wording one, and is why [RunOverLayout] splits the line into a small label, a
+    //    large numeral and a caption under it.
+    //
+    // Keeping the old function beside the new constants would have left the composed form one
+    // `git grep` away from being drawn again, on the one screen this work exists to fix.
+
+    /** The run-over screen's own title, drawn ABOVE the panel — see [RunOverLayout]. */
+    const val RUN_OVER_TITLE = "RUN OVER"
+
+    /** Sits UNDER the big numeral and says what it counts. See [RunOverLayout.CAPTION_Y]. */
+    const val RUN_OVER_CAPTION = "PEARLS BANKED"
+
+    /**
+     * The run's banked score as the screen's one large numeral.
+     *
+     * ALLOCATES, like every other function in this object, and is called once per RUN_OVER
+     * frame — which is inside CLAUDE.md's explicit exemption for HUD text formatting, and is
+     * strictly CHEAPER than the `"RUN OVER${'$'}{SEPARATOR}BANKED ${'$'}banked"` interpolation it
+     * replaces (one `Integer.toString`, no `StringBuilder`, no template).
+     */
+    fun bankedNumber(banked: Int) = banked.toString()
 
     fun newScore(banked: Int) = "NEW SCORE${SEPARATOR}BANKED $banked"
 
+    // --- Initials entry -----------------------------------------------------------------
+    //
+    // `initialsSlots(letters, slot)` — which returned the whole line as
+    // `"[A]  A   A "`, bracketing the slot being edited — IS GONE, and this is a COMPILE
+    // BREAK on purpose (design doc SS3.6). The brackets were a caret drawn out of punctuation,
+    // and they cost more than they bought: they are two glyphs of horizontal space that only
+    // ONE of the three cells ever carries, so the letters visibly shuffled sideways as the
+    // cursor moved (the padding to `" A "` narrowed that to a shuffle rather than removing
+    // it — a space is not a bracket's width), the block's true centre moved with the slot,
+    // and at arcade viewing distance a bracket reads as a placeholder rather than as a
+    // cursor. [InitialsLayout] replaces the whole line with three fixed slot RECTANGLES on a
+    // fixed pitch, and the active one carries the menu's own selection treatment — a SHAPE,
+    // which is what reads at a glance, exactly as `MenuLayout.HIGHLIGHT_R`'s doc argues for
+    // the row highlight.
+    //
+    // The function is deleted rather than left unreferenced for the same reason `runOver` is:
+    // a composed line still in this object is one grep away from being drawn again.
+
     /**
-     * The three initials slots, with the one being edited bracketed so the cursor reads
-     * without a caret asset. The un-edited slots are padded to the same width so the
-     * letters do not shuffle sideways as the bracket moves between them.
+     * The 26 single-letter strings the initials slots draw, built ONCE.
+     *
+     * `Char.toString()` allocates, and three slots drawn every frame of ENTER_INITIALS would
+     * be three allocations per frame on the render path — the rule CLAUDE.md states and whose
+     * one exemption (HUD text FORMATTING) does not cover a value that has 26 possible states
+     * and can therefore simply be tabulated. `RunLifecycle.currentInitials` still allocates a
+     * `String` per read (`InitialsEntry.initialsString()` is `String(letters)`); that one is
+     * not ours to fix from here, and this table means the draw site adds nothing to it.
      */
-    fun initialsSlots(letters: String, slot: Int) =
-        letters.mapIndexed { i, c -> if (i == slot) "[$c]" else " $c " }.joinToString(" ")
+    private val LETTER_STRINGS: Array<String> = Array(26) { ('A' + it).toString() }
+
+    /**
+     * The single letter shown in slot [index] of [letters].
+     *
+     * Falls back to `"A"` for an index off the end rather than throwing: this is drawn on the
+     * one screen a player reaches by having done WELL, and a `StringIndexOutOfBounds` there
+     * would be an unhandled throwable in a render callback (see `booth/CallbackGuard`) in
+     * exchange for a defect nothing else on the screen could show.
+     */
+    fun initialsLetter(letters: String, index: Int): String
+    {
+        val c = letters.getOrNull(index) ?: return LETTER_STRINGS[0]
+        val offset = c - 'A'
+        return if (offset in LETTER_STRINGS.indices) LETTER_STRINGS[offset] else LETTER_STRINGS[0]
+    }
 
     // --- The pre-run briefing ----------------------------------------------------------
-    // Controls plus the ONE rule the game does not otherwise teach. Air, the anglerfish and
-    // the point-of-no-return are deliberately absent: everything on this screen costs reading
-    // time in front of a queue, and those three teach themselves by happening.
+    //
+    // THE CONTENT RULE CHANGED ON 2026-08-31 AND THIS COMMENT USED TO STATE THE OLD ONE.
+    // It read: "Controls plus the ONE rule the game does not otherwise teach. Air, the
+    // anglerfish and the point-of-no-return are deliberately absent: everything on this
+    // screen costs reading time in front of a queue, and those three teach themselves by
+    // happening." That was `2026-08-22-ui-clarity-and-briefing-design.md` SS2's locked
+    // exclusion list, and the owner has overridden the first item on it (decision D3,
+    // `2026-08-31-menu-visual-polish-design.md`): the briefing now also carries three FACTS.
+    //
+    // The old reasoning is not wrong, it has run out of force. It was a QUEUE-THROUGHPUT
+    // argument — reading time in front of a line of people at a booth — and CLAUDE.md's
+    // 2026-08-30 note records that the queue does not exist: this build runs on a desk, with
+    // one controller, for one person at a time. The cost side of that trade collapsed; the
+    // benefit side did not.
+    //
+    // WHAT DID NOT CHANGE. The anglerfish stays absent, now for a stronger reason than
+    // reading time — it is being REMOVED from the game (decision D5). The point-of-no-return
+    // stays absent because the depth tape already marks it. And the added time is PAID FOR:
+    // `RunLifecycle.BRIEFING_SECONDS` went from 5f to 9f in the same change, because nine
+    // elements at five seconds is 0.55 s each and nobody reads that.
 
     const val BRIEFING_TITLE = "HOW TO DIVE"
 
     /** The one thing a player must know that nothing else on screen ever says. */
     const val BRIEFING_RULE = "SURFACE TO BANK YOUR PEARLS"
 
-    const val BRIEFING_VERB_SWIM = "swim"
-    const val BRIEFING_VERB_KICK = "kick"
-    const val BRIEFING_VERB_BLEED = "bleed pearls"
+    // The three verbs, SHARED WITH THE IN-RUN LEGEND — renamed from BRIEFING_VERB_* on
+    // 2026-08-31 because they stopped being the briefing's alone. `ControlHints.legend` used
+    // to carry its own literals `"swim"`, `"kick"` and `"bleed"`, and the third one DISAGREED
+    // with this file's `"bleed pearls"`: two strings for one control, on the two screens whose
+    // whole job is to say what the controls do (design doc SS3.7's last bullet). Reconciled by
+    // making the legend read these constants rather than by editing one of the two literals,
+    // so the pair cannot drift again — a second copy is what produced the defect, and deleting
+    // the second copy is what fixes it.
+    //
+    // "bleed pearls" is the survivor rather than "bleed" because the in-run legend is where
+    // the extra word earns most: "bleed" alone is jargon, and the one thing a player needs to
+    // know mid-dive is that the button DROPS PEARLS. Width is not a constraint — the widest
+    // composed legend, `"STICK swim (dot) RIGHT BUMPER kick (dot) LEFT BUMPER bleed pearls"`,
+    // is 61 characters at `Hud.LEGEND_FONT_FRACTION` (0.016h), i.e. 0.605h at EM = 0.62,
+    // against 1.293h of margin-to-margin room on the narrowest 4:3 panel this project tests.
+    const val VERB_SWIM = "swim"
+    const val VERB_KICK = "kick"
+    const val VERB_BLEED = "bleed pearls"
+
+    // --- The three briefing facts (decision D3) ----------------------------------------
+    //
+    // FIXED IN MEANING, CHOSEN IN WORDING. The owner named the three things the briefing must
+    // now teach; the exact strings are this file's problem, and the binding constraint on them
+    // is HORIZONTAL, not vertical. `PanelLayout.BRIEFING_HALF_SPAN` is 0.32h, the facts are
+    // drawn at `BriefingLayout.FACT_FONT` (0.026h) and this project's pessimistic glyph bound
+    // is EM = 0.62 (`Hud.CLOCK_BOX_GLYPH_WIDTH_EM`), so a fact may be at most
+    // `2 * 0.32 / (0.62 * 0.026)` = 39 characters. The owner's own phrasing of the first fact,
+    // "carried pearls make you heavier and slower", is 42 and DOES NOT FIT — it needs 0.339h
+    // of half-width against 0.32h available, and there is no glyph-metrics API anywhere in
+    // this project to discover that from at runtime (see PanelLayout's class doc). It is
+    // shortened to the comparative-free form below, which keeps both halves of the meaning —
+    // heavy AND slow — at 38 characters. `BriefingScreenTest` asserts the fit rather than
+    // trusting this arithmetic to stay correct.
+    //
+    // Every one of the three is UPPERCASE like the rule above it and lowercase-free unlike the
+    // control verbs, which is how the eye tells the two blocks apart before reading either.
+
+    /** Spec SS4's central mechanic — an empty diver hovers; carried mass is what sinks him. */
+    const val BRIEFING_FACT_WEIGHT = "CARRIED PEARLS MAKE YOU HEAVY AND SLOW"
+
+    /** The whole risk curve. Nothing else on any screen motivates going deep. */
+    const val BRIEFING_FACT_DEPTH = "DEEPER PEARLS ARE WORTH MORE"
+
+    /** Air is deliberately never a number, so the bubble ring is the only indicator. */
+    const val BRIEFING_FACT_AIR = "THE BUBBLES ARE YOUR AIR"
 
     /** Completes "PRESS <button>" — the button half comes from ControlHints.confirm. */
     const val BRIEFING_SKIP_SUFFIX = " TO DIVE NOW"
@@ -1009,6 +1141,33 @@ object ScreenText
     const val MENU_FRAME_CAP = "FRAME CAP"
     const val MENU_VSYNC = "VSYNC"
     const val MENU_SHOW_FPS = "SHOW FPS"
+
+    /** The LEADERBOARD page's one action row. HOLD, not press — the word is in the label
+     * because the row is the only place a player will ever be told, and a row that looked
+     * like every other confirm-to-fire row would read as broken for the second and a half
+     * before it fired. See [MenuModel.DELETE_HOLD_SECONDS]. */
+    const val MENU_DELETE_BOARD = "HOLD TO DELETE BOARD"
+
+    /**
+     * What the LEADERBOARD page shows where the board would be when there is nothing on it.
+     *
+     * IT EXISTS BECAUSE THE WIPE MAKES IT HAPPEN. [EnPustTil.drawLeaderboard] — the attract
+     * screen's board — returns early on an empty list, which is right there (the attract screen
+     * has a title and a call to action either side of the hole). On the menu page the board is
+     * the entire reason the page opened, and the row directly under it is HOLD TO DELETE BOARD,
+     * so the very first thing a player sees after a successful wipe would otherwise be a panel
+     * with a heading, a gap, and two buttons — indistinguishable from the page failing to draw.
+     * A line saying so is the difference between "it worked" and "it broke".
+     *
+     * Plain ASCII, like everything else here: the default font draws only U+0020..U+011F and
+     * silently contributes NO GLYPH AND NO X-ADVANCE above it, so an apostrophe has to be the
+     * typewriter one and there is no ellipsis. Nineteen characters at this project's
+     * pessimistic EM = 0.62 is 0.330h wide at [MenuLayout.BOARD_FONT], i.e. 0.165h half-width —
+     * inside [MenuLayout.HIGHLIGHT_HALF_SPAN_LEADERBOARD] (0.23) with room to spare, which is
+     * what keeps it off the panel's edges.
+     */
+    const val MENU_BOARD_EMPTY = "NO SCORES YET TODAY"
+
     const val MENU_BACK = "BACK"
     const val MENU_ON = "ON"
     const val MENU_OFF = "OFF"
@@ -1048,16 +1207,29 @@ object ScreenText
         UNMAPPED_JOYSTICK_WARNING,
         PAUSED_TITLE,
         MENU_TITLE,
-        runOver(0),
-        runOver(99999),
+        RUN_OVER_TITLE,
+        RUN_OVER_CAPTION,
+        bankedNumber(0),
+        bankedNumber(99999),
         newScore(12345),
-        initialsSlots("AAA", 0),
-        initialsSlots("ØYA", 2),
+        // `initialsSlots("AAA", 0)` / `initialsSlots("ØYA", 2)` used to stand here and swept
+        // the whole composed line, brackets included; that function is gone (see
+        // initialsLetter's comment). What is drawn now is one letter per slot, so a letter is
+        // what needs sweeping — and only 26 of them exist, because initialsLetter TABULATES
+        // 'A'..'Z' and returns "A" for anything else. The old "ØYA" case was sweeping a
+        // character that could reach the screen; it no longer can, by construction, which is a
+        // stronger guarantee than the sweep it replaces. Both ends of the alphabet are listed
+        // anyway, since the table is what that claim rests on.
+        initialsLetter("AAA", 0),
+        initialsLetter("XYZ", 2),
         BRIEFING_TITLE,
         BRIEFING_RULE,
-        BRIEFING_VERB_SWIM,
-        BRIEFING_VERB_KICK,
-        BRIEFING_VERB_BLEED,
+        VERB_SWIM,
+        VERB_KICK,
+        VERB_BLEED,
+        BRIEFING_FACT_WEIGHT,
+        BRIEFING_FACT_DEPTH,
+        BRIEFING_FACT_AIR,
         BRIEFING_SKIP_SUFFIX,
         briefingCountdown(5),
         MENU_START_DIVE,
@@ -1078,6 +1250,8 @@ object ScreenText
         MENU_FRAME_CAP,
         MENU_VSYNC,
         MENU_SHOW_FPS,
+        MENU_DELETE_BOARD,
+        MENU_BOARD_EMPTY,
         MENU_BACK,
         MENU_ON,
         MENU_OFF,
@@ -1296,20 +1470,38 @@ object PauseLayout
  * the two screens already differ in heading and content, and differing in weight as well is
  * what stops a player reading "the machine is waiting for me" as "the machine is stopped".
  *
- * THE SCRIM DOES NOT MOVE THE DIVER. An earlier version of this doc argued that darkening the
- * world "frees the full screen height" for text, as if a scrim were a substitute for the halo
- * carve-out [AttractLayout] does. It is not: a scrim dims what is drawn, it does not stop the
- * diver being drawn, and at every run start he sits exactly where he always does, lit and
- * moving, at [render.Framing.DIVER_SCREEN_FRACTION] under the same
- * [AttractLayout.DIVER_HALO_HALF_HEIGHT] glow band the attract screen dodges. A pinned
- * screenshot of the first shipped layout (rows at 0.300 / 0.357 / 0.414, inside the
- * 0.26–0.54 band) showed exactly this: the diver's head sitting visibly between "Z" and
- * "kick", darkened by the scrim but not erased by it. So this screen observes the identical
- * `DIVER_SCREEN_FRACTION ± DIVER_HALO_HALF_HEIGHT` band the attract screen does, and — like
- * [AttractLayout] — puts its content below the diver rather than across him: the sign goes
- * above the band (title only, it fits), everything else below it. The scrim's job is
- * legibility against the moving water and light, not clearance from the diver; clearance is
- * the anchors' job, exactly as it is for [AttractLayout].
+ * THE SCRIM DOES NOT MOVE THE DIVER, AND A PANEL DOES. This paragraph is the amended form of
+ * one that used to end "so this screen observes the identical
+ * `DIVER_SCREEN_FRACTION ± DIVER_HALO_HALF_HEIGHT` band the attract screen does ... puts its
+ * content below the diver rather than across him". THAT IS NO LONGER TRUE, and the half of it
+ * that was actually load-bearing still is, so both halves are stated rather than one deleted.
+ *
+ * What remains true: a scrim DIMS what is drawn, it does not stop the diver being drawn. At
+ * every run start he sits exactly where he always does, lit and moving, at
+ * [render.Framing.DIVER_SCREEN_FRACTION] under the same [AttractLayout.DIVER_HALO_HALF_HEIGHT]
+ * glow band the attract screen dodges. A pinned screenshot of the first shipped layout (rows
+ * at 0.300 / 0.357 / 0.414, inside the 0.26–0.54 band) showed the diver's head sitting visibly
+ * between "Z" and "kick". A scrim was never a substitute for the halo carve-out.
+ *
+ * What changed (2026-08-31): THIS SCREEN NOW HAS A PANEL, and a panel is a different kind of
+ * object from a scrim. `PanelLayout.bounds` draws an opaque-ish plate with a real pale border
+ * ring around it ([render.PanelLayout.BORDER_FRACTION] — added in the same pass, and the thing
+ * that made this card visible at all: measured before it, inside-vs-outside the briefing panel
+ * was `(6,48,92)` against `(4,47,91)`, one to two sRGB levels, i.e. the panel did not exist on
+ * screen). Text inside a bordered card is not "across the diver" in the way loose text is: the
+ * card is what the eye reads as the near layer, and the diver becomes backdrop. So the halo
+ * band stopped being a no-go zone for this screen's CONTENT and became a no-go zone only for
+ * content OUTSIDE the card — which on this screen is the title alone, and the title is above
+ * the band anyway.
+ *
+ * The cost of the old rule was the reason to pay this one: with the clamp in place, content
+ * could not start above 0.57h, so the three control rows, three facts (decision D3), the rule,
+ * the countdown and the skip hint had to be crammed into the bottom 0.43 of the screen while
+ * the whole 0.145..0.54 band above sat empty behind a scrim. `BriefingScreenTest`'s halo
+ * assertion is correspondingly a DISJUNCTION now — clears above, or clears below, or is inside
+ * the panel — and `drawBriefingScreen`'s `minTop` dropped its halo term in the same change,
+ * WITHOUT WHICH that third arm would be unreachable by construction and the test would be
+ * asserting nothing new.
  *
  * Nothing is drawn beneath the scrim but the live world — no attract sign, no leaderboard, no
  * HUD. The briefing is the only thing on screen to read, and a leaderboard competing with it
@@ -1331,16 +1523,25 @@ object BriefingLayout
     const val TITLE_FONT = 0.055f
 
     /**
-     * Top of the first control row. Below [AttractLayout.DIVER_HALO_HALF_HEIGHT]'s band
-     * (0.26–0.54 with today's constants) rather than inside it — see this object's class
-     * doc for the pinned screenshot that showed the diver's head sitting between two rows
-     * when this was 0.30.
+     * Top of the first control row.
+     *
+     * WAS 0.57, WHICH WAS THE HALO CLAMP SPEAKING, NOT A LAYOUT DECISION. The old doc here
+     * read "Below [AttractLayout.DIVER_HALO_HALF_HEIGHT]'s band (0.26–0.54 with today's
+     * constants) rather than inside it", and that constraint is gone — see the class doc for
+     * what replaced it and why a bordered card is not a scrim.
+     *
+     * 0.200 is chosen from the top instead: the title's own box ends at
+     * `TITLE_Y + TITLE_FONT` = 0.145, `PanelLayout.PADDING_FRACTION` is 0.025, so 0.170 is the
+     * lowest the panel's top edge can be without the clamp biting, and 0.200 leaves the card
+     * 0.030h of air above its first row rather than pinning it to the minimum. Everything
+     * below is then spread to FILL the band rather than to fit in it — see [RULE_Y], which
+     * moved UP by 0.15h for that reason.
      */
-    const val ROWS_TOP_Y = 0.57f
-    const val ROW_FONT = 0.030f
+    const val ROWS_TOP_Y = 0.200f
+    const val ROW_FONT = 0.032f
 
-    /** Row pitch as a multiple of [ROW_FONT] — 1.9 leaves most of a line of air between rows. */
-    const val ROW_SPACING = 1.9f
+    /** Row pitch as a multiple of [ROW_FONT] — 2.0 leaves a full line of air between rows. */
+    const val ROW_SPACING = 2.0f
 
     /**
      * Half the gutter between the two columns. The control token is drawn `xOrigin = 1f`
@@ -1354,16 +1555,230 @@ object BriefingLayout
      */
     const val COLUMN_GAP = 0.012f
 
-    const val RULE_Y = 0.76f
+    // --- The three facts (decision D3, added 2026-08-31) ---------------------------------
+    //
+    // A VISUALLY DISTINCT BLOCK, NOT THREE MORE ROWS, and that is a requirement rather than a
+    // preference. The screen now carries nine elements; if the facts were drawn at [ROW_FONT]
+    // on the [ROW_SPACING] pitch immediately under the controls, the eye would meet six
+    // identical lines and have to READ all six to discover that the first three are a
+    // key-to-verb table and the last three are prose. Three levers separate them, all cheap:
+    // a smaller font, a tighter pitch, and CENTRED single strings against the controls'
+    // two-column split. Colour is deliberately NOT one of them — the amber rule below is this
+    // screen's one accent and a second one would spend it (decision D4: no new visual
+    // language).
+    //
+    // [FACTS_TOP_Y] is separated from the last control row's bottom (`rowY(2) + ROW_FONT` =
+    // 0.360) by 0.070h — a little over two fact-heights of air, which is more than the pitch
+    // inside either block and is what makes the two blocks read as two.
+
+    const val FACTS_TOP_Y = 0.430f
+    const val FACT_FONT = 0.026f
+
+    /** Fact pitch as a multiple of [FACT_FONT] — tighter than [ROW_SPACING] on purpose. */
+    const val FACT_SPACING = 1.75f
+
+    /**
+     * Top of the amber rule line.
+     *
+     * MOVED UP FROM 0.76 (2026-08-31) AND THAT IS THE POINT, NOT A SIDE EFFECT. With the halo
+     * clamp dropped the content band runs 0.170..~0.81, and the risk on this screen inverted:
+     * it is no longer crowding, it is roughly 0.30h of EMPTY PANEL between the last fact and a
+     * rule pinned near the bottom — the exact defect `MenuLayout.rowsBottom`'s KDoc records for
+     * the menu. So the rule follows the facts up rather than staying where it was, and the
+     * countdown and skip hint follow it. Nothing below moved for its own sake; the whole stack
+     * is spread to fill the band.
+     */
+    const val RULE_Y = 0.610f
     const val RULE_FONT = 0.034f
 
-    const val COUNTDOWN_Y = 0.845f
+    const val COUNTDOWN_Y = 0.700f
     const val COUNTDOWN_FONT = 0.028f
 
-    const val SKIP_Y = 0.905f
+    const val SKIP_Y = 0.760f
     const val SKIP_FONT = 0.022f
 
     fun rowY(index: Int): Float = ROWS_TOP_Y + ROW_FONT * ROW_SPACING * index
+
+    /** Top of fact [index] (0-based), as a fraction of screen height. */
+    fun factY(index: Int): Float = FACTS_TOP_Y + FACT_FONT * FACT_SPACING * index
+
+    /** Where the lowest pixel of the fact block lands — what the panel's content box needs. */
+    fun factsBottom(count: Int): Float = factY(count - 1) + FACT_FONT
+}
+
+/**
+ * Anchors for the run-over summary. Values only, no logic — the presentation twin of
+ * [BriefingLayout] and read the same way: every number is a fraction of screen HEIGHT (never
+ * width, never a pixel count), and text grows DOWNWARD from its anchor, so a block occupies
+ * `y .. y + fontSize`.
+ *
+ * WHY THIS OBJECT EXISTS AT ALL. Until 2026-08-31 these four numbers were `val`s INSIDE
+ * `EnPustTil.drawRunOverScreen` — and `PanelLayoutTest` carried a hand-copied `RunOverAnchors`
+ * object restating them in a second file, with its own class doc admitting the duplication was
+ * "a real risk this test cannot remove, only narrow: if either draw site's literals move,
+ * these tests silently stop describing the real screen". Extracting them removes the risk
+ * rather than narrowing it: there is now one copy, and the test imports it.
+ *
+ * WHAT THE ANCHORS ENCODE, WHICH IS A DIAGNOSIS RATHER THAN A TASTE. Shot 07 of the
+ * 2026-08-31 capture set put `RUN OVER (dot) BANKED 10` at y ~= 615 on a 1200 px frame —
+ * i.e. at 0.5h, dead centre, ACROSS THE DIVER'S FINS AND INSIDE THE PEARL RING, on the busiest
+ * 300 px of the picture. Three things follow, in this order, and the order is the whole fix:
+ *
+ *  1. **A scrim first** ([SCRIM_ALPHA]). RUN_OVER draws the full HUD and the vent labels
+ *     before this screen (see `EnPustTil.renderGame`'s RUN_OVER branch), so the summary is
+ *     competing with a live-looking readout. Nothing about moving or enlarging the text helps
+ *     while that is true.
+ *  2. **Then move it clear of the diver.** The diver is pinned at
+ *     [render.Framing.DIVER_SCREEN_FRACTION] (0.40) with [AttractLayout.DIVER_HALO_HALF_HEIGHT]
+ *     (0.14) of glow, so the band 0.26..0.54 is his. Everything here starts below it. Unlike
+ *     the briefing (which now draws INSIDE a bordered card over that band — see
+ *     [BriefingLayout]'s class doc), this screen's title is drawn OUTSIDE its panel by the
+ *     one-panel-per-screen rule, so it has no card to sit on and must dodge.
+ *  3. **Only then enlarge the numeral.** Enlarging before moving makes a bigger thing collide
+ *     with the diver, which is what the first draft of this work proposed.
+ *
+ * @see ScoreScreenTest for the non-overlap, containment and screen-fit relationships.
+ */
+object RunOverLayout
+{
+    /**
+     * Displayed alpha of the full-screen scrim. Authored alpha — pass it through
+     * [Hud.authoredAlphaFor], because the HUD surface stores alpha SQUARED.
+     *
+     * DELIBERATELY THE LIGHTEST SCRIM IN THE GAME (pause 0.72, briefing 0.55), and the number
+     * was picked against a specific thing that must survive it. This surface's measured blend
+     * is `new = src^2 + dst * (1 - src)` with `src` the raw value handed to `setDrawColor`
+     * (see [Hud.authoredAlphaFor]), so what is already on the HUD keeps `1 - sqrt(alpha)` of
+     * its weight: 0.2584 at 0.55, and 0.3675 here. At 0.55 the red `0:00` clock capsule — the
+     * clearest statement in the whole game that the air ran out, and the thing a player looks
+     * at to understand WHY the run ended — loses about 74% of its weight. That is too much to
+     * pay for contrast on a summary that has a bordered panel of its own.
+     */
+    const val SCRIM_ALPHA = 0.45f
+
+    /** "RUN OVER" — the screen's title, drawn ABOVE the panel per the one-panel-per-screen rule. */
+    const val TITLE_Y = 0.585f
+    const val TITLE_FONT = 0.036f
+
+    /**
+     * The banked score, as the one large numeral on the screen.
+     *
+     * 0.105h is nearly three times [TITLE_FONT] and about 2.6 times the 0.04h the whole
+     * `RUN OVER (dot) BANKED n` line used to be drawn at. THE SIZE IS THE MESSAGE: this figure
+     * is simultaneously drawn top-left by `Hud.drawBanked` at the ordinary HUD size, so a
+     * summary that restates it at a similar size restates nothing. What makes this the end of
+     * a run rather than another status field is that it is the biggest thing on screen.
+     */
+    const val SCORE_Y = 0.645f
+    const val SCORE_FONT = 0.105f
+
+    /** "PEARLS BANKED", under the numeral — the numeral alone would be a number with no noun. */
+    const val CAPTION_Y = 0.775f
+    const val CAPTION_FONT = 0.022f
+
+    const val HINT_Y = 0.835f
+    const val HINT_FONT = 0.022f
+}
+
+/**
+ * Anchors for three-letter initials entry. Same conventions as [RunOverLayout], and extracted
+ * from `EnPustTil.drawInitialsEntryScreen`'s locals for the same reason — `PanelLayoutTest`
+ * hand-copied them into an `InitialsAnchors` object in a second file.
+ *
+ * THE SLOTS ARE RECTANGLES NOW, WHICH IS WHY THIS OBJECT HAS GEOMETRY AND [RunOverLayout] HAS
+ * ONLY ANCHORS. The screen used to draw one string, `"[A]  A   A "`, and mark the active slot
+ * with literal brackets (see `ScreenText`'s initials comment for why that was wrong). Three
+ * fixed rects on a fixed pitch fix all three of its faults at once: the letters cannot shuffle
+ * because their centres are computed, not measured; the block's centre cannot move with the
+ * cursor because the rects do not change size; and the active slot is marked by a SHAPE, which
+ * is what reads at arcade distance — the identical argument `MenuLayout.HIGHLIGHT_R` makes for
+ * the menu's selection bar, and this screen reuses that exact colour rather than inventing one.
+ *
+ * @see ScoreScreenTest
+ */
+object InitialsLayout
+{
+    /** As [RunOverLayout.SCRIM_ALPHA] — the two screens are one moment and share a weight. */
+    const val SCRIM_ALPHA = RunOverLayout.SCRIM_ALPHA
+
+    /** "NEW SCORE (dot) BANKED n" — the title, outside the panel. */
+    const val TITLE_Y = 0.575f
+    const val TITLE_FONT = 0.032f
+
+    /** How many slots. Mirrors `score.InitialsEntry.LETTER_COUNT`; asserted equal in test. */
+    const val SLOT_COUNT = 3
+
+    /** Top edge of the slot rectangles. */
+    const val SLOTS_TOP_Y = 0.635f
+    const val SLOT_WIDTH = 0.115f
+    const val SLOT_HEIGHT = 0.125f
+
+    /** Gutter between adjacent slots. */
+    const val SLOT_GAP = 0.026f
+
+    /**
+     * Displayed alpha of the slot being edited, and of the other two.
+     *
+     * SQUARE-CORNERED AND AT THE MENU'S OWN HIGHLIGHT COLOUR, not a rounded box of their own.
+     * The rounded corner is `Hud.fillRoundedRect`, which is PRIVATE to `Hud` (only
+     * `Hud.renderPanel` crosses the package boundary, and it draws the panel plate), and going
+     * and making a second crossing function for three small rects would buy nothing: the
+     * shape a player has to recognise here is "the selected one", and the game already has an
+     * answer to that — `MenuLayout.HIGHLIGHT_R`'s square bar, whose doc carries the measured
+     * contrast argument for why a saturated dark fill under full-white text beats the pale
+     * wash it replaced (3.46:1 -> ~9:1). Reusing that exact colour makes the two screens agree
+     * rather than rhyme, which is decision D4 (no new visual language) applied literally.
+     *
+     * The idle slots are the same hue at a quarter of the weight, so all three read as slots —
+     * three boxes with one lit is a state; one box with two absences is a defect.
+     */
+    const val SLOT_ALPHA_ACTIVE = 0.85f
+    const val SLOT_ALPHA_IDLE = 0.22f
+
+    const val LETTER_FONT = 0.075f
+
+    const val HELP_Y = 0.800f
+
+    /**
+     * SHRUNK FROM 0.02 (2026-08-31), AND THIS ONE CONSTANT IS WHAT SIZES THE WHOLE PANEL.
+     * Measured on shot 08: an 828 px panel (43% of a 1920-wide screen) around 216 px of
+     * content (11%). The panel was not arbitrarily wide — it was sized by
+     * `PanelLayout.INITIALS_HALF_SPAN`, which is in turn sized by the WIDEST FORM OF THE HELP
+     * LINE, `"STICK UP/DOWN change letter (dot) LEFT BUMPER next"` at 48 characters. So the
+     * only honest ways to narrow the card are to shorten that string or to draw it smaller,
+     * and shrinking the font is the one that does not cost a player any information: at 0.018
+     * the line needs `48 * 0.62 * 0.018 / 2` = 0.268h of half-width against 0.02's 0.298h,
+     * which is what let `INITIALS_HALF_SPAN` come down from 0.32 to 0.28.
+     */
+    const val HELP_FONT = 0.018f
+
+    /** Half the width of the whole three-slot block, as a fraction of screen height. */
+    fun slotsHalfSpan(): Float = (SLOT_COUNT * SLOT_WIDTH + (SLOT_COUNT - 1) * SLOT_GAP) * 0.5f
+
+    /**
+     * Centre x of slot [index], in pixels, given the screen centre and height.
+     *
+     * Derived from the block's own pitch rather than from a measured string, which is the
+     * whole reason the rects exist: `(index - (SLOT_COUNT - 1) / 2)` is exact for an odd slot
+     * count and symmetric for an even one, so the block stays centred on [centreX] whatever
+     * [SLOT_COUNT] becomes and whichever slot is active.
+     */
+    fun slotCentreX(index: Int, centreX: Float, screenHeight: Float): Float =
+        centreX + (index - (SLOT_COUNT - 1) * 0.5f) * (SLOT_WIDTH + SLOT_GAP) * screenHeight
+
+    /** Centre y of every slot, in pixels. */
+    fun slotCentreY(screenHeight: Float): Float = screenHeight * (SLOTS_TOP_Y + SLOT_HEIGHT * 0.5f)
+
+    /**
+     * Top of a slot's LETTER text box, as a fraction of screen height — derived so the letter
+     * is centred in its rect rather than hand-tuned, because [SLOT_HEIGHT] and [LETTER_FONT]
+     * are both things a later pass will want to change and only one of them being remembered
+     * is how a letter ends up sitting on a border.
+     */
+    fun letterY(): Float = SLOTS_TOP_Y + (SLOT_HEIGHT - LETTER_FONT) * 0.5f
+
+    /** Where the lowest pixel of the slot block lands, as a fraction of screen height. */
+    fun slotsBottom(): Float = SLOTS_TOP_Y + SLOT_HEIGHT
 }
 
 /**
@@ -3141,7 +3556,46 @@ class EnPustTil : PulseEngineGame()
 
         when (lifecycle.state)
         {
-            RunLifecycleState.MAIN_MENU -> drawMainMenu(hud, w, h)
+            // THE SCRIM IS THE ENTIRE DIFFERENCE BETWEEN THE BEST- AND THE WORST-LOOKING MENU IN
+            // THIS GAME, and adding it here REVERSES the decision recorded a hundred lines below
+            // (in the PAUSED branch, where that reasoning has been rewritten to match). The old
+            // rule was "the resting main menu must NOT have a scrim, because a scrim would say
+            // 'stopped' about a machine that is waiting". Measured on nine real window grabs
+            // (2026-08-31, fullscreen 1920x1200 — see
+            // docs/superpowers/specs/2026-08-31-menu-visual-polish-design.md §2.1), that reading
+            // cost more than it bought, and the machine that is "waiting" turns out to be a
+            // different screen entirely:
+            //
+            //   shot 01, main menu over the sunset : inside the panel (192, 86, 58)
+            //                                        outside          (250, 113, 76)
+            //   shot 06, pause over the abyss      : inside the panel (3, 10, 29)
+            //                                        outside          (0, 1, 14)
+            //
+            // THE PANEL IS BYTE-IDENTICAL ON BOTH FRAMES. Over the sunset it is a 45% darkener
+            // that still leaves 55% of a saturated orange showing — the maroon cast, and the
+            // reason the diver reads straight through the menu. Over the abyss `dst` is
+            // effectively zero, so the plate's own RGB (0.02, 0.05, 0.09) IS the panel and it
+            // works as an additive LIFT. One alpha constant cannot be both a darkener and a
+            // lift, so the fix is to equalise the BACKDROP, not to retune the plate — and
+            // PanelLayout.ALPHA is deliberately untouched (there is a hard ceiling at 0.920960
+            // from PanelLayoutTest's composed-alpha bound anyway, and at 0.85 the abyss panel
+            // becomes a pale (39, 59, 78) slab on a near-black world, i.e. the control frame
+            // destroyed to rescue the others).
+            //
+            // The old argument is answered rather than ignored: the screen that is "waiting" is
+            // IDLE/attract, and IDLE still draws over live, unscrimmed water exactly as before.
+            // MAIN_MENU is not a machine waiting — it is a menu the player has already opened
+            // with a deliberate press, and what it has to say is "this list is the thing on
+            // screen now". PauseLayout.SCRIM_ALPHA rather than a third weight of its own: this
+            // project has exactly two scrim values (pause 0.72, briefing 0.55) and inventing a
+            // third for the screen whose whole defect was looking unlike the pause screen would
+            // be perverse.
+            RunLifecycleState.MAIN_MENU ->
+            {
+                hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(PauseLayout.SCRIM_ALPHA))
+                hud.fillRect(0f, 0f, w, h)
+                drawMainMenu(hud, w, h)
+            }
 
             RunLifecycleState.IDLE -> drawIdleScreen(hud, w, h)
 
@@ -3173,27 +3627,50 @@ class EnPustTil : PulseEngineGame()
             // The screen underneath is drawn FIRST and in full, then dimmed by the pause
             // screen's own scrim. A paused run keeps its HUD — a stopped clock and a full
             // ring of bubbles behind the scrim is the clearest possible statement that the
-            // run is being held, not ended — and the attract variant keeps its leaderboard,
-            // so the queue can still read the board while a technician has the menu open.
+            // run is being held, not ended — and the attract variant keeps the rest of the
+            // attract screen (title, sign, booth status line), minus its leaderboard: the
+            // board stayed legible enough to compete with the cabinet menu on top of it
+            // (measured — `1. AYA 16054` sat directly behind the exit progress bar, and the
+            // two panels' edges did not even align), so it is the one piece of the attract
+            // screen this menu does not want underneath it.
             RunLifecycleState.PAUSED ->
             {
                 if (lifecycle.pausedFromIdle)
                 {
-                    // The technician's cabinet menu, unchanged: attract screen, then the plain
-                    // pause screen with its exit-hold bar. There is no run to hold and no rows
-                    // to navigate, so it does not want the main menu on top of it.
-                    drawIdleScreen(hud, w, h)
+                    // The technician's cabinet menu: attract screen minus its leaderboard
+                    // (see drawIdleScreen's doc), then the plain pause screen with its
+                    // exit-hold bar. There is no run to hold and no rows to navigate, so it
+                    // does not want the main menu on top of it.
+                    drawIdleScreen(hud, w, h, showLeaderboard = false)
                     drawPauseScreen(hud, w, h)
                 }
                 else
                 {
                     Hud.render(hud, sim, diverX, diverY, pixelsPerMetre, w, h, aimDegrees)
                     VentLabel.render(hud, sim, worldCamera, pixelsPerMetre, h)
-                    // Included deliberately. drawPauseScreen's own comment says a complete HUD
-                    // behind the scrim - "a stopped clock and a full ring of bubbles" - is the
-                    // clearest statement that the run is being HELD, not ended. A legend that
-                    // vanished on pause would contradict that.
-                    Hud.renderControlLegend(hud, hintLegend, w, h)
+
+                    // THE IN-RUN LEGEND IS NOT DRAWN HERE, AND THIS LINE USED TO DRAW IT. The
+                    // comment that stood here read: "Included deliberately. drawPauseScreen's
+                    // own comment says a complete HUD behind the scrim — 'a stopped clock and a
+                    // full ring of bubbles' — is the clearest statement that the run is being
+                    // HELD, not ended. A legend that vanished on pause would contradict that."
+                    //
+                    // That argument is answered rather than forgotten, and the answer is that it
+                    // proves too much. What tells a player the run is held is STATE: the clock
+                    // stopped at its value, the bubble ring at its level, the diver where he
+                    // was. Both of those are still drawn, one line above. The legend is not
+                    // state, it is an INSTRUCTION — "STICK swim (dot) B kick (dot) A bleed
+                    // pearls" — and while this menu is open none of those three controls does
+                    // any of those three things: the stick moves the selection, confirm picks a
+                    // row, and the menu prints its own footer saying so. Photographed on shot 06
+                    // of the 2026-08-31 capture set, the two lines contradict each other in the
+                    // same frame, on the one screen a player consults to find out what to press
+                    // (design doc §3.7).
+                    //
+                    // The suppression is HERE rather than inside Hud.renderControlLegend, which
+                    // has no idea a menu exists and should not learn: this branch IS the
+                    // "a menu is open over a run" case, and the only other caller (the PLAYING
+                    // branch) is by construction the case where it is not.
 
                     // THE PAUSE SCREEN FOR A PLAYER IS THE MAIN MENU (2026-08-31). The scrim is
                     // drawPauseScreen's own — same PauseLayout.SCRIM_ALPHA, same authoredAlphaFor
@@ -3202,9 +3679,17 @@ class EnPustTil : PulseEngineGame()
                     // enough that the text wins, transparent enough that the stopped clock and
                     // the full ring of bubbles are still visible through it.
                     //
-                    // Issued here rather than by drawMainMenu, because the resting main menu must
-                    // NOT have it: that screen is the game's own front page over live water, and
-                    // a scrim there would say "stopped" about a machine that is waiting.
+                    // Issued here rather than by drawMainMenu, and this reason CHANGED on
+                    // 2026-08-31. It used to be "the resting main menu must NOT have it"; the
+                    // resting main menu now draws the identical scrim (see the MAIN_MENU branch
+                    // above for the pixel measurements that overturned that). So the two
+                    // branches are duplicating one line, and they still keep it rather than
+                    // hoisting it into drawMainMenu because the two scrims are answerable to
+                    // different things: this one has to keep a HELD RUN readable behind it (a
+                    // stopped clock, a full ring of bubbles), while MAIN_MENU's only has to
+                    // equalise a backdrop nobody is reading. They are the same number today by
+                    // agreement, not by construction, and a future capture is allowed to move
+                    // one without the other.
                     hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(PauseLayout.SCRIM_ALPHA))
                     hud.fillRect(0f, 0f, w, h)
                     drawMainMenu(hud, w, h)
@@ -3378,60 +3863,155 @@ class EnPustTil : PulseEngineGame()
         // list underneath is the same list, and CONTINUE plus the frozen HUD behind the scrim
         // both already say what has happened — but the title is the largest thing on screen,
         // and a player who hit Esc mid-dive reading their game's own front-page title has every
-        // reason to think the run is gone. Both strings are fixed ScreenText constants and both
-        // are in ScreenText.all(), so AttractScreenTest sweeps them for the font atlas.
+        // reason to think the run is gone.
+        //
+        // THE GRAPHICS PAGE NOW NAMES ITSELF TOO (2026-08-31). It was headed ONE MORE BREATH,
+        // which is the game's name and says nothing at all about where in the menu you are —
+        // caught by looking at `after-phase1-graphics.png`, where fourteen settings rows sit
+        // under a title that is identical to the one on the page they were reached from. All
+        // three strings are fixed ScreenText constants already in ScreenText.all(), so
+        // AttractScreenTest sweeps them for the font atlas and this adds no new atlas risk.
+        //
+        // THE LEADERBOARD PAGE TAKES THE ATTRACT SCREEN'S OWN HEADING, not a fourth string of
+        // its own. It is the same object — today's ranked scores — drawn in a different frame,
+        // and ScreenText.LEADERBOARD_HEADING ("TODAY'S DIVERS") already says both halves of
+        // what a player needs to know here: whose list it is, and that it resets. A menu-only
+        // synonym would be a second name for one thing, and the row that opens this page is
+        // already labelled MENU_LEADERBOARD, so the page would then carry three names between
+        // its row, its title and its board.
+        val page = menuModel.page
         val runHeld = lifecycle.runHeld
+        val title = when
+        {
+            page == MenuPage.GRAPHICS -> ScreenText.MENU_GRAPHICS
+            page == MenuPage.LEADERBOARD -> ScreenText.LEADERBOARD_HEADING
+            runHeld -> ScreenText.PAUSED_TITLE
+            else -> ScreenText.TITLE
+        }
+
+        // TWO TITLE SIZES, AND THE FRONT PAGE'S IS THE ATTRACT SCREEN'S OWN. See
+        // MenuLayout.titleY for the 1.52x pop this exists to kill and why raising the anchor
+        // unconditionally would have doubled it.
+        val titleY = MenuLayout.titleY(page, runHeld)
+        val titleFont = MenuLayout.titleFont(page, runHeld)
 
         hud.drawTextWithOutline(
-            if (runHeld) ScreenText.PAUSED_TITLE else ScreenText.TITLE,
-            centreX, h * MenuLayout.TITLE_Y,
-            h * MenuLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
+            title,
+            centreX, h * titleY,
+            h * titleFont, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        // The dark panel behind the row list and the hint legend below it (never the title
-        // above, per the owner's chosen shape — see render/PanelLayout.kt). Width reuses
-        // MenuLayout.HIGHLIGHT_HALF_SPAN rather than a PanelLayout constant of its own: that
-        // span is already sized "to the widest plausible row" (its own doc) and already
-        // exercised at 4:3 by MenuLayoutTest, and it covers BOTH pages (ROOT's 4 rows and
-        // GRAPHICS' 8) because the panel's bottom edge is anchored to the fixed HINT_Y, not to
-        // the last row drawn — the row count never actually moves the panel's extent.
-        val page = menuModel.page
+        // The dark panel behind the row list — never the title above it, and (since the hint
+        // legend now tracks the panel rather than sitting at a fixed 0.90h) never the legend
+        // below it either. See render/PanelLayout.kt for the owner's chosen shape. Width reuses
+        // MenuLayout.highlightHalfSpanFor(page) rather than a PanelLayout constant of its own:
+        // that span is already sized "to the widest plausible row on this page" (its own doc)
+        // and already exercised at 4:3 by MenuLayoutTest.
+        //
+        // PER PAGE SINCE 2026-08-31. This comment used to say the one shared span "covers BOTH
+        // pages ... the row count never actually moves the panel's extent", and both halves of
+        // that are now false: the row count moves the panel's BOTTOM (see contentBottom below),
+        // and the widest row moves its SIDES. See MenuLayout.HIGHLIGHT_HALF_SPAN_ROOT.
         val items = menuModel.itemsOn(page)
+        // How many MenuLayout.GROUP_GAPs this page carries, counted out of the REAL row list
+        // rather than keyed on a row count — see MenuLayout.GROUP_OPENERS for why an index or a
+        // "== 14" test is the silent-staleness trap here. ROOT returns 0 and every ROOT anchor
+        // is byte-identical to before grouping existed.
+        val gapCount = MenuLayout.groupGapsIn(items)
+        val highlightHalfWidth = h * MenuLayout.highlightHalfSpanFor(page)
+
+        // THE LEADERBOARD PAGE'S BOARD, AND THE ONE THING ABOUT THIS METHOD IT CHANGES: on that
+        // page the rows do not start at the top of the panel, because the board is drawn above
+        // them. `board` is null on every other page and `rowsTop` is then MenuLayout.ROWS_TOP_Y
+        // — the value rowY/rowsBottom/hintY default to — so ROOT and GRAPHICS come out
+        // byte-identical to before this branch existed.
+        //
+        // topN ALLOCATES A LIST EVERY FRAME (`ranked.take(n)`), and that is said out loud
+        // rather than left to be discovered. It is precedent, not a new sin: drawLeaderboard
+        // does exactly this on every attract frame for however many hours the cabinet idles,
+        // whereas this page is only open while somebody is standing at the machine reading it.
+        // A cached list would have to be invalidated by registerScore, by clearBoard and by a
+        // daily-seed change, which is three more things to get wrong than one small list.
+        val board = if (page == MenuPage.LEADERBOARD)
+        {
+            scoreRepository.topN(AttractLayout.LEADERBOARD_SIZE)
+        }
+        else null
+        val rowsTop =
+            if (board == null) MenuLayout.ROWS_TOP_Y else MenuLayout.leaderboardRowsTopY(board.size)
 
         val panel = PanelLayout.bounds(
-            contentLeft = centreX - h * MenuLayout.HIGHLIGHT_HALF_SPAN,
+            contentLeft = centreX - highlightHalfWidth,
+            // MenuLayout.BOARD_TOP_Y is this same number, deliberately: whatever the panel holds
+            // starts at the top of the panel, and on the LEADERBOARD page the first thing in it
+            // is the board rather than a row.
             contentTop = h * MenuLayout.ROWS_TOP_Y,
-            contentRight = centreX + h * MenuLayout.HIGHLIGHT_HALF_SPAN,
-            // THE LAST ROW, NOT THE HINT LINE. Anchoring to HINT_Y kept the panel identical on
-            // both pages, which sounded like a virtue and photographed like a defect: ROOT's four
-            // rows end near 0.42h while HINT_Y is 0.90h, so most of the box was empty water.
-            // Verified on a real window grab, which is the only thing that could have shown it.
-            contentBottom = h * MenuLayout.rowsBottom(items.size),
+            contentRight = centreX + highlightHalfWidth,
+            // THE LAST ROW, NOT THE HINT LINE. Anchoring to the hint line kept the panel
+            // identical on both pages, which sounded like a virtue and photographed like a
+            // defect: ROOT's four rows end near 0.42h while the hint sat at 0.90h, so most of
+            // the box was empty water. Verified on a real window grab, which is the only thing
+            // that could have shown it.
+            contentBottom = h * MenuLayout.rowsBottom(items.size, gapCount, rowsTop),
             screenHeight = h,
-            minTop = h * (MenuLayout.TITLE_Y + MenuLayout.TITLE_FONT)
+            minTop = h * (titleY + titleFont)
         )
-        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+        // THE ONE PANEL IN THE GAME THAT DOES NOT TAKE PanelLayout.ALPHA. At the shared 0.45
+        // the diver sprite — drawn dead centre, exactly where a 14-row panel also sits — read
+        // straight through five rows of the settings list; measured, the plate's whole
+        // contribution over the scrimmed sunset was five sRGB levels. Hud.renderPanel's KDoc
+        // carries the numbers and the argument for why the other six panels must NOT follow.
+        Hud.renderPanel(
+            hud, panel.centreX, panel.centreY, panel.width, panel.height,
+            PanelLayout.cornerRadius(h), PanelLayout.borderWidth(h),
+            plateAlpha = PanelLayout.MENU_PLATE_ALPHA
+        )
+
+        // Inside the panel, above the rows. Null on every page but LEADERBOARD.
+        if (board != null) drawMenuBoard(hud, board, centreX, h)
+
         val selectedIndex = menuModel.selectedIndex
-        // A FUNCTION OF THE PAGE'S OWN ROW COUNT, not the flat MenuLayout.ROW_FONT constant —
-        // see MenuLayout.rowFontFor's doc (the gi-knobs layout fix): GRAPHICS' 14 rows shrink
-        // just enough to stay above HINT_Y, ROOT's 4 rows are untouched.
-        val fontSize = h * MenuLayout.rowFontFor(items.size)
-        val highlightHalfWidth = h * MenuLayout.HIGHLIGHT_HALF_SPAN
+        // A FUNCTION OF THE PAGE'S OWN ROW COUNT AND ITS GROUP GAPS, not the flat
+        // MenuLayout.ROW_FONT constant — see MenuLayout.rowFontFor's doc (the gi-knobs layout
+        // fix): GRAPHICS' 14 rows plus 2 gaps shrink just enough to stay inside the row budget,
+        // ROOT's 4 rows are untouched.
+        val fontSize = h * MenuLayout.rowFontFor(items.size, gapCount)
         val highlightPad = fontSize * MenuLayout.HIGHLIGHT_PAD_FRACTION
+        // Running count rather than a per-row rescan of `items`: MenuLayout.rowY needs to know
+        // how many group gaps fall ABOVE this row, and counting them here is one Set.contains
+        // per row for the whole page instead of one per row per row.
+        var gapsBefore = 0
 
         for (index in items.indices)
         {
             val item = items[index]
-            val y = h * MenuLayout.rowY(index, items.size)
+            // Index 0 is excluded deliberately and MenuLayout.groupGapsIn excludes it too — a
+            // gap above the FIRST row is not a group separator, it is the whole block moved
+            // down. The two exclusions have to agree or the font and the positions disagree.
+            if (index > 0 && MenuLayout.opensGroup(item)) gapsBefore++
+            val y = h * MenuLayout.rowY(index, items.size, gapCount, gapsBefore, rowsTop)
 
-            if (index == selectedIndex)
+            val selected = index == selectedIndex
+
+            if (selected)
             {
                 // A filled bar behind the row, not a colour change on the text — legible at
                 // arcade viewing distance even for a one-word row, and it is the same
                 // affordance PauseLayout's exit bar already uses (a shape, not a hue, is what
-                // reads at a glance). Low authored alpha: this is a highlight, not a scrim, and
-                // must not fight the outlined text drawn on top of it a moment later.
-                hud.setDrawColor(1f, 1f, 1f, Hud.authoredAlphaFor(0.18f))
+                // reads at a glance).
+                //
+                // INVERTED ON 2026-08-31: dark saturated blue at a HIGH alpha, where this used
+                // to be white at an authored 0.18. The old line's own justification ("must not
+                // fight the outlined text drawn on top of it") is exactly what went wrong — a
+                // pale wash under white text measured 3.46:1 on the sunset frame and 3.54:1 on
+                // the deep one, making the selected row THE LOWEST-CONTRAST TEXT ON EITHER PAGE
+                // while unselected rows sat at 7.05:1 and 19.7:1. Raising the bar's brightness
+                // makes that worse, not better. All four numbers and the full argument are at
+                // MenuLayout.HIGHLIGHT_R — read it before touching this.
+                hud.setDrawColor(
+                    MenuLayout.HIGHLIGHT_R, MenuLayout.HIGHLIGHT_G, MenuLayout.HIGHLIGHT_B,
+                    Hud.authoredAlphaFor(MenuLayout.HIGHLIGHT_ALPHA)
+                )
                 hud.fillRect(
                     centreX - highlightHalfWidth, y - highlightPad,
                     highlightHalfWidth * 2f, fontSize + highlightPad * 2f
@@ -3440,6 +4020,13 @@ class EnPustTil : PulseEngineGame()
 
             val label = menuItemLabel(item)
 
+            // The secondary half of the focus cue (MenuLayout.UNSELECTED_INK): the selected row
+            // keeps full white, everything else steps back to 0.72. A raw float fed to
+            // drawTextWithOutline's primitive overload rather than a Color — this loop runs every
+            // frame the menu is open and this project forbids per-frame allocation on the draw
+            // path; that overload exists for exactly this (see its doc in render/Draw.kt).
+            val ink = if (selected) 1f else MenuLayout.UNSELECTED_INK
+
             // Only the GRAPHICS page has a value column, and BACK — present on that page as an
             // action row, not a setting — is the one row on it that does not. Checking the page
             // rather than reaching into MenuModel's own VALUE_ITEMS set keeps this method
@@ -3447,12 +4034,66 @@ class EnPustTil : PulseEngineGame()
             // which is MenuModel's decision to own.
             if (page == MenuPage.GRAPHICS && item != MenuItemId.BACK)
             {
-                hud.drawTextWithOutline(label, MenuLayout.labelX(centreX, h), y, fontSize, h, Color.WHITE, xOrigin = 1f)
-                hud.drawTextWithOutline(menuValueFor(item), MenuLayout.valueX(centreX, h), y, fontSize, h, Color.WHITE, xOrigin = 0f)
+                // BOTH COLUMNS LEFT-ALIGNED, xOrigin = 0 ON BOTH — the label used to be
+                // right-aligned against the centre line (xOrigin = 1) and that is exactly what
+                // put its LEFT edge somewhere different on every row. 146px of ragged left
+                // margin, measured across the fourteen rows; see MenuLayout's class doc, which
+                // was rewritten in the same pass because it justified the old alignment.
+                hud.drawTextWithOutline(
+                    label,
+                    MenuLayout.rowTextLeftX(centreX, h, page, fontSize), y, fontSize, h,
+                    ink, ink, ink, xOrigin = 0f
+                )
+                hud.drawTextWithOutline(
+                    menuValueFor(item),
+                    MenuLayout.valueLeftX(centreX, h, page, fontSize), y, fontSize, h,
+                    ink, ink, ink, xOrigin = 0f
+                )
             }
             else
             {
-                hud.drawTextWithOutline(label, centreX, y, fontSize, h, Color.WHITE, xOrigin = 0.5f)
+                hud.drawTextWithOutline(label, centreX, y, fontSize, h, ink, ink, ink, xOrigin = 0.5f)
+            }
+
+            // THE DELETE-HOLD BAR, AND IT IS DRAWN ONLY WHILE A HOLD IS ACTUALLY RUNNING.
+            //
+            // Same rule the exit-hold bar on the cabinet menu now follows, and the same
+            // argument (see drawPauseScreen's bar block, which carries it in full): an
+            // always-on, unfilled, borderless slab does not read as "a meter waiting for
+            // input", it reads as a rendering artefact, and the row's own label already says
+            // HOLD TO DELETE BOARD in words. Geometry is PauseLayout's own barX/barTrackWidth/
+            // barFillWidth so the two holds in this game are the same object at the same width,
+            // measured from the same centre — a player who has learned one has learned the
+            // other, which is the same reasoning MenuModel.DELETE_HOLD_SECONDS gives for
+            // sharing the DURATION. Only the vertical anchor is this page's (MenuLayout
+            // .deleteBarY: 0.4 em of clear band between this row's glyphs and the next row's
+            // highlight, bar in the middle half of it).
+            //
+            // deleteHoldProgress READS ZERO WHILE THE HOLD IS UNARMED, so no bar appears during
+            // a refused hold — the press that opened this page, still physically down, landing
+            // on row 0. That is correct and must not be "fixed": a bar creeping along under a
+            // hold that is deliberately not accumulating would say the wipe is under way when
+            // it is not. See MenuModel.deleteHoldArmed for what the refusal is protecting.
+            if (item == MenuItemId.DELETE_BOARD)
+            {
+                val holdProgress = menuModel.deleteHoldProgress
+                if (holdProgress > 0f)
+                {
+                    val barY = MenuLayout.deleteBarY(y, fontSize)
+                    val barHeight = MenuLayout.deleteBarHeight(fontSize)
+                    val barX = PauseLayout.barX(centreX, h)
+
+                    hud.setDrawColor(1f, 1f, 1f, Hud.authoredAlphaFor(0.25f))
+                    hud.fillRect(barX, barY, PauseLayout.barTrackWidth(h), barHeight)
+
+                    // The exit bar's own amber, not a warning red. Both bars mean the same
+                    // thing to the hand holding the button ("keep holding, this is counting"),
+                    // and giving the destructive one a second colour would make the COLOUR the
+                    // signal rather than the fill — on a screen whose label already says
+                    // DELETE. One visual language (decision D4).
+                    hud.setDrawColor(1f, 0.85f, 0.3f, Hud.authoredAlphaFor(0.95f))
+                    hud.fillRect(barX, barY, PauseLayout.barFillWidth(holdProgress, h), barHeight)
+                }
             }
         }
 
@@ -3469,9 +4110,76 @@ class EnPustTil : PulseEngineGame()
             // button does not do, on the one line whose whole job is to say which control does
             // what. That is the defect ControlHints was extracted to end (see its class doc).
             if (runHeld && page == MenuPage.ROOT) hintPauseMenuLegend else hintMenuLegend,
-            centreX, h * MenuLayout.HINT_Y,
+            // TRACKS THE PANEL, NOT A FIXED 0.90h. One constant was serving two unrelated
+            // compositions and getting both wrong: 662px of open ocean between the four-row
+            // ROOT panel and its own legend, and — on the fourteen-row GRAPHICS page — the
+            // legend drawn ON the panel's bottom border, about a pixel clear of the ring. Both
+            // measured on the phase-1 captures at h = 1440. See MenuLayout.hintY.
+            centreX, h * MenuLayout.hintY(items.size, gapCount, rowsTop),
             h * MenuLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
+    }
+
+    /**
+     * The LEADERBOARD page's board — the ranked scores, drawn inside the menu panel above the
+     * two rows.
+     *
+     * DISPLAY, NOT ROWS. Nothing here is navigable and nothing here is selectable; see
+     * `MenuModel`'s LEADERBOARD_ITEMS doc for why an unbounded, run-count-dependent list must
+     * not become navigation rows. The three COLUMN anchors are `AttractLayout`'s own —
+     * `rankX`/`initialsX`/`scoreX` and the `ROW_HALF_SPAN` they are derived from — reused
+     * verbatim rather than re-derived, because this is the same board the attract screen shows
+     * and three independently chosen column positions are precisely the drift that anchor set
+     * was extracted to end (see its doc for the 0.09w hole it replaced). Only the VERTICAL
+     * anchors are this page's: the attract board hangs under a heading at 0.56h, this one sits
+     * at the top of a panel.
+     *
+     * Full white rather than the attract board's LEADERBOARD_COLD, and that is the one
+     * deliberate divergence. The cold tint is what makes the attract board recede behind the
+     * title and the call to action on a screen where it is the third thing; here it IS the
+     * screen, drawn on a plate at MENU_PLATE_ALPHA with nothing competing, so the recessive
+     * treatment would only make the page's whole content the dimmest ink on it — the same
+     * mistake, in a different place, that MenuLayout.HIGHLIGHT_R records for the selection bar.
+     */
+    private fun drawMenuBoard(hud: Surface, board: List<ScoreEntry>, centreX: Float, h: Float)
+    {
+        val fontSize = h * MenuLayout.BOARD_FONT
+
+        if (board.isEmpty())
+        {
+            // See ScreenText.MENU_BOARD_EMPTY: the attract board returns early on an empty
+            // list and is right to, but THIS page is opened to look at the board and its next
+            // row is HOLD TO DELETE BOARD, so the frame immediately after a successful wipe
+            // would otherwise be indistinguishable from the page failing to draw.
+            hud.drawTextWithOutline(
+                ScreenText.MENU_BOARD_EMPTY,
+                centreX, h * MenuLayout.boardRowY(0),
+                fontSize, h, Color.WHITE, xOrigin = 0.5f
+            )
+            return
+        }
+
+        // An indexed loop, not forEachIndexed: this runs every frame the page is open and a
+        // lambda-taking iteration over a List allocates an iterator. drawLeaderboard uses
+        // forEachIndexed and is left alone (it predates this and is its own change), but new
+        // draw-path code in this project does not add allocations it can avoid.
+        for (index in board.indices)
+        {
+            val entry = board[index]
+            val y = h * MenuLayout.boardRowY(index)
+            hud.drawTextWithOutline(
+                "${index + 1}.", AttractLayout.rankX(centreX, h), y, fontSize, h,
+                Color.WHITE, xOrigin = 0f
+            )
+            hud.drawTextWithOutline(
+                entry.initials, AttractLayout.initialsX(centreX), y, fontSize, h,
+                Color.WHITE, xOrigin = 0.5f
+            )
+            hud.drawTextWithOutline(
+                "${entry.score}", AttractLayout.scoreX(centreX, h), y, fontSize, h,
+                Color.WHITE, xOrigin = 1f
+            )
+        }
     }
 
     /** The fixed row label for [item] — see [ScreenText]'s MENU_* group. */
@@ -3498,6 +4206,7 @@ class EnPustTil : PulseEngineGame()
         MenuItemId.FRAME_CAP -> ScreenText.MENU_FRAME_CAP
         MenuItemId.VSYNC -> ScreenText.MENU_VSYNC
         MenuItemId.SHOW_FPS -> ScreenText.MENU_SHOW_FPS
+        MenuItemId.DELETE_BOARD -> ScreenText.MENU_DELETE_BOARD
         MenuItemId.BACK -> ScreenText.MENU_BACK
     }
 
@@ -3527,7 +4236,18 @@ class EnPustTil : PulseEngineGame()
         else -> ""
     }
 
-    private fun drawIdleScreen(hud: Surface, w: Float, h: Float)
+    /**
+     * [showLeaderboard] defaults to true for the plain attract screen (`RunLifecycleState.IDLE`),
+     * where the board is the whole point. The cabinet menu (`PAUSED` with `pausedFromIdle`)
+     * draws this same screen underneath its own panel and passes `false`: the board's eight rows
+     * survived at full legibility behind that panel — `1. AYA 16054` sat directly behind the
+     * exit progress bar, and the two panels' edges did not even align — so a screen the
+     * technician is meant to be reading competed with a leaderboard nobody asked to see there.
+     * Everything else about this screen (the title, the press-start sign, the booth status line)
+     * still has to draw under the cabinet menu too, unchanged, which is why this is a flag on
+     * the existing method rather than a second one.
+     */
+    private fun drawIdleScreen(hud: Surface, w: Float, h: Float, showLeaderboard: Boolean = true)
     {
         // The world (DiveRenderer) still renders behind this surface while IDLE — the
         // attract screen shows the live shallows, not a static image — so this text sits
@@ -3551,7 +4271,10 @@ class EnPustTil : PulseEngineGame()
             w * 0.5f, h * AttractLayout.PRESS_START_Y,
             h * AttractLayout.PRESS_START_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
-        drawLeaderboard(hud, w, h)
+        if (showLeaderboard)
+        {
+            drawLeaderboard(hud, w, h)
+        }
         drawBoothStatusLine(hud, w, h)
     }
 
@@ -3676,7 +4399,7 @@ class EnPustTil : PulseEngineGame()
             screenHeight = h,
             minTop = h * (Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT)
         )
-        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h), PanelLayout.borderWidth(h))
 
         hud.drawTextWithOutline(
             ScreenText.LEADERBOARD_HEADING,
@@ -3699,47 +4422,87 @@ class EnPustTil : PulseEngineGame()
         }
     }
 
+    /**
+     * The end-of-run summary. Geometry is [RunOverLayout]'s problem and wording is
+     * [ScreenText]'s and [render.ControlHints]'; this method only issues the draw calls.
+     *
+     * REBUILT 2026-08-31 (design doc §3.5). It used to be two lines drawn at hard-coded
+     * `val`s inside this function — `RUN OVER (dot) BANKED n` at 0.5h and a retry hint just
+     * under it — which put the whole screen across the diver's fins and inside the pearl ring
+     * while restating a number `Hud.drawBanked` was already showing top-left. The order of the
+     * three fixes below is load-bearing and is argued at length in [RunOverLayout]'s class doc:
+     * scrim, then move, then enlarge. Enlarging first is what the first draft proposed, and it
+     * would have produced a BIGGER collision with the diver.
+     */
     private fun drawRunOverScreen(hud: Surface, w: Float, h: Float)
     {
+        // STEP ONE: the scrim, as the FIRST statement, so it dims what is already on this
+        // surface. renderGame's RUN_OVER branch has already issued Hud.render and
+        // VentLabel.render into `hud` by the time this runs, so a scrim here paints over a
+        // live-looking readout — the depth tape, the bubble ring, the O2 labels — and stops it
+        // competing with the summary. Authored alpha, not displayed: this surface stores alpha
+        // SQUARED (see Hud.authoredAlphaFor's measurement), so asking for 0.45 raw would land
+        // near 0.2. Nothing later in the frame rescues a scrim that came out too weak, because
+        // the HUD surface is not relit by global illumination.
+        //
+        // WHY THE LIGHTEST SCRIM IN THE GAME — see RunOverLayout.SCRIM_ALPHA for the
+        // arithmetic. In short: the red `0:00` clock capsule underneath is the clearest signal
+        // of WHY the run ended, and each step of scrim weight takes most of it away.
+        hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(RunOverLayout.SCRIM_ALPHA))
+        hud.fillRect(0f, 0f, w, h)
+
         val centreX = w * 0.5f
 
-        // This screen's title, per the panel design's "title outside the panel" rule — the
-        // headline is the only thing this screen has that plays that role, there being no
-        // separate RunOverLayout.TITLE_Y the way every other screen has one.
-        val titleY = 0.5f
-        val titleFont = 0.04f
-        val hintY = 0.5f + 0.045f
-        val hintFont = 0.022f
-
+        // STEP TWO: the block sits BELOW the diver's halo band. The title is drawn outside the
+        // panel (the one-panel-per-screen rule), so unlike the briefing's rows it has no card
+        // to sit on and has to dodge him on its own — see RunOverLayout's class doc.
+        //
         // A run can end at any depth, so this can land anywhere from bright shallows to
         // near-black abyss — outlined for the same reason as the rest of the HUD.
         hud.drawTextWithOutline(
-            ScreenText.runOver(sim.banked),
-            centreX, h * titleY,
-            h * titleFont, h, Color.WHITE, xOrigin = 0.5f
+            ScreenText.RUN_OVER_TITLE,
+            centreX, h * RunOverLayout.TITLE_Y,
+            h * RunOverLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        // The panel behind ONLY the retry hint. THE TITLE-CLEARANCE TRAP LIVES HERE: the
-        // title's own text box runs to h*(titleY+titleFont) = 0.54h and the hint starts at
-        // h*hintY = 0.545h, a 0.005h gap far smaller than PanelLayout.PADDING_FRACTION
-        // (0.025h) — naive padding would draw this panel straight through "RUN OVER (dot)
-        // BANKED N" (see panel-report.md's "found by arithmetic" section). minTop pins the
-        // panel's top edge to the title's own bottom edge instead, so it touches rather than
-        // overlaps regardless of how PADDING_FRACTION is tuned later.
+        // The panel behind the numeral, its caption and the retry hint. THE TITLE-CLEARANCE
+        // TRAP STILL LIVES HERE, and it survived the rebuild by construction rather than by
+        // luck: the title's box ends at 0.621h and the numeral starts at 0.645h, a 0.024h gap
+        // still narrower than PanelLayout.PADDING_FRACTION (0.025h), so naive padding would
+        // once again draw the panel through "RUN OVER". minTop pins the top edge to the
+        // title's own bottom edge, so the two touch rather than overlap regardless of how
+        // PADDING_FRACTION is tuned later. (See panel-report.md's "found by arithmetic"
+        // section — this is the screen that found it.)
         val panel = PanelLayout.bounds(
             contentLeft = centreX - h * PanelLayout.RUN_OVER_HALF_SPAN,
-            contentTop = h * hintY,
+            contentTop = h * RunOverLayout.SCORE_Y,
             contentRight = centreX + h * PanelLayout.RUN_OVER_HALF_SPAN,
-            contentBottom = h * (hintY + hintFont),
+            contentBottom = h * (RunOverLayout.HINT_Y + RunOverLayout.HINT_FONT),
             screenHeight = h,
-            minTop = h * (titleY + titleFont)
+            minTop = h * (RunOverLayout.TITLE_Y + RunOverLayout.TITLE_FONT)
         )
-        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h), PanelLayout.borderWidth(h))
+
+        // STEP THREE: the numeral, at nearly three times the title's size, with no middle-dot
+        // separator anywhere near it. The dot is this project's "and also" (ScreenText
+        // .SEPARATOR) and joining a headline to a score with it made the most important number
+        // in the game read as one field of a status bar.
+        hud.drawTextWithOutline(
+            ScreenText.bankedNumber(sim.banked),
+            centreX, h * RunOverLayout.SCORE_Y,
+            h * RunOverLayout.SCORE_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+
+        hud.drawTextWithOutline(
+            ScreenText.RUN_OVER_CAPTION,
+            centreX, h * RunOverLayout.CAPTION_Y,
+            h * RunOverLayout.CAPTION_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
 
         hud.drawTextWithOutline(
             hintPlayAgain,
-            centreX, h * hintY,
-            h * hintFont, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * RunOverLayout.HINT_Y,
+            h * RunOverLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
     }
 
@@ -3807,7 +4570,7 @@ class EnPustTil : PulseEngineGame()
             screenHeight = h,
             minTop = h * (PauseLayout.TITLE_Y + PauseLayout.TITLE_FONT)
         )
-        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h), PanelLayout.borderWidth(h))
 
         // Outlined like the rest of the HUD: the scrim darkens the world but does not
         // flatten it, and this text can land over a bright Shallows waterline.
@@ -3829,20 +4592,31 @@ class EnPustTil : PulseEngineGame()
             h * PauseLayout.HINT_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        // The exit-hold bar: an empty track always, plus a fill that grows while the key (or
-        // the two buttons) is down. Drawn unconditionally rather than only while held, so the
-        // affordance is visible before anyone touches anything — an empty track under the
-        // "HOLD ... to exit" line is what tells a technician the control wants holding rather
-        // than pressing.
+        // The exit-hold bar. THIS REVERSES A DOCUMENTED DECISION, and the reversed argument is
+        // kept here rather than deleted. The track used to be drawn unconditionally, on the
+        // reasoning that "an empty track under the 'HOLD ... to exit' line is what tells a
+        // technician the control wants holding rather than pressing" — a real argument, and one
+        // that held for as long as this screen had no other way to say so. It does not any
+        // more: `hintExitHold`, drawn immediately above this block, already spells out "HOLD
+        // ... to exit" in words, so the track was carrying a signal the label already carries.
+        // And an always-on, unfilled, borderless grey slab does not actually read as "a meter
+        // waiting for input" — it reads as a rendering artefact, because nothing about a flat
+        // rectangle with no frame and no motion says "meter" on its own (design doc §3.4). The
+        // label wins: the track (and its fill, which is zero-width until a hold starts anyway)
+        // is now drawn only once `exitHoldProgress` has actually left zero, i.e. only while a
+        // hold is in progress.
         val barX = PauseLayout.barX(centreX, h)
         val barY = h * PauseLayout.BAR_Y
         val barHeight = h * PauseLayout.BAR_HEIGHT
 
-        hud.setDrawColor(1f, 1f, 1f, Hud.authoredAlphaFor(0.25f))
-        hud.fillRect(barX, barY, PauseLayout.barTrackWidth(h), barHeight)
+        if (lifecycle.exitHoldProgress > 0f)
+        {
+            hud.setDrawColor(1f, 1f, 1f, Hud.authoredAlphaFor(0.25f))
+            hud.fillRect(barX, barY, PauseLayout.barTrackWidth(h), barHeight)
 
-        hud.setDrawColor(1f, 0.85f, 0.3f, Hud.authoredAlphaFor(0.95f))
-        hud.fillRect(barX, barY, PauseLayout.barFillWidth(lifecycle.exitHoldProgress, h), barHeight)
+            hud.setDrawColor(1f, 0.85f, 0.3f, Hud.authoredAlphaFor(0.95f))
+            hud.fillRect(barX, barY, PauseLayout.barFillWidth(lifecycle.exitHoldProgress, h), barHeight)
+        }
     }
 
     /**
@@ -3866,22 +4640,31 @@ class EnPustTil : PulseEngineGame()
             h * BriefingLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        // The panel behind the three control rows and the rule (and the countdown/skip lines
-        // below them, when either is showing) — never the title above it. Composites on top of
-        // the briefing's own scrim exactly as the pause screen's does, at the same
-        // PanelLayout.ALPHA — see drawPauseScreen's comment for the composed-alpha arithmetic;
-        // BriefingLayout.SCRIM_ALPHA (0.55) is lighter than PauseLayout's (0.72) so the
-        // composed figure here is lighter too, by the same deliberate signal
+        // The panel behind the three control rows, the three facts and the rule (and the
+        // countdown/skip lines below them, when either is showing) — never the title above it.
+        // Composites on top of the briefing's own scrim exactly as the pause screen's does, at
+        // the same PanelLayout.ALPHA — see drawPauseScreen's comment for the composed-alpha
+        // arithmetic; BriefingLayout.SCRIM_ALPHA (0.55) is lighter than PauseLayout's (0.72) so
+        // the composed figure here is lighter too, by the same deliberate signal
         // BriefingLayout's own class doc names.
         //
         // The bottom edge grows with what is actually on screen this frame: the countdown and
         // skip hint are each conditional (see the `if`s below), so a panel sized to the
-        // widest case always would reserve space for lines that are not there yet. minTop
-        // guards BOTH the title's own bottom edge and the diver halo's — BriefingLayout's own
-        // class doc already places ROWS_TOP_Y (0.57h) just 0.03h below the halo's bottom edge
-        // (0.54h) by design, which is too thin a margin to trust to PADDING_FRACTION (0.025h)
-        // alone; the same clamp technique the attract screen's leaderboard panel uses removes
-        // the risk rather than relying on the two constants never drifting closer.
+        // widest case always would reserve space for lines that are not there yet.
+        //
+        // MINTOP NO LONGER GUARDS THE DIVER HALO, AND DROPPING THAT TERM IS THE POINT (Task 12,
+        // 2026-08-31). It used to read `maxOf(titleBottom, haloBottom)`, which pinned the card
+        // at 0.54h and is why every element on this screen had to be crammed below it while
+        // 0.145h..0.54h sat empty. BriefingScreenTest's halo rule became a DISJUNCTION in the
+        // same change — clears above, or clears below, OR IS INSIDE THE PANEL — and that third
+        // arm is UNREACHABLE BY CONSTRUCTION while this clamp stands: a panel clamped out of
+        // the band cannot contain anything that is in the band. Removing the clamp and relaxing
+        // the test are one change, not two, and doing only the second would trade a real
+        // constraint for nothing. See BriefingLayout's class doc for why a bordered card over
+        // the diver is a different proposition from loose text over him.
+        //
+        // The title's own bottom edge REMAINS as the floor, unchanged and for the unchanged
+        // reason: it is the one thing on this screen drawn outside the card.
         val contentBottomY = when
         {
             lifecycle.briefingSkippable -> BriefingLayout.SKIP_Y + BriefingLayout.SKIP_FONT
@@ -3894,18 +4677,31 @@ class EnPustTil : PulseEngineGame()
             contentRight = centreX + h * PanelLayout.BRIEFING_HALF_SPAN,
             contentBottom = h * contentBottomY,
             screenHeight = h,
-            minTop = maxOf(
-                h * (BriefingLayout.TITLE_Y + BriefingLayout.TITLE_FONT),
-                h * (Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT)
-            )
+            minTop = h * (BriefingLayout.TITLE_Y + BriefingLayout.TITLE_FONT)
         )
-        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h), PanelLayout.borderWidth(h))
 
         // Token right-aligned, verb left-aligned - INWARD, unlike the leaderboard's outward
         // columns. See BriefingLayout.COLUMN_GAP.
-        drawBriefingRow(hud, 0, ControlHints.swim(arcadeHints), ScreenText.BRIEFING_VERB_SWIM, centreX, gap, h)
-        drawBriefingRow(hud, 1, ControlHints.kick(arcadeHints, gamepadButtonLabel(kickButton, controllerFamily)), ScreenText.BRIEFING_VERB_KICK, centreX, gap, h)
-        drawBriefingRow(hud, 2, ControlHints.bleed(arcadeHints, gamepadButtonLabel(bleedButton, controllerFamily)), ScreenText.BRIEFING_VERB_BLEED, centreX, gap, h)
+        //
+        // THE INWARD SPLIT STAYS HERE even though the 14-row GRAPHICS page moved to fixed
+        // left-aligned columns in the same pass (design doc §3.2 overrides §3.7 only for that
+        // page). Three rows of key-to-verb are a table read as pairs and want their gutter;
+        // fourteen rows of label-to-value are a list read as a column and want a fixed left
+        // edge. Copying either onto the other gets it backwards.
+        drawBriefingRow(hud, 0, ControlHints.swim(arcadeHints), ScreenText.VERB_SWIM, centreX, gap, h)
+        drawBriefingRow(hud, 1, ControlHints.kick(arcadeHints, gamepadButtonLabel(kickButton, controllerFamily)), ScreenText.VERB_KICK, centreX, gap, h)
+        drawBriefingRow(hud, 2, ControlHints.bleed(arcadeHints, gamepadButtonLabel(bleedButton, controllerFamily)), ScreenText.VERB_BLEED, centreX, gap, h)
+
+        // The three facts (decision D3). A SEPARATE BLOCK, not three more rows: smaller font,
+        // tighter pitch, and each one a single CENTRED string against the controls' two-column
+        // split — see BriefingLayout.FACTS_TOP_Y for why all three levers are needed and why
+        // colour is deliberately not one of them. Drawn as three explicit calls rather than a
+        // loop over a list, matching the three control rows above and avoiding an array
+        // allocation or an iterator on the render path.
+        drawBriefingFact(hud, 0, ScreenText.BRIEFING_FACT_WEIGHT, centreX, h)
+        drawBriefingFact(hud, 1, ScreenText.BRIEFING_FACT_DEPTH, centreX, h)
+        drawBriefingFact(hud, 2, ScreenText.BRIEFING_FACT_AIR, centreX, h)
 
         // Amber, not white: this is the one thing a player must know that nothing else on
         // screen ever says. Same literal drawPauseScreen uses for its exit bar - deliberately
@@ -3951,52 +4747,115 @@ class EnPustTil : PulseEngineGame()
     }
 
     /**
-     * Three-letter arcade initials entry — see design spec §12 ("never a form field")
-     * and RunLifecycle's ENTER_INITIALS doc for when this is offered. The current slot
-     * is bracketed so it reads clearly even with the engine's default font and no
-     * cursor/caret asset.
+     * One line of the fact block — CENTRED on the screen's axis, with no column split at all.
+     *
+     * That absence is the point rather than an omission: [drawBriefingRow] splits every control
+     * row into a right-aligned token and a left-aligned verb, so the fact block reads as a
+     * different KIND of thing from the first glance, before a single word of either has been
+     * read. Drawn at the raw-float ink [BriefingLayout] does not name because there is nothing
+     * to name — plain white, like every non-accent string on this screen; the amber is spent on
+     * the rule.
+     */
+    private fun drawBriefingFact(hud: Surface, index: Int, text: String, centreX: Float, h: Float)
+    {
+        hud.drawTextWithOutline(
+            text,
+            centreX, h * BriefingLayout.factY(index),
+            h * BriefingLayout.FACT_FONT, h, Color.WHITE, xOrigin = 0.5f
+        )
+    }
+
+    /**
+     * Three-letter arcade initials entry — see design spec §12 ("never a form field") and
+     * RunLifecycle's ENTER_INITIALS doc for when this is offered. Geometry is
+     * [InitialsLayout]'s problem; this method only issues the draw calls.
+     *
+     * THE BRACKETS ARE GONE (2026-08-31, design doc §3.6). This doc used to end "the current
+     * slot is bracketed so it reads clearly even with the engine's default font and no
+     * cursor/caret asset" — a fair answer to a real constraint (there is no caret asset, and
+     * there still is not) that turned out to cost more than it bought: `[A]` is two glyphs of
+     * width that only one of the three cells ever carries, so the letters shuffled sideways as
+     * the cursor moved, the block's optical centre moved with them, and at any distance a
+     * bracket reads as a placeholder. Three fixed rects answer the same constraint without a
+     * caret and without a glyph — see `ScreenText`'s initials comment and [InitialsLayout].
      */
     private fun drawInitialsEntryScreen(hud: Surface, w: Float, h: Float)
     {
-        val centreX = w * 0.5f
+        // The scrim, first, for the reason drawRunOverScreen's does: ENTER_INITIALS also draws
+        // the full HUD and the vent labels before this (see renderGame), and this screen is
+        // asking a player to READ and OPERATE something, which is a stronger claim on their
+        // attention than the run-over summary makes. Same weight as run-over's — the two are
+        // one moment in the player's experience, and a step change in dimming between them
+        // would read as the machine doing something rather than as the same screen continuing.
+        hud.setDrawColor(0f, 0f, 0f, Hud.authoredAlphaFor(InitialsLayout.SCRIM_ALPHA))
+        hud.fillRect(0f, 0f, w, h)
 
-        // This screen's title, the same role run-over's headline plays — no separate layout
-        // object names it, so the anchor is restated here rather than invented as a new one.
-        val titleY = 0.46f
-        val titleFont = 0.032f
-        val slotsY = 0.54f
-        val slotsFont = 0.06f
-        val helpY = 0.6f
-        val helpFont = 0.02f
+        val centreX = w * 0.5f
 
         hud.drawTextWithOutline(
             ScreenText.newScore(sim.banked),
-            centreX, h * titleY,
-            h * titleFont, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * InitialsLayout.TITLE_Y,
+            h * InitialsLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
-        // The panel behind the initials slots and the help line — never the "NEW SCORE" title
-        // above them.
+        // The panel behind the slots and the help line — never the "NEW SCORE" title above
+        // them. minTop pins its top edge to the title's own bottom edge for the reason
+        // drawRunOverScreen's comment sets out at length.
         val panel = PanelLayout.bounds(
             contentLeft = centreX - h * PanelLayout.INITIALS_HALF_SPAN,
-            contentTop = h * slotsY,
+            contentTop = h * InitialsLayout.SLOTS_TOP_Y,
             contentRight = centreX + h * PanelLayout.INITIALS_HALF_SPAN,
-            contentBottom = h * (helpY + helpFont),
+            contentBottom = h * (InitialsLayout.HELP_Y + InitialsLayout.HELP_FONT),
             screenHeight = h,
-            minTop = h * (titleY + titleFont)
+            minTop = h * (InitialsLayout.TITLE_Y + InitialsLayout.TITLE_FONT)
         )
-        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h), PanelLayout.borderWidth(h))
 
-        hud.drawTextWithOutline(
-            ScreenText.initialsSlots(lifecycle.currentInitials, lifecycle.currentInitialsSlot),
-            centreX, h * slotsY,
-            h * slotsFont, h, Color.WHITE, xOrigin = 0.5f
-        )
+        // The three slots. Read ONCE, outside the loop: RunLifecycle.currentInitials delegates
+        // to InitialsEntry.initialsString(), which is `String(letters)` — an allocation per
+        // call — so reading it per slot would triple a per-frame allocation for nothing.
+        val letters = lifecycle.currentInitials
+        val activeSlot = lifecycle.currentInitialsSlot
+        val slotWidth = h * InitialsLayout.SLOT_WIDTH
+        val slotHeight = h * InitialsLayout.SLOT_HEIGHT
+        val letterY = h * InitialsLayout.letterY()
+        val letterFont = h * InitialsLayout.LETTER_FONT
+
+        for (slot in 0 until InitialsLayout.SLOT_COUNT)
+        {
+            val active = slot == activeSlot
+            val slotCentreX = InitialsLayout.slotCentreX(slot, centreX, h)
+
+            // fillRectCentred, not fillRect: the slot's position MEANS its middle (it is
+            // computed from the block's pitch about centreX), and render/Draw.kt's two forms
+            // exist precisely so that a centre never has to be turned into a corner by hand at
+            // the call site. Never drawQuad — it renders nothing at all on macOS and nothing in
+            // the shipped Windows jar either (DrawTest fails the build on it).
+            hud.setDrawColor(
+                MenuLayout.HIGHLIGHT_R, MenuLayout.HIGHLIGHT_G, MenuLayout.HIGHLIGHT_B,
+                Hud.authoredAlphaFor(
+                    if (active) InitialsLayout.SLOT_ALPHA_ACTIVE else InitialsLayout.SLOT_ALPHA_IDLE
+                )
+            )
+            hud.fillRectCentred(slotCentreX, InitialsLayout.slotCentreY(h), slotWidth, slotHeight)
+
+            // Full white on the active slot, MenuLayout.UNSELECTED_INK on the others — the
+            // second half of the menu's focus cue, applied here for the same reason: a shape
+            // says WHERE the cursor is and the ink says which letter is being changed. Raw
+            // floats rather than a Color, because this loop runs every frame the screen is up
+            // and this project forbids per-frame allocation on the draw path.
+            val ink = if (active) 1f else MenuLayout.UNSELECTED_INK
+            hud.drawTextWithOutline(
+                ScreenText.initialsLetter(letters, slot),
+                slotCentreX, letterY,
+                letterFont, h, ink, ink, ink, xOrigin = 0.5f
+            )
+        }
 
         hud.drawTextWithOutline(
             hintInitialsHelp,
-            centreX, h * helpY,
-            h * helpFont, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * InitialsLayout.HELP_Y,
+            h * InitialsLayout.HELP_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
     }
 
@@ -4389,7 +5248,12 @@ class EnPustTil : PulseEngineGame()
             menuModel.prime(up, down, left, right, confirm, back)
         }
 
-        return menuModel.update(up, down, left, right, confirm, back)
+        // dt drives ONE thing: the leaderboard page's hold-to-delete (MenuModel's hold block).
+        // engine.data.deltaTime is the RENDER clock, which is correct and deliberate — this
+        // function runs from updateGame/onUpdate, lifecycle.update on the very next call takes
+        // the identical value, and RunLifecycle's exit hold is measured on the same clock, so
+        // the game's two hold-to-confirm gestures cannot drift apart in feel.
+        return menuModel.update(up, down, left, right, confirm, back, engine.data.deltaTime)
     }
 
     /**
@@ -4482,6 +5346,14 @@ class EnPustTil : PulseEngineGame()
                 // still saves, and destroyGame's own settingsStore.save below still fires too.
                 engine.window.close()
             MenuAction.ShowLeaderboard ->
+                // NOTHING EMITS THIS ANY MORE as of 2026-08-31, and the branch is kept rather
+                // than deleted. The LEADERBOARD row now opens MenuPage.LEADERBOARD in place —
+                // a paused player can read the board and go back to their dive — so the
+                // run-abandoning route below is no longer reachable from the menu. What the
+                // branch still carries is the EXPLANATION of why viewLeaderboard abandons a
+                // held run, which RunLifecycle's IDLE/attract path still depends on; deleting
+                // the arm would delete that with it. See MenuAction.ShowLeaderboard's own doc.
+                //
                 // RunLifecycle owns MAIN_MENU/IDLE, MenuModel does not know either state
                 // exists — see RunLifecycle.viewLeaderboard's own doc for why this is a
                 // direct call rather than a case RunLifecycle interprets from MenuAction.
@@ -4512,6 +5384,23 @@ class EnPustTil : PulseEngineGame()
                 // longer resumes a held run on its own pause edge; see that branch for why the
                 // pad's shared Options button made that unsafe.
                 lifecycle.resumeRun()
+            MenuAction.DeleteBoard ->
+            {
+                // Emitted exactly once per completed 1.5-second hold on the leaderboard page's
+                // DELETE BOARD row — MenuModel guarantees both halves of that (never on a tap,
+                // never repeatedly while the button stays down), so nothing here needs its own
+                // debounce or its own confirmation step. See MenuModel.update's hold block.
+                //
+                // Only TODAY's seed is cleared, which is clearBoard's default: at a two-day
+                // booth, wiping day two must not be able to destroy day one, and every
+                // ScoreEntry already carries the seed it was earned under.
+                val cleared = scoreRepository.clearBoard()
+                // The wipe can legitimately refuse — clearBoard writes an unconditional backup
+                // first and will not touch the board if that backup could not be written. It
+                // has already reported the reason through onSaveFailure; this is the second,
+                // call-site-level line so the booth log says which gesture triggered it.
+                if (!cleared) Logger.warn { "DELETE BOARD refused - the board was left intact" }
+            }
             MenuAction.None -> {}
         }
     }

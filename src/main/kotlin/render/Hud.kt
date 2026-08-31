@@ -330,18 +330,44 @@ object Hud
     val clockPlate = Color(0.02f, 0.05f, 0.09f, authoredAlphaFor(0.82f))
 
     /**
-     * The dark, semi-transparent plate behind every lifecycle screen's panel (menus, pause,
-     * briefing, run-over, initials entry, the attract screen's leaderboard block) — see
-     * [render.PanelLayout] for the shared geometry and [PanelLayout.ALPHA]'s doc for the
-     * composed-alpha arithmetic on the two screens that already carry a scrim.
+     * The dark plate behind every lifecycle screen's panel (menus, pause, briefing, run-over,
+     * initials entry, the attract screen's leaderboard block) — see [render.PanelLayout] for the
+     * shared geometry and [PanelLayout.ALPHA]'s doc for the composed-alpha arithmetic on the
+     * screens that also carry a scrim.
      *
      * Same RGB family as [clockPlate] rather than an invented colour: both are "a dark plate
      * behind HUD text on a surface that ranges from bright Shallows to near-black Abyss", and
      * reusing the triple keeps the two kinds of plate reading as one visual language instead of
-     * two. Only the alpha differs, and it is built here — once, at class init, never per frame
-     * — exactly the way [clockPlate] itself already is.
+     * two.
+     *
+     * THREE LOOSE FLOATS RATHER THAN A PRE-ALLOCATED `Color`, since 2026-08-31. It used to be
+     * `val panelPlate = Color(0.02f, 0.05f, 0.09f, authoredAlphaFor(PanelLayout.ALPHA))`, built
+     * once at class init exactly the way [clockPlate] still is — which was right while the alpha
+     * was a single compile-time constant. [renderPanel] now takes a per-screen plate alpha (see
+     * its doc for the one screen that needs one and why), and a `Color` cannot carry a parameter
+     * without being rebuilt every frame, which this project forbids on the draw path. The
+     * four-float `setDrawColor` overload takes the alpha as an argument and allocates nothing, so
+     * the colour stops being an object and goes back to being three numbers.
      */
-    val panelPlate = Color(0.02f, 0.05f, 0.09f, authoredAlphaFor(PanelLayout.ALPHA))
+    private const val PLATE_R = 0.02f
+    private const val PLATE_G = 0.05f
+    private const val PLATE_B = 0.09f
+
+    /**
+     * The pale hairline stroked around every panel — see [PanelLayout.BORDER_FRACTION] for why a
+     * card needs an edge and not merely a wash, and [renderPanel] for the one non-obvious thing
+     * about how it is drawn.
+     *
+     * Cool rather than neutral white, same family as [tapeBg]'s (0.9, 0.94, 1.0): everything on
+     * this surface that is meant to read as instrument rather than as world is a blue-white, and
+     * a warm border would be the only warm ink on the screen.
+     *
+     * 0.38 displayed, not higher. The stroke is 2-3 px wide and sits directly on the plate,
+     * so it needs nothing like the weight of a text ink to be seen; at full opacity it reads as
+     * a drawn box rather than as the panel's own edge, which is the difference between a card
+     * and a diagram. Authored through [authoredAlphaFor] like everything else here.
+     */
+    val panelBorder = Color(0.72f, 0.80f, 0.92f, authoredAlphaFor(0.38f))
 
     /**
      * The visible STAIRCASE RISER a rounded corner is allowed, in pixels, and the ceiling on how
@@ -779,14 +805,70 @@ object Hud
      * function that crosses it, so the corner-stepping maths [fillRoundedRect] owns stays
      * declared once rather than being re-taught to the default package.
      *
-     * Colour is fixed ([panelPlate], built once — see its own doc) because every panel in this
-     * design is the same plate, not a per-screen choice; [width]/[height]/[radius] are what
-     * `PanelLayout.bounds`/`PanelLayout.cornerRadius` compute per screen.
+     * THE PLATE IS ONE SHARED VALUE WITH ONE NAMED EXCEPTION, AND THIS PARAGRAPH REPLACES THE
+     * RULE THAT USED TO STAND HERE. It read: "Colour is fixed ([panelPlate], built once — see
+     * its own doc) because every panel in this design is the same plate, not a per-screen
+     * choice." The reasoning behind that was sound and is kept: seven screens drawing seven
+     * subtly different boxes is how a UI stops looking designed, and a per-screen knob invites
+     * exactly that. What overturned it is a measurement, not a preference.
+     *
+     * [plateAlpha] therefore defaults to [PanelLayout.ALPHA] and SIX of the seven call sites
+     * take the default. The exception is the main menu's own panel, which passes
+     * [PanelLayout.MENU_PLATE_ALPHA] — see that constant for the pixel evidence and for the one
+     * frame that evidence does NOT cover. In one
+     * sentence: the diver sprite is drawn dead centre of the screen, the GRAPHICS page's panel
+     * is fourteen rows tall and centred on the same point, and at [PanelLayout.ALPHA] the diver
+     * reads straight through five of its rows. Measured on `after-phase1-graphics.png`
+     * (3440x1440), inside the panel against the identical pixel on `after-phase1-main-menu.png`
+     * where no panel covers it: **(109, 38, 58) against (104, 34, 52)** — the plate's entire
+     * contribution over a scrimmed sunset is about **five sRGB levels**. It is not a dark box;
+     * it is the scrim with a border round it.
+     *
+     * WHY THE OTHER SIX MUST NOT FOLLOW IT. Raising [PanelLayout.ALPHA] itself was the obvious
+     * move and is wrong twice over. The attract screen's leaderboard panel has NO scrim under it
+     * and sits over dark water, where it is already the most legible panel in the game — the
+     * design doc names it the control case. And over the abyss the plate is not a darkener at
+     * all but an additive LIFT (`dst ~= 0`, so the plate's own RGB IS the panel), where a heavy
+     * alpha turns a near-black world into a pale slab. A panel over a bright sunset and a panel
+     * over the abyss want opposite things from one number, which is precisely why this is a
+     * per-screen argument and not a new global value. There is also a hard ceiling at
+     * `ALPHA < 0.920960` from `PanelLayoutTest`'s composed-alpha bound.
+     *
+     * [width]/[height]/[radius]/[borderWidth] are what `PanelLayout.bounds`/
+     * `PanelLayout.cornerRadius`/`PanelLayout.borderWidth` compute per screen.
+     *
+     * THE BORDER IS A REAL RING ([strokeRoundedRect]) DRAWN ON TOP, NOT THE CLOCK BOX'S TRICK,
+     * AND THAT DIFFERENCE IS FORCED BY [PanelLayout.ALPHA]. [drawClock] draws its border as the
+     * whole outer box and lays the plate over it, which is cheaper and needs no second shape
+     * decomposition — and [clockPlate]'s own doc already states the price and why the clock can
+     * afford it: "the plate is authored near-opaque instead of at a tasteful half, where the
+     * border's colour rather than the plate's would decide what the interior looks like".
+     * the panel plate IS at a tasteful half (0.45 by default), so that price is not payable
+     * here. Worked
+     * through this surface's blend (RGB pre-multiplied, alpha stored SQUARED — see
+     * [authoredAlphaFor] and [tapeBg]), an under-plate slab leaves `1 - sqrt(0.45) = 32.9%` of
+     * its own colour showing through the middle of the panel: the abyss panel measured at
+     * (3, 10, 29) on shot 06 of the 2026-08-31 capture set would come out near (79, 88, 100),
+     * a pale grey slab on a near-black world. That is the exact failure the design doc rejects
+     * raising [PanelLayout.ALPHA] to 0.85 for, arriving through the border instead. A ring
+     * costs `4 * bands + 2` rects against the fill's `2 * bands + 1`, on a screen drawn once a
+     * frame while somebody reads a menu; the interior stays untouched, which is the whole point.
      */
-    fun renderPanel(surface: Surface, centreX: Float, centreY: Float, width: Float, height: Float, radius: Float)
+    fun renderPanel(
+        surface: Surface,
+        centreX: Float,
+        centreY: Float,
+        width: Float,
+        height: Float,
+        radius: Float,
+        borderWidth: Float,
+        plateAlpha: Float = PanelLayout.ALPHA
+    )
     {
-        surface.setDrawColor(panelPlate)
+        surface.setDrawColor(PLATE_R, PLATE_G, PLATE_B, authoredAlphaFor(plateAlpha))
         surface.fillRoundedRect(centreX, centreY, width, height, radius)
+        surface.setDrawColor(panelBorder)
+        surface.strokeRoundedRect(centreX, centreY, width, height, radius, borderWidth)
     }
 
     /**
@@ -836,6 +918,100 @@ object Hud
             fillRectCentred(centreX, centreY - dy, bandWidth, bandHeight)
             fillRectCentred(centreX, centreY + dy, bandWidth, bandHeight)
             nearOver = farOver
+        }
+    }
+
+    /**
+     * A [thickness]-pixel RING around the same rounded rectangle [fillRoundedRect] fills, drawn
+     * INSIDE the given extent so it lands on the shape's own outermost pixels rather than
+     * growing it. See [renderPanel] for why a panel needs a ring and cannot use the clock box's
+     * cheaper "draw the border as a whole box and lay the plate over it" trick.
+     *
+     * Structurally it is [fillRoundedRect] walked twice at once: the SAME band decomposition
+     * (same equal-angle cut, same midpoint sampling — see that function for why both matter),
+     * but each band contributes only the sliver between the outer shape's half-width at that row
+     * and the INSET shape's. The inset shape is the same rounded rect with every extent and the
+     * radius reduced by [thickness], which is exactly what keeps the stroke a constant thickness
+     * around the corner instead of pinching to nothing at 45 degrees — the same correction
+     * [drawClock] applies to its plate, for the same reason.
+     *
+     * The two shapes' straight sections are the SAME height by construction
+     * (`(halfHeight - t) - (r - t) == halfHeight - r`), so the arcs start at the same row and the
+     * side rails below meet the first band exactly. Above the inset shape's own cap the inner
+     * half-width is zero and the band goes solid across, which is what closes the top and bottom
+     * of the ring without a separate cap case.
+     */
+    private fun Surface.strokeRoundedRect(
+        centreX: Float,
+        centreY: Float,
+        width: Float,
+        height: Float,
+        radius: Float,
+        thickness: Float
+    )
+    {
+        val halfWidth = width * 0.5f
+        val halfHeight = height * 0.5f
+        val t = thickness.coerceIn(0f, minOf(halfWidth, halfHeight))
+        if (t <= 0f) return
+        val r = radius.coerceIn(0f, minOf(halfWidth, halfHeight))
+        val straight = halfHeight - r
+
+        // The two straight side rails, spanning everything the corner arcs do not cover.
+        if (straight > 0f)
+        {
+            fillRectCentred(centreX - halfWidth + t * 0.5f, centreY, t, straight * 2f)
+            fillRectCentred(centreX + halfWidth - t * 0.5f, centreY, t, straight * 2f)
+        }
+
+        // Square corners: the rails already run the full height, so the ring closes with one
+        // full-width cap at each end. Kept as its own path rather than folded into the band loop
+        // because `roundedCornerBands(0)` would still return a band and the arc maths below
+        // degenerates to a zero-height slab — correct, but a whole loop to draw nothing.
+        if (r <= 0f)
+        {
+            fillRectCentred(centreX, centreY - halfHeight + t * 0.5f, width, t)
+            fillRectCentred(centreX, centreY + halfHeight - t * 0.5f, width, t)
+            return
+        }
+
+        val innerHalfWidth = halfWidth - t
+        val innerHalfHeight = halfHeight - t
+        val innerRadius = r - t
+
+        val bands = roundedCornerBands(r)
+        val bandAngle = TAU * 0.25f / bands
+        var nearOver = 0f
+        for (band in 0 until bands)
+        {
+            val farOver = r * sin((band + 1) * bandAngle)
+            val dy = straight + (nearOver + farOver) * 0.5f
+            val bandHeight = farOver - nearOver
+            nearOver = farOver
+
+            val outerHalf = roundedBandHalfWidth(halfWidth, halfHeight, r, dy)
+            // Past the inset shape's own cap there is no inside left at this row, so the ring is
+            // solid across. `roundedBandHalfWidth` clamps `over` to the radius rather than
+            // returning zero, so it cannot express "outside the shape" and this test has to be
+            // made here.
+            val innerHalf =
+                if (dy >= innerHalfHeight) 0f
+                else roundedBandHalfWidth(innerHalfWidth, innerHalfHeight, innerRadius, dy)
+
+            if (innerHalf <= 0f)
+            {
+                fillRectCentred(centreX, centreY - dy, outerHalf * 2f, bandHeight)
+                fillRectCentred(centreX, centreY + dy, outerHalf * 2f, bandHeight)
+            }
+            else
+            {
+                val slab = outerHalf - innerHalf
+                val offset = (outerHalf + innerHalf) * 0.5f
+                fillRectCentred(centreX - offset, centreY - dy, slab, bandHeight)
+                fillRectCentred(centreX + offset, centreY - dy, slab, bandHeight)
+                fillRectCentred(centreX - offset, centreY + dy, slab, bandHeight)
+                fillRectCentred(centreX + offset, centreY + dy, slab, bandHeight)
+            }
         }
     }
 

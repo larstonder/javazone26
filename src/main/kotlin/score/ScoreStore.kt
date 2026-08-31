@@ -78,12 +78,17 @@ interface ScoreStore
  * - `saveObjectAsync`'s completion callback fires ONLY IF the internal `saveObject` call
  *   returned `true` — `.takeIf { it }?.let { onComplete.invoke(data) }` skips it entirely
  *   on failure, and the coroutine still completes normally (no exception escapes;
- *   `saveObject` already caught it). **This is why [saveAsync] below is no longer used
- *   for the live score file** — [ScoreRepository] now saves synchronously via [saveSync]
- *   instead, specifically to get the `Boolean` this callback cannot deliver on failure.
- *   [saveAsync] is kept only for the backup roll, which is deliberately off the
- *   score-loss critical path (see `ScoreRepository.maybeRollBackup`'s doc) and where a
- *   silently-skipped callback costs nothing worse than one missing backup file.
+ *   `saveObject` already caught it). **This is why [saveAsync] below is used by nothing at
+ *   all any more** — [ScoreRepository] saves synchronously via [saveSync] on every path,
+ *   specifically to get the `Boolean` this callback cannot deliver on failure. That was
+ *   true of the live score file first; the BACKUP roll followed it, because
+ *   `ScoreRepository.clearBoard` has to refuse an irreversible wipe when its safety-net
+ *   backup did not land, and a callback that only fires on success cannot tell it so
+ *   (`ScoreRepository.writeBackup`'s doc carries the argument). [saveAsync] is kept on the
+ *   seam rather than deleted only so the evidence above stays attached to the method it
+ *   describes: it is the documented reason this package writes synchronously everywhere,
+ *   and re-deriving that from `DataImpl`'s bytecode a third time would be the real cost.
+ *   **Do not reach for it for a new write path** — it is the defect, not the tool.
  */
 class EngineScoreStore(private val engine: PulseEngine) : ScoreStore
 {

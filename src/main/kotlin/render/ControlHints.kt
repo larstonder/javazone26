@@ -205,10 +205,30 @@ object ControlHints
     fun initialsHelp(arcade: Boolean, startLabel: String): String =
         "${cycle(arcade)} change letter${ScreenText.SEPARATOR}${confirm(arcade, startLabel)} next"
 
+    /**
+     * The in-run legend, top-right for the whole run.
+     *
+     * THE THREE VERBS COME FROM [ScreenText], NOT FROM LITERALS HERE, AND THAT IS THE FIX FOR A
+     * REAL DEFECT (2026-08-31, design doc §3.7). This function used to carry its own `"swim"`,
+     * `"kick"` and `"bleed"`; the pre-run briefing carries `ScreenText.VERB_*` for the same
+     * three controls, and the third pair DISAGREED — the briefing taught `A bleed pearls` and
+     * the legend then said `A bleed` for the rest of the run. Two strings for one control, on
+     * the two screens whose entire job is to say what the controls do.
+     *
+     * Reconciled by DELETING the second copy rather than by editing it to match, because a
+     * second copy is what produced the drift and an edited second copy can drift again. The
+     * surviving wording is the briefing's ("bleed pearls"), for the reason
+     * `ScreenText.VERB_BLEED`'s own comment gives: "bleed" alone is jargon, and the extra word
+     * earns most precisely here, mid-dive, where a player is looking for what the button does.
+     *
+     * Reaching a default-package object from a named package is legal in Kotlin (this file
+     * already did it for [ScreenText.SEPARATOR] on the line below); the JVM restriction that
+     * `MenuLayout`'s doc once cited applies to Java, not to Kotlin's `import`.
+     */
     fun legend(arcade: Boolean, kickLabel: String, bleedLabel: String): String =
-        "${swim(arcade)} swim${ScreenText.SEPARATOR}" +
-        "${kick(arcade, kickLabel)} kick${ScreenText.SEPARATOR}" +
-        "${bleed(arcade, bleedLabel)} bleed"
+        "${swim(arcade)} ${ScreenText.VERB_SWIM}${ScreenText.SEPARATOR}" +
+        "${kick(arcade, kickLabel)} ${ScreenText.VERB_KICK}${ScreenText.SEPARATOR}" +
+        "${bleed(arcade, bleedLabel)} ${ScreenText.VERB_BLEED}"
 
     // --- The pause / cabinet-menu screen. -------------------------------------------------
     //

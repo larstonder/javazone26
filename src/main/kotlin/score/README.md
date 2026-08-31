@@ -34,8 +34,8 @@ promote included.
 | `Leaderboard.kt` | Pure ranking and selection - `rank`, `topN`, `isWorthRecording`. |
 | `InitialsEntry.kt` | The three-letter entry state machine, plus `isValidInitials` and `sanitizeEntries` (the load-time filter, which lives here because it is the same shape rule). |
 | `AtomicFileSwap.kt` | `promoteAtomically(temp, live, onFailure)` - one function, two `Files.move` calls (a primary atomic rename, and a fallback plain replace if the filesystem cannot do it atomically), with a failure channel so a caller can report rather than silently lose a promotion. |
-| `ScoreStore.kt` | The seam: `ScoreStore` (`exists`/`load`/`saveAsync`/`saveSync`/`fileFor`/`listNames`) and `EngineScoreStore`, the only class in this package that touches `engine.data` directly. Its class doc carries the decompiled evidence for every claim this file makes about `DataImpl`'s failure behaviour. |
-| `ScoreRepository.kt` | An engine `Service` that loads (and sweeps stale temp files) on create, saves synchronously on every registration and on destroy, rolls backups asynchronously, and registers the `winner` raffle command. |
+| `ScoreStore.kt` | The seam: `ScoreStore` (`exists`/`load`/`saveSync`/`fileFor`/`listNames`, plus an uncalled `saveAsync` kept for its documentation - see "Backups") and `EngineScoreStore`, the only class in this package that touches `engine.data` directly. Its class doc carries the decompiled evidence for every claim this file makes about `DataImpl`'s failure behaviour. |
+| `ScoreRepository.kt` | An engine `Service` that loads (and sweeps stale temp files) on create, saves synchronously on every registration and on destroy, rolls timestamped backups, clears one seed's board on request (`clearBoard`), and registers the `winner` raffle command. |
 
 ## The write path
 
@@ -81,16 +81,57 @@ from the constant pool - meaning the temp write itself failed) or `SCORE NOT SAV
 package's own report, from `ScoreRepository.onSaveFailure`, meaning either the write or the
 promotion failed). Both fire at `ERROR`, which clears the booth's `logLevel = WARN` gate.
 
-**Backups.** `maybeRollBackup` writes `scoreboard-backup-<epochMs>.json` at most once every
-`BACKUP_INTERVAL_MS` (30 minutes). This is the one write in the package still asynchronous
-(`ScoreStore.saveAsync`) - deliberately: it is off the score-loss critical path, so a
-callback that silently never fires on failure costs at most one missing backup file, never
-a lost score. Each backup is a uniquely named file, never overwritten and never read back
-by the game, so an interrupted backup write can only ever damage that one file - which is
-why it deliberately skips the temp+promote dance. Note that the timer only advances when a
-score is registered: a cabinet nobody plays for an hour writes no backups, and the first
-backup of a session cannot happen until 30 minutes after process start (`lastBackupTimeMs`
-is initialised at construction).
+**Backups.** `writeBackup` writes one `scoreboard-backup-<epochMs>.json`, unconditionally
+and **synchronously**, returning whether it landed. Two callers gate it differently:
+
+- `maybeRollBackup`, on the `registerScore` path, at most once every `BACKUP_INTERVAL_MS`
+  (30 minutes). Off the score-loss critical path, so a failure here is a `WARN`, not an
+  `onSaveFailure` report - diluting the string a technician greps for would be worse than
+  useless.
+- `clearBoard`, before every wipe, with **no gate at all**, and it refuses to delete
+  anything if the write returned `false` (see "Clearing the board" below).
+
+Each backup is a uniquely named file, never overwritten and never read back by the game, so
+an interrupted backup write can only ever damage that one file - which is why it
+deliberately skips the temp+promote dance.
+
+**This paragraph used to say the backup was the one asynchronous write left in the
+package** (`ScoreStore.saveAsync`), justified as costing at most one missing file. That
+stopped being tenable the moment a *destructive* caller needed it: `saveObjectAsync`'s
+completion callback fires only when the write succeeded (verified from `DataImpl`'s
+bytecode - see `ScoreStore.kt`'s class doc), so a failed backup was completely silent, and
+"refuse to wipe if the backup failed" is unimplementable on top of a call that cannot say
+it failed. `saveAsync` now has no caller in this package at all; it is kept on the seam only
+to keep that decompiled evidence attached to the method it describes. The cost of the
+switch on the periodic path is a second synchronous few-KB write, once every 30 minutes, on
+a call stack that is already blocking on a `saveSync` plus a rename - no new class of cost,
+and nowhere near a gameplay frame.
+
+Note that the periodic timer only advances when a score is registered: a cabinet nobody
+plays for an hour writes no backups, and the first periodic backup of a session cannot
+happen until 30 minutes after process start (`lastBackupTimeMs` is initialised at
+construction). **That is exactly why `clearBoard` does not call `maybeRollBackup`** - a
+board wiped twenty minutes into a session would have been backed by nothing whatsoever.
+
+## Clearing the board
+
+`ScoreRepository.clearBoard(seed: Long = todaySeed): Boolean` removes every entry earned
+under one seed and promotes the result through the same synchronous `saveAndPromote` every
+registration uses. It is the engine behind the menu's `DELETE BOARD` row.
+
+- **Only that seed is touched.** Every entry carries the seed it was earned under (see "On-disk
+  format" below), so this filters rather than truncating. A delete performed on day two
+  cannot destroy day one - `clearing one seed leaves another seed's scores untouched`
+  (`ScoreRepositoryTest`) is the assertion that pins it.
+- **A backup is taken first and a failed backup aborts the wipe.** This is the only
+  irreversible operation in the package, and performing it with no safety net is strictly
+  worse than not performing it at all. `clearBoard` returns `false` and reports
+  `BOARD NOT CLEARED` through `onSaveFailure` in that case, with nothing removed.
+- **`rankedCache` is cleared wholesale**, as `registerScore` and `loadInto` already do -
+  otherwise `topN` keeps serving the deleted rows to the attract screen, every frame, for
+  the rest of the session, while the file on disk is already empty.
+- Recovery is the same as for a corrupt file: stop the game and rename the newest
+  `scoreboard-backup-<epochMs>.json` over `scoreboard.json`.
 
 **Where on disk.** `EngineScoreStore.fileFor` (`score/ScoreStore.kt`) is
 `File(engine.config.saveDirectory, name)`. `saveDirectory` defaults to
@@ -275,7 +316,7 @@ which is the safe failure but is also silent. To recover, stop the game, rename 
 | `LeaderboardTest` | Rank order, the earlier-timestamp tie-break, `topN` truncation and the `n <= 0` boundary, and `isWorthRecording` at 0 / positive / negative. |
 | `InitialsEntryTest` | Cycling, A-Z wrap in both directions, edge-triggering (60 held frames cycle once), slot advance, no-op after completion, `reset` clearing prior edge state, plus `isValidInitials` and `sanitizeEntries`. |
 | `AtomicFileSwapTest` | `promoteAtomically` against a **real** temp directory, not a mock - promotion, replacing an existing live file, a missing temp reported as failure with the live file untouched, a 10 KB payload landing whole, and a promotion that cannot happen at all (a non-empty directory where the live file should be) reporting why through `onFailure`. |
-| `ScoreRepositoryTest` | `registerScore` through to the live file (not just the temp file), no temp file left behind after a success, two sequential saves never sharing a temp name, a failed promotion reported through `onSaveFailure` (exactly two messages, pinned), a corrupt `scoreboard.json` starting a fresh board, a stale `.tmp` swept on load, a zero-score run never touching disk, the shutdown save promoting the tail of scores, yesterday's scores staying on disk but off today's filtered board, and - the one that actually matters most - a **real, byte-for-byte engine-written `scoreboard.json`** round-tripping through the store's mapper. |
+| `ScoreRepositoryTest` | `registerScore` through to the live file (not just the temp file), no temp file left behind after a success, two sequential saves never sharing a temp name, a failed promotion reported through `onSaveFailure` (exactly two messages, pinned), a corrupt `scoreboard.json` starting a fresh board, a stale `.tmp` swept on load, a zero-score run never touching disk, the shutdown save promoting the tail of scores, yesterday's scores staying on disk but off today's filtered board, the five `clearBoard` properties (today's rows gone from the live file, **another seed's rows surviving**, a pre-wipe backup holding what was destroyed, a failed backup aborting the wipe entirely, and the ranked cache invalidated), and - the one that actually matters most - a **real, byte-for-byte engine-written `scoreboard.json`** round-tripping through the store's mapper. |
 
 The seam is `ScoreStore` (`score/ScoreStore.kt`): the real one wraps `engine.data`, the
 test's `FakeStore` is a real temp directory with no engine at all, so every write path
