@@ -99,7 +99,7 @@ DiveLighting.render(engine, sim, worldCamera)                             // dra
 // HUD:
 val hud = getSurfaceOrDefault("hud"); val w = hud.config.width; val h = hud.config.height
 val anchor = worldCamera.worldPosToScreenPos(sim.x, sim.depth)   // the ONE hand transform
-when (lifecycle.state) { IDLE -> attract; PLAYING -> Hud.render(...); ... }
+when (lifecycle.state) { MAIN_MENU -> drawMainMenu; IDLE -> attract; PLAYING -> Hud.render(...); ... }
 if (devMode) { renderGamepadOverlay(...); checkCameraInvariants() }
 ```
 
@@ -210,8 +210,11 @@ whole argument and `FramingTest` bounds the cost. It is `max`, not `min` - `min`
 
 | File | Owns |
 |---|---|
-| `../EnPustTil.kt` | The only `PulseEngineGame`. Surfaces, asset queueing, the four callbacks, input reading, the attract / pause / run-over / initials screens. Also `DefaultFont`, `ScreenText`, `AttractLayout`, `PauseLayout` - all pure and unit-tested. |
-| `RunLifecycle.kt` | `IDLE -> PLAYING -> PAUSED / RUN_OVER -> ENTER_INITIALS`. Pure, engine-free, so the booth's whole unattended-recovery behaviour is unit-tested. Does its own previous-frame edge detection, because the engine's `Gamepad` has no `wasClicked`. |
+| `../EnPustTil.kt` | The only `PulseEngineGame`. Surfaces, asset queueing, the four callbacks, input reading, the main menu / attract / pause / run-over / initials screens. Also `DefaultFont`, `ScreenText`, `AttractLayout`, `PauseLayout` - all pure and unit-tested. |
+| `RunLifecycle.kt` | `MAIN_MENU -> BRIEFING -> PLAYING -> PAUSED / RUN_OVER -> ENTER_INITIALS`, plus `IDLE` as the fallback an abandoned menu drops to on `MENU_IDLE_TIMEOUT_SECONDS` (2026-08-31: `MAIN_MENU`, not `IDLE`, is now the boot state). Pure, engine-free, so the booth's whole unattended-recovery behaviour is unit-tested. Does its own previous-frame edge detection, because the engine's `Gamepad` has no `wasClicked`. |
+| `MenuModel.kt` | Pure, edge-triggered navigation for the main menu - `MenuPage` (ROOT/GRAPHICS), a fixed `MenuItemId` row list per page, `MenuAction` as the one thing `update(...)` can return per frame. Same edge-triggering discipline as `RunLifecycle`/`score.InitialsEntry`, for the identical reason. **Not yet wired to real input** - see `EnPustTil`'s `menuModel` field doc. |
+| `MenuLayout.kt` | The main menu's geometry - fractions of screen height, modelled on `AttractLayout`/`PauseLayout`/`BriefingLayout`. `rowY`, inward `labelX`/`valueX` columns (copied from `BriefingLayout`'s shape, not `AttractLayout`'s outward leaderboard columns), the selection-highlight span. |
+| `GraphicsApplier.kt` | The *only* file permitted to write engine graphics state. See §5's traps table for the four GI traps and the vsync trap this class exists to own. |
 | `GamepadScan.kt` | `selectGameplayPad` - gameplay follows the pad whose button started the run, not slot 0. The "any button to start" rule now lives in `LifecycleInputEdges`' class doc. |
 
 ### Camera and framing
@@ -341,6 +344,11 @@ of them by decompiling `pulse-engine-0.13.0.jar` after a bug that produced no me
 | **The GI composite is a MULTIPLY** | Settled - do not reopen it. `GlobalIlluminationSystem.onUpdate` (not `onCreate`) builds a `MultiplyEffect` on `getSurface("main")`. The reflectance floor bites on **our albedo**, which is why an outline drawn as albedo cannot survive the deep. `final.frag:59`'s `base + light` is the *light map assembling itself*, on `gi_light_final`, not the composite. | CLAUDE.md platform constraints (full citation) |
 | **A second writer of `mainCamera`** | The shipped world-offset-from-HUD bug. A scene `Camera` entity rewrites the shared camera every fixed tick from a viewport frozen at `onCreate`. | `MainCameraOwnershipTest` (exact set equality), `CameraInvariants` at runtime |
 | **A pixel count in world code** | Sizes in `render/` are metres; only `CameraRig` turns a metre into a pixel. Screen-space code uses fractions of surface **height**. | `CameraInvariants` rule 3 is the only thing that catches a width-derived scale |
+| **`lightTexScale` is a step function, not a curve (2026-08-30/31)** | The light texture rounds UP to `2^cascadeCount`, and `cascadeCount` derives from the ROUNDED diagonal, so a numerically *smaller* scale can round to a *bigger* texture. This game's own shipped 0.5 was measurably worse than the engine's 0.4 default for exactly this reason. Never choose a value by assuming area scaling - evaluate through `GiSizing`. | `GiSizingTest`, `GraphicsQualityTest`, re-asserted at the menu-reachable layer by `GraphicsApplierTest` |
+| **`traceWorldRays = false` looks like it removes the global scene chain, and does not** | `gi_global_scene`/`gi_global_sdf` and their ~13 jump-flood/SDF passes are created unconditionally in `onCreate`; the flag only gates a shader branch. `globalSceneTexScale` must drop too, or the "saving" costs the same frame as before. | `GraphicsApplier`'s class doc, trap 2 |
+| **Vsync has no engine API and silently turns itself off** | `WindowImpl.createWindow` calls `GLFW.glfwSwapInterval(0)` - the only such call in the jar - and re-runs it on every window recreation, which `Window.updateScreenMode` triggers on any real screen-mode change. Toggling fullscreen from the menu therefore turns vsync back off with no error and no log. | `GraphicsApplier.reassertVsync`, called unconditionally after every `updateScreenMode` in `apply` |
+| **`GiSettings.bloom` cannot currently do anything** | `BloomEffect`'s construction was removed from `DiveLighting.setup` during the 2026-08-30 performance work (measured sub-perceptual), not merely disabled - `bloom = true` has nothing left to re-enable. `GraphicsApplier.apply` only ever *deletes* the effect and logs a warning if a preset asks for it back; it does not reconstruct it. | `GraphicsApplier`'s class doc |
+| **`GiSettings.hudMultisampling` is an `Int`; `createSurface` wants a `Multisampling` enum** | `GraphicsApplier.multisamplingFor` is the verified mapping (`NONE(0)`/`MSAA4(4)`/`MSAA8(8)`/`MSAA16(16)`/`MSAA32(32)`/`MSAA_MAX(-1)`), but nothing calls it yet - the HUD surface is created once in `EnPustTil.onCreate`, before any settings are loaded, and a surface's multisampling can only be chosen at `createSurface` time. | `GraphicsApplierTest`'s multisampling round-trip tests |
 
 ---
 
