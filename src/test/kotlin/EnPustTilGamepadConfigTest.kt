@@ -327,18 +327,44 @@ class EnPustTilGamepadConfigTest
     }
 
     @Test
-    fun `pauseButton on either restart key is NOT reported - the signals are never live at once`()
+    fun `pauseButton on either restart key IS now reported - CRITICAL C2, final review`()
     {
-        // A pause edge is consumed in PLAYING/PAUSED; a restart edge in RUN_OVER/IDLE. Same
-        // disjointness that makes kick-versus-restart safe, so warning here would be the
-        // cried-wolf noise gamepadButtonCollisionWarnings was narrowed to avoid.
-        assertEquals(
-            emptyList(),
-            gamepadButtonCollisionWarnings(
-                GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
-                GamepadButton.START, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
-            )
+        // AMENDMENT (2026-08-31): this test used to be named "...is NOT reported - the
+        // signals are never live at once" and asserted emptyList(). That was true only
+        // while MAIN_MENU read `padBack` from `pauseButtonAlt`; it now reads `pauseButton`
+        // (see `EnPustTil.updateMainMenu`'s own doc), so a `pauseButton`/restart-key
+        // collision means MAIN_MENU reads confirm and back from the SAME physical button in
+        // the SAME state, on the SAME frame - exactly the "live at once" shape this
+        // function's doc says is never safe, and no longer the disjoint-states case this
+        // test's old name claimed. gamepadButtonCollisionWarnings now flags it.
+        val vsRestart = gamepadButtonCollisionWarnings(
+            GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
+            GamepadButton.START, GamepadButton.LEFT_THUMB, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
         )
+        assertEquals(true, vsRestart.any { it.contains("pauseButton") && it.contains("restartButton") && !it.contains("restartButtonAlt") })
+
+        val vsRestartAlt = gamepadButtonCollisionWarnings(
+            GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
+            GamepadButton.Y, GamepadButton.LEFT_THUMB, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(true, vsRestartAlt.any { it.contains("pauseButton") && it.contains("restartButtonAlt") })
+    }
+
+    @Test
+    fun `pauseButtonAlt on either restart key is STILL not reported - the two pause buttons diverged`()
+    {
+        // pauseButtonAlt is no longer read by updateMainMenu at all (only pauseButton is,
+        // since CRITICAL C2) - it is still read while PLAYING/PAUSED, where a restart edge
+        // is genuinely never live, so the original disjoint-states reasoning still holds for
+        // THIS button. This is also exactly the compiled shipped default
+        // (DEFAULT_PAUSE_BUTTON_ALT == DEFAULT_RESTART_BUTTON == START, see the class doc),
+        // which `the compiled defaults produce zero warnings` above already exercises
+        // implicitly - this test isolates the claim on its own rather than relying on that.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.X, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
+            GamepadButton.BACK, GamepadButton.START, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(emptyList(), warnings)
     }
 
     @Test
@@ -486,12 +512,31 @@ class EnPustTilGamepadConfigTest
         // The two checks are independent, and a technician who mis-edited the pause block has
         // plausibly mis-edited both lines of it. Reporting only one would send them back to
         // the cabinet twice - these are read off a booth log, not an interactive prompt.
+        //
+        // restartButtonAlt is Y here, not its old A: with pauseButton = A, A also matching
+        // restartButtonAlt would add a THIRD, unrelated warning from CRITICAL C2's new
+        // pauseButton/restart check (see the test below) - this test is about the kick pair
+        // specifically and must isolate that from a coincidental second collision.
         val warnings = gamepadButtonCollisionWarnings(
-            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.A,
+            GamepadButton.A, GamepadButton.B, GamepadButton.START, GamepadButton.Y,
             GamepadButton.A, GamepadButton.CROSS, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
         )
         assertEquals(2, warnings.size, warnings.toString())
         assertEquals(true, warnings.any { it.contains("pauseButton ") && it.contains("kickButton") })
         assertEquals(true, warnings.any { it.contains("pauseButtonAlt") && it.contains("kickButton") })
+    }
+
+    @Test
+    fun `pauseButton colliding with a restart key AND a gameplay button produces two independent warnings`()
+    {
+        // The two pauseButton checks (restart-key, gameplay-button) are independent of each
+        // other too, mirroring the test above for pauseButton vs pauseButtonAlt.
+        val warnings = gamepadButtonCollisionWarnings(
+            GamepadButton.A, GamepadButton.B, GamepadButton.A, GamepadButton.Y,
+            GamepadButton.A, GamepadButton.LEFT_THUMB, GamepadButton.LEFT_BUMPER, GamepadButton.RIGHT_BUMPER
+        )
+        assertEquals(2, warnings.size, warnings.toString())
+        assertEquals(true, warnings.any { it.contains("pauseButton ") && it.contains("kickButton") })
+        assertEquals(true, warnings.any { it.contains("pauseButton ") && it.contains("restartButton") && !it.contains("restartButtonAlt") })
     }
 }

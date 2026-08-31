@@ -46,8 +46,19 @@ sealed interface MenuAction
  * fields, exactly `InitialsEntry`'s shape) and only acts on a false-to-true transition.
  *
  * Opposing directions (up+down, or left+right) are cancelled to zero BEFORE edge detection,
- * so a stuck contact holding two directions at once can never produce a transition and walk
- * the menu on its own — the same rule `render.PadAxis` applies to steering.
+ * so a stuck contact holding BOTH directions of one axis AT ONCE can never produce a
+ * transition and walk the menu on its own — the same rule `render.PadAxis` applies to
+ * steering.
+ *
+ * WHAT THIS DOES NOT COVER (MINOR fix, final review, 2026-08-30 — this doc used to read as if
+ * it did): a contact that CHATTERS on ONE side alone — rapidly toggling false/true/false/...
+ * with the opposing direction never held — is not cancelled by the paragraph above at all,
+ * because `wasUp`/`wasDown`/`wasLeft`/`wasRight` are assigned the CANCELLED level (`upLevel`
+ * etc., see [update]), and a chatter with nothing on the opposing side leaves that level
+ * exactly as noisy as the raw input. Each low-to-high toggle is then a genuine transition and
+ * steps the selection once per chatter cycle — a lesser, accepted risk (one row per contact
+ * bounce, not the whole list in one frame the LEVEL-vs-EDGE fix above prevents), not a second
+ * guarantee this class does not actually provide.
  */
 class MenuModel
 {
@@ -86,6 +97,37 @@ class MenuModel
         wasRight = false
         wasConfirm = false
         wasBack = false
+    }
+
+    /**
+     * Seeds the `was*` edge-tracking fields directly from [up]/[down]/[left]/[right]/[confirm]/
+     * [back], WITHOUT touching [page] or [selectedIndex]. Call this on the exact frame [reset]
+     * (or the menu's own entry) happens WHILE a control is already held — most importantly the
+     * very press that OPENED the menu, still physically down one frame later (a human press is
+     * 5-10 frames).
+     *
+     * CRITICAL C1 (final review, 2026-08-30): [reset] alone zeroes every `was*` field to
+     * `false`, so on the very next [update] call a still-held CONFIRM reads as a false-to-true
+     * EDGE — the same button that opened the menu re-fires as if freshly pressed, immediately
+     * confirming row 0 (START DIVE) and dropping the player straight into a dive one frame
+     * after the menu appeared. `EnPustTil` calls [reset] to put the menu back at ROOT/row 0 as
+     * before, then calls this to overwrite what [reset] just zeroed with the ACTUAL levels this
+     * frame — so a continued hold reads as still-held (no edge) rather than freshly-pressed.
+     *
+     * Cancels opposing directions exactly like [update] does, for the identical reason: a stuck
+     * contact holding both up and down (or left and right) at the moment of entry must not be
+     * primed as "was pressed" on one side and produce a spurious edge on release of the other.
+     */
+    fun prime(up: Boolean, down: Boolean, left: Boolean, right: Boolean, confirm: Boolean, back: Boolean)
+    {
+        val cancelVertical = up && down
+        val cancelHorizontal = left && right
+        wasUp = up && !cancelVertical
+        wasDown = down && !cancelVertical
+        wasLeft = left && !cancelHorizontal
+        wasRight = right && !cancelHorizontal
+        wasConfirm = confirm
+        wasBack = back
     }
 
     /**
@@ -135,24 +177,17 @@ class MenuModel
             return MenuAction.None
         }
 
-        if (backEdge)
-        {
-            return if (page == MenuPage.GRAPHICS)
-            {
-                page = MenuPage.ROOT
-                selectedIndex = 0
-                MenuAction.Back
-            }
-            else
-            {
-                // Back on ROOT must never crash or quit — a player pressing B at the top
-                // level is a no-op, not an accidental exit.
-                MenuAction.None
-            }
-        }
-
         val current = items[selectedIndex]
 
+        // CONFIRM CHECKED BEFORE BACK — belt-and-braces for CRITICAL C2 (final review,
+        // 2026-08-30). `EnPustTil.updateMainMenu` now sources `back` from `pauseButton`,
+        // which collides with nothing by default, so the two should never both read true on
+        // the same frame in practice. But a technician's config CAN still make them collide
+        // (`pauseButton` set to the same button as `restartButton`/`restartButtonAlt`), and
+        // when they do, this order is what decides who wins. Checking confirm first means
+        // START still works even under a misconfigured collision — the ordering CRITICAL C2
+        // actually hit (back silently winning, so START/Options did nothing on ROOT) can no
+        // longer recur even if the specific button collision that caused it does.
         if (confirmEdge)
         {
             return when (current)
@@ -173,6 +208,22 @@ class MenuModel
                     MenuAction.Back
                 }
                 else -> MenuAction.None
+            }
+        }
+
+        if (backEdge)
+        {
+            return if (page == MenuPage.GRAPHICS)
+            {
+                page = MenuPage.ROOT
+                selectedIndex = 0
+                MenuAction.Back
+            }
+            else
+            {
+                // Back on ROOT must never crash or quit — a player pressing B at the top
+                // level is a no-op, not an accidental exit.
+                MenuAction.None
             }
         }
 

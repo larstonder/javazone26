@@ -125,15 +125,43 @@ class RunLifecycleTest
     }
 
     @Test
-    fun `the four booth timeout constants hold their values`() {
+    fun `the five booth timeout constants hold their values`() {
         // Pinned so a later "let's round these" edit reddens the build instead of silently
-        // changing how long an unattended cabinet waits before recovering. These four are
+        // changing how long an unattended cabinet waits before recovering. The first four are
         // exactly the ones task-4-ruling.md called booth-hardening and off-limits for this
-        // task: the three idle timeouts, plus the exit hold.
+        // task: the three idle timeouts, plus the exit hold. MENU_IDLE_TIMEOUT_SECONDS joins
+        // them here (Finding I4's cheap ask, final review) - it was pinned nowhere before,
+        // despite sitting beside the other four in this same companion object.
         assertEquals(17.5f, RunLifecycle.IDLE_TIMEOUT_SECONDS)
         assertEquals(20f, RunLifecycle.PAUSE_IDLE_TIMEOUT_SECONDS)
         assertEquals(15f, RunLifecycle.INITIALS_IDLE_TIMEOUT_SECONDS)
         assertEquals(1.5f, RunLifecycle.EXIT_HOLD_SECONDS)
+        assertEquals(45f, RunLifecycle.MENU_IDLE_TIMEOUT_SECONDS)
+    }
+
+    @Test
+    fun `menu input resets the idle timeout, so browsing does not get yanked away`() {
+        // Finding I4 (final review): the timeout must measure INACTIVITY, not time since the
+        // menu was entered. Holding/repeating a menu input well past
+        // MENU_IDLE_TIMEOUT_SECONDS must never fall back while input keeps arriving — exactly
+        // the "halfway through choosing a resolution" scenario MENU_IDLE_TIMEOUT_SECONDS' own
+        // KDoc has always described, which the state-entry version never actually guarded
+        // against (it fired 45s after ENTRY regardless of activity).
+        val lc = newLifecycle()
+        repeat(3) {
+            lc.update(dt = RunLifecycle.MENU_IDLE_TIMEOUT_SECONDS - 0.1f, anyInputPressed = false,
+                runOver = false, menuInputActive = true)
+            assertEquals(RunLifecycleState.MAIN_MENU, lc.state,
+                "held/repeated menu input must reset the clock every frame it arrives")
+        }
+
+        // Now genuinely stop touching anything - the clock must start counting from zero, not
+        // from wherever it happened to be when input stopped.
+        lc.update(dt = RunLifecycle.MENU_IDLE_TIMEOUT_SECONDS - 0.1f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state, "must not fall back before a fresh timeout elapses")
+
+        lc.update(dt = 0.2f, anyInputPressed = false, runOver = false)
+        assertEquals(RunLifecycleState.IDLE, lc.state, "must fall back once input genuinely stops")
     }
 
     @Test
@@ -402,6 +430,20 @@ class RunLifecycleTest
     }
 
     @Test
+    fun `MAIN_MENU freezes the simulation but keeps the diver kicking`() {
+        // MINOR fix (final review, 2026-08-30): simulationAdvances' and spriteAnimates' MAIN_MENU
+        // branches were unreached by any test - an exhaustive `when` with no `else` still lets a
+        // wrong PER-BRANCH answer compile (a `MAIN_MENU -> true` typo in simulationAdvances would
+        // burn the diver's air on the boot screen, compile cleanly, and ship green). A fresh
+        // RunLifecycle boots straight into MAIN_MENU (see `the game boots into the main menu...`
+        // above), so no transition is needed to reach it.
+        val lc = newLifecycle()
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
+        assertFalse(lc.simulationAdvances, "a menu that ticked DiveSim would burn air behind the boot screen")
+        assertTrue(lc.spriteAnimates, "a frozen diver behind the menu reads as a crashed game")
+    }
+
+    @Test
     fun `the sprite keeps animating in IDLE even though the simulation does not`() {
         // spriteAnimates is deliberately NOT the same property as simulationAdvances: DiveSim
         // must stay frozen on an unattended cabinet (it would burn air and "drown" the
@@ -581,14 +623,29 @@ class RunLifecycleTest
         // input entirely...` above), so nothing about edge-vs-level was actually being
         // exercised. The property genuinely at risk is a SECOND pulse, after a full run
         // and past the dwell, still working — the pulse equivalent of `releasing and
-        // pressing again after the dwell restarts exactly once`, which used a held-then-
-        // released LEVEL shape EnPustTil no longer produces. This fails if
+        // pressing again after the dwell restarts exactly once`. This fails if
         // `wasInputPressed` is ever left latched true across a PLAYING -> RUN_OVER
-        // transition. RUN_OVER's own restart-on-press is unaffected by the MAIN_MENU work
-        // (it still reads `anyInputPressed` directly, not `menuAction`), so `enterRunOver`'s
-        // menuAction-based entry into the first run does not change what this test exercises.
+        // transition.
+        //
+        // FINDING I5 (final review, 2026-08-30): a version of this test that called the
+        // shared `enterRunOver(lc)` helper drove MAIN_MENU -> PLAYING -> RUN_OVER with
+        // `anyInputPressed = false` throughout (see that helper's own doc), which left
+        // `wasInputPressed` false all the way to RUN_OVER — so the "second" pulse below
+        // was actually the FIRST time `anyInputPressed` ever read true in the whole test,
+        // and the latching property this test exists for was never exercised. (A comment
+        // claiming the entry change "does not change what this test exercises" was added
+        // alongside that version and was wrong — it does, and this rewrite is the fix.)
+        // This test therefore drives its own sequence rather than calling `enterRunOver`,
+        // inserting the FIRST one-frame pulse — a genuine press-then-release — while still
+        // PLAYING, which ignores it entirely but must still latch `wasInputPressed`
+        // through the release exactly as a real single tap would.
         val lc = newLifecycle()
-        enterRunOver(lc) // MAIN_MENU -> PLAYING -> RUN_OVER, input released throughout
+        lc.update(dt = 0f, anyInputPressed = false, runOver = false, menuAction = true)  // MAIN_MENU -> PLAYING
+        assertEquals(RunLifecycleState.PLAYING, lc.state)
+
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)   // FIRST 1-frame pulse (PLAYING ignores it)
+        lc.update(dt = 0f, anyInputPressed = false, runOver = true)   // released; sim reports over -> RUN_OVER
+        assertEquals(RunLifecycleState.RUN_OVER, lc.state)
 
         lc.update(dt = DWELL, anyInputPressed = false, runOver = true) // clear the dwell, still no input
         assertEquals(RunLifecycleState.RUN_OVER, lc.state)
@@ -708,6 +765,43 @@ class RunLifecycleTest
         assertTrue(lc.justReturnedToIdle, "reuses enter(IDLE)'s existing signal - EnPustTil rebuilds " +
             "DiveSim/snaps the camera/restarts the diver's loop on this flag exactly as it does for " +
             "the menu's own idle-timeout fallback")
+    }
+
+    @Test
+    fun `the leaderboard row survives the real production frame order`()
+    {
+        // CRITICAL C3 (final review, 2026-08-30). The test above
+        // (`the leaderboard row leaves the menu for the attract screen`) calls
+        // viewLeaderboard() in isolation and never issues the same-frame
+        // lifecycle.update(anyInputPressed = true, ...) production actually makes right
+        // alongside it — which is exactly why it stayed green through the whole incident.
+        // `updateMainMenu` used to apply MenuAction.ShowLeaderboard (viewLeaderboard())
+        // BEFORE this frame's own lifecycle.update call, and that update call's
+        // anyInputPressed IS the same confirm press that produced ShowLeaderboard. IDLE's
+        // own branch reacts to anyInputPressed and re-enters MAIN_MENU immediately - the
+        // leaderboard bounced back the instant it opened.
+        //
+        // This test drives the REAL (fixed) order: this frame's own lifecycle.update runs
+        // FIRST, while state is STILL MAIN_MENU (so it ignores anyInputPressed entirely -
+        // see that branch's own comment), and viewLeaderboard() is applied SECOND - exactly
+        // as EnPustTil.applyMenuAction now runs after lifecycle.update, not before.
+        val lc = newLifecycle()
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state)
+
+        // This frame's own tick, run WHILE STILL IN MAIN_MENU - the confirm press that will
+        // produce ShowLeaderboard is anyInputPressed here too, exactly as `actionPressed` is
+        // threaded through both lifecycle.update parameters in production.
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false, confirmPressed = true)
+        assertEquals(RunLifecycleState.MAIN_MENU, lc.state, "MAIN_MENU must not react to anyInputPressed directly")
+
+        // NOW apply the deferred menu action.
+        lc.viewLeaderboard()
+        assertEquals(RunLifecycleState.IDLE, lc.state, "the leaderboard must actually open")
+
+        // And the bounce this fixes: a LATER tick with the SAME press still/again held must
+        // not immediately re-enter MAIN_MENU either - it needs a genuinely fresh edge.
+        lc.update(dt = 0f, anyInputPressed = true, runOver = false)
+        assertEquals(RunLifecycleState.IDLE, lc.state, "the same held press must not immediately bounce back")
     }
 
     @Test

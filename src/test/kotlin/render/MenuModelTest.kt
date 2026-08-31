@@ -140,6 +140,55 @@ class MenuModelTest
         assertEquals(start, menu.selectedIndex)
     }
 
+    // --- CRITICAL C1: priming on entry so an already-held button is not a fresh edge -------
+
+    @Test
+    fun `a level already held when the menu opens must NOT produce an edge`() {
+        // CRITICAL C1 (final review, 2026-08-30): reset() alone zeroes every was* field, so
+        // the very press that OPENED the menu — still physically down one frame later, since
+        // a human press is 5-10 frames — would read as a false-to-true CONFIRM edge on the
+        // very next update() and immediately confirm row 0 (START DIVE), dropping the player
+        // straight into a dive the instant the menu appears. prime() is EnPustTil's fix:
+        // seed was* from the actual levels this frame instead of leaving reset()'s zeroes.
+        menu.reset()
+        menu.prime(up = false, down = false, left = false, right = false, confirm = true, back = false)
+
+        val action = menu.update(up = false, down = false, left = false, right = false, confirm = true, back = false)
+        assertIs<MenuAction.None>(action, "a level primed as already-held must not fire as a fresh edge")
+
+        // And releasing, then pressing again, must still work normally afterwards - priming
+        // must not permanently disable confirm.
+        release()
+        assertIs<MenuAction.StartDive>(press(confirm = true))
+    }
+
+    @Test
+    fun `prime does not touch the page or selected row`() {
+        // prime() is deliberately narrower than reset(): EnPustTil calls reset() first (to
+        // land back on ROOT/row 0) and prime() second (to fix up was*) - prime() reaching
+        // into page/selectedIndex too would make that second call redundant with the first
+        // in a way that invites deleting one of them later.
+        while (menu.selectedItem() != MenuItemId.GRAPHICS) { press(down = true); release() }
+        val indexBefore = menu.selectedIndex
+        val pageBefore = menu.page
+        menu.prime(up = true, down = false, left = false, right = false, confirm = false, back = false)
+        assertEquals(pageBefore, menu.page)
+        assertEquals(indexBefore, menu.selectedIndex)
+    }
+
+    // --- CRITICAL C2: confirm wins the tie-break if confirm and back ever collide ----------
+
+    @Test
+    fun `confirm wins if confirm and back are somehow both held at once`() {
+        // Belt-and-braces for a misconfigured pauseButton/restartButton collision (see
+        // EnPustTil's gamepadButtonCollisionWarnings) - even if that collision recurs, START
+        // must still work rather than BACK silently winning, which was the whole shape of
+        // CRITICAL C2 (Options doing nothing on the root menu).
+        while (menu.selectedItem() != MenuItemId.START_DIVE) { press(down = true); release() }
+        val action = press(confirm = true, back = true)
+        assertIs<MenuAction.StartDive>(action, "confirm must win a same-frame collision with back")
+    }
+
     @Test
     fun `every item id is reachable from the root by navigation alone`() {
         // Guards against an item declared but never listed on a page - it would be dead code

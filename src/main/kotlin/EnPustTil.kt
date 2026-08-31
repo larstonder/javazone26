@@ -404,10 +404,12 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
 
 /**
  * Warnings for configured-button collisions that are ALWAYS a mistake, regardless of
- * `RunLifecycle`'s state. Three kinds: `kickButton == bleedButton`,
- * `exitButtonA == exitButtonB`, and EITHER pause key (`pauseButton`, `pauseButtonAlt`)
- * landing on either gameplay button — all compared by [GamepadButton.code]. One warning
- * string per problem, ready to log; empty when nothing collides.
+ * `RunLifecycle`'s state. Four kinds: `kickButton == bleedButton`,
+ * `exitButtonA == exitButtonB`, EITHER pause key (`pauseButton`, `pauseButtonAlt`)
+ * landing on either gameplay button, and `pauseButton` landing on either restart button
+ * (CRITICAL C2, final review, 2026-08-30 — see the paragraph below) — all compared by
+ * [GamepadButton.code]. One warning string per problem, ready to log; empty when nothing
+ * collides.
  *
  * WHY ONLY THIS ONE PAIR, when application.cfg configures four buttons and there are six
  * possible pairs among them. This function used to warn on ALL SIX — "any two of the four
@@ -442,10 +444,10 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
  * they are not interchangeable. Colliding them is never safe and is exactly the plausible
  * booth copy-paste (four adjacent lines, one mis-edited) this function exists to catch.
  *
- * THE TWO CHECKS ADDED WITH THE PAD'S PAUSE AND EXIT (2026-08-30), and deliberately only
- * these two — the paragraphs above are the standing argument for why a false alarm on the
- * booth status line is worse than no alarm, and the pad keys open six more pairs that are
- * all harmless:
+ * THE CHECKS ADDED WITH THE PAD'S PAUSE AND EXIT (2026-08-30, plus two more for CRITICAL C2
+ * on 2026-08-31) — the paragraphs above are the standing argument for why a false alarm on
+ * the booth status line is worse than no alarm, and the pad keys open several more pairs
+ * that are all harmless:
  *  - `exitButtonA == exitButtonB` is the one collision that silently REMOVES a protection.
  *    The exit hold is an AND across two buttons on one pad specifically so a single stuck
  *    contact cannot shut the cabinet down for the day (see the exit-hold comment in
@@ -460,18 +462,30 @@ fun gamepadButtonConfigWarning(key: String, rawString: String?, rawInt: Int?, ra
  * for that same reason: the two pause keys are read on identical states, so which of them is
  * pointed at kick makes no difference to the defect.
  *
- * `pauseButton`/`pauseButtonAlt` colliding with `restartButton`/`restartButtonAlt` is NOT
- * checked, and for `pauseButtonAlt` THE COLLISION IS THE SHIPPED DEFAULT rather than merely a
- * tolerated one: `DEFAULT_PAUSE_BUTTON_ALT` and `DEFAULT_RESTART_BUTTON` are BOTH `START`, on
- * purpose — Options on a console pad is both "start a run" from attract and "pause" mid-run,
- * which is what every console game does and what the owner asked for. A check here would fire
- * a WARNING ON EVERY UNTOUCHED BOOT for the shipped design, exactly like the
- * `kickButton == restartButtonAlt` false alarm that narrowed this function in the first place.
- * It is safe for the general reason too: a restart edge and a pause edge are consumed in
- * disjoint states (`RUN_OVER`/`IDLE` versus `PLAYING`/`PAUSED`), the same disjointness that
- * makes kick-versus-restart safe above — and where they ARE raised in the same frame (`IDLE`),
- * `RunLifecycle.update` checks `pressedEdge` first and deliberately lets the start win. See
- * the trace beside the `pauseEdges.offer` calls in `updateGame`.
+ * `pauseButtonAlt` colliding with `restartButton`/`restartButtonAlt` is NOT checked, and THE
+ * COLLISION IS THE SHIPPED DEFAULT rather than merely a tolerated one: `DEFAULT_PAUSE_BUTTON_ALT`
+ * and `DEFAULT_RESTART_BUTTON` are BOTH `START`, on purpose — Options on a console pad is both
+ * "start a run" from attract and "pause" mid-run, which is what every console game does and
+ * what the owner asked for. A check here would fire a WARNING ON EVERY UNTOUCHED BOOT for the
+ * shipped design, exactly like the `kickButton == restartButtonAlt` false alarm that narrowed
+ * this function in the first place. It is safe for the general reason too: a restart edge and
+ * a pause edge are consumed in disjoint states (`RUN_OVER`/`IDLE` versus `PLAYING`/`PAUSED`),
+ * the same disjointness that makes kick-versus-restart safe above — and where they ARE raised
+ * in the same frame (`IDLE`), `RunLifecycle.update` checks `pressedEdge` first and deliberately
+ * lets the start win. See the trace beside the `pauseEdges.offer` calls in `updateGame`.
+ *
+ * `pauseButton` colliding with `restartButton`/`restartButtonAlt` USED TO be argued safe by
+ * that identical disjointness — this paragraph said so until CRITICAL C2 (final review,
+ * 2026-08-30/31) falsified it. `updateMainMenu` now reads `padBack` from `pauseButton` (see
+ * that function's own doc for why: `pauseButtonAlt`, the previous source, collided with
+ * `restartButton` by shipped default, and MAIN_MENU reads confirm and back in the SAME state
+ * on the SAME frame), so `pauseButton` and `restartButton`/`restartButtonAlt` are now exactly
+ * as "live at the same time" as `pauseButton` versus `kickButton`/`bleedButton` two paragraphs
+ * up — the disjoint-states escape does not apply, and this function checks the pair below.
+ * `MenuModel.update` checking confirm before back is the belt to this function's braces: a
+ * technician collision here degrades to "BACK is inert on GRAPHICS" rather than reproducing
+ * CRITICAL C2's "START does nothing at all."
+ *
  * `exitButtonA`/`exitButtonB` colliding with anything OTHER than each other is not checked
  * either: exit is read only while `PAUSED`, which no other button in this map can reach,
  * and it needs both of them held for [render.RunLifecycle.EXIT_HOLD_SECONDS] regardless.
@@ -532,6 +546,25 @@ fun gamepadButtonCollisionWarnings(
 
     if (pauseButtonAlt.code == bleedButton.code)
         warnings.add("application.cfg: pauseButtonAlt and bleedButton both resolve to the same physical button ($pauseButtonAlt, code ${pauseButtonAlt.code}) - a player's bleed would open the pause screen mid-run. Check for a copy-paste.")
+
+    // pauseButton vs restartButton/restartButtonAlt — ADDED for CRITICAL C2 (final review,
+    // 2026-08-30), and this pair is NEW, not a widening of the pauseButtonAlt paragraph above.
+    // The class doc's "disjoint states" argument for why pauseButtonAlt colliding with
+    // restartButton is safe (`pauseButtonAlt`/`restartButton` both defaulting to START,
+    // deliberately) stopped covering `pauseButton` the moment MAIN_MENU started reading
+    // `updateMainMenu`'s `padBack` from `pauseButton` instead of `pauseButtonAlt` — see that
+    // function's own doc. MAIN_MENU reads padConfirm (restartButton/restartButtonAlt) and
+    // padBack (pauseButton) in the SAME state, on the SAME frame, which is exactly the
+    // "kick/bleed on the same state" shape this function already treats as never safe, not the
+    // "disjoint states" shape restart/pauseButtonAlt gets a pass for. MenuModel.update now
+    // checks confirm before back (belt-and-braces), so a technician collision here would leave
+    // BACK silently inert on the GRAPHICS page rather than reproducing CRITICAL C2 exactly —
+    // still worth a WARN, since a menu row that never returns to ROOT is still a real defect.
+    if (pauseButton.code == restartButton.code)
+        warnings.add("application.cfg: pauseButton and restartButton both resolve to the same physical button ($pauseButton, code ${pauseButton.code}) - the main menu reads both confirm and back from the same frame, and MenuModel deliberately lets confirm win, so BACK would never fire on the GRAPHICS page. Check for a copy-paste.")
+
+    if (pauseButton.code == restartButtonAlt.code)
+        warnings.add("application.cfg: pauseButton and restartButtonAlt both resolve to the same physical button ($pauseButton, code ${pauseButton.code}) - the main menu reads both confirm and back from the same frame, and MenuModel deliberately lets confirm win, so BACK would never fire on the GRAPHICS page. Check for a copy-paste.")
 
     return warnings
 }
@@ -1414,13 +1447,17 @@ class EnPustTil : PulseEngineGame()
      * "PRESS <button>  ·  <button> to go back" — the main menu's confirm/back legend.
      * Deliberately built from [hintPressStart] and [hintMenuResume] rather than composed from
      * fresh [ControlHints] calls: both are already the correct button for this job (confirm is
-     * the same restart/confirm button every other screen calls "PRESS <button>"; back is the
-     * same pauseButtonAlt "<button> to go back" the cabinet-menu pause screen already prints),
-     * and concatenating two already-drawable, already-swept strings with [ScreenText.SEPARATOR]
-     * introduces no character `ControlHints.all()`/`AttractScreenTest` have not already checked.
-     * Rebuilt alongside the other seven in [rebuildControlHints], for the same reason: the
-     * button map is fixed once config is read, so only a device/family change ever invalidates
-     * it, never a per-frame recomposition.
+     * the same restart/confirm button every other screen calls "PRESS <button>"; back is
+     * [pauseButton]'s "<button> to go back", which [updateMainMenu] itself now reads — see
+     * CRITICAL C2, final review, 2026-08-30, and [pauseButton]'s own doc in [rebuildControlHints]
+     * for why this changed from `pauseButtonAlt`: the legend used to advertise a button that
+     * collided with confirm and lost to it, i.e. it printed "PRESS OPTIONS . OPTIONS to go
+     * back" while Options did nothing at all on the root menu), and concatenating two
+     * already-drawable, already-swept strings with [ScreenText.SEPARATOR] introduces no
+     * character `ControlHints.all()`/`AttractScreenTest` have not already checked. Rebuilt
+     * alongside the other seven in [rebuildControlHints], for the same reason: the button map
+     * is fixed once config is read, so only a device/family change ever invalidates it, never a
+     * per-frame recomposition.
      */
     private var hintMenuLegend: String = ""
 
@@ -1453,6 +1490,25 @@ class EnPustTil : PulseEngineGame()
      * needs it.
      */
     private var wasInMainMenu = false
+
+    /**
+     * Whether ANY of [updateMainMenu]'s six raw input levels (up/down/left/right/confirm/back)
+     * read true the LAST time it ran — set at the top of that function, before any early
+     * return, so a frame that produced [MenuAction.None] still reports whether a direction was
+     * merely held. Read immediately afterward by `updateGame` and folded into
+     * `lifecycle.update`'s `menuInputActive` parameter (Finding I4, final review, 2026-08-30),
+     * which resets MAIN_MENU's inactivity timeout on it — the spec's own trigger is "no input
+     * for MENU_IDLE_TIMEOUT_SECONDS", not "no input since the menu was entered".
+     *
+     * A field rather than a second return value: [updateMainMenu] already returns the frame's
+     * [MenuAction], and threading a second value out through every call site (including the
+     * `if (inMainMenuNow) ... else MenuAction.None` branch that never calls it at all) would
+     * complicate the one thing that actually needs both — this flag is only ever read guarded
+     * by the SAME `inMainMenuNow` that decides whether the function ran this frame, at the
+     * `lifecycle.update` call site immediately below, so a stale value from several frames ago
+     * (from the menu's last visit) is provably never read.
+     */
+    private var menuInputActiveThisFrame = false
 
     /**
      * The player's graphics/window settings (see [settings.GameSettings]). Defaulted here so
@@ -2044,7 +2100,14 @@ class EnPustTil : PulseEngineGame()
         // `ClassCastException` taking the whole boot down.
         graphicsApplier = GraphicsApplier(engine)
         graphicsApplier.apply(gameSettings, DiveLighting.giSystem())
-        (engine.window as? ResizableWindow)?.requestSize(gameSettings.windowWidth, gameSettings.windowHeight)
+        // GUARDED ON !fullscreen: a fullscreen window has no meaningful "size" to request —
+        // ScreenMode.FULLSCREEN takes the display's native resolution regardless of what is
+        // asked for here (see application.cfg's own doc), so issuing this against a fullscreen
+        // boot is a request the window can never honour. It is also the request I2 found
+        // clobbering RESOLUTION's own choice on a fullscreen-then-windowed toggle from the
+        // menu — same guard, same reasoning, see updateMainMenu's SettingChanged handling.
+        if (!gameSettings.fullscreen)
+            (engine.window as? ResizableWindow)?.requestSize(gameSettings.windowWidth, gameSettings.windowHeight)
         // gameSettings has held the LOADED value (not the compiled DEFAULT the first
         // rebuildMenuValueHints call a few dozen lines above ran against — see that call's
         // own comment) since the load a few dozen lines up; rebuild now so the GRAPHICS
@@ -2485,12 +2548,16 @@ class EnPustTil : PulseEngineGame()
         // is most of the game's runtime; updateMainMenu itself does not re-check the state.
         val inMainMenuNow = lifecycle.state == RunLifecycleState.MAIN_MENU
         // FRESHLY (RE)ENTERED, NOT MERELY OPEN — see wasInMainMenu's own doc for the stale-
-        // selection bug this prevents. Checked BEFORE updateMainMenu runs, so the very first
-        // frame back on MAIN_MENU already reads a clean ROOT/row-0 model rather than resetting
-        // one frame late.
-        if (inMainMenuNow && !wasInMainMenu) menuModel.reset()
+        // selection bug this prevents. Computed BEFORE updateMainMenu runs and handed to it
+        // (rather than resetting menuModel here directly, as this used to), because CRITICAL
+        // C1 (final review, 2026-08-30) needs the ENTRY frame's own just-read levels to prime
+        // menuModel's edge state — reset() alone zeroes it, which let the very press that
+        // opened the menu re-fire as a fresh CONFIRM edge one frame later. See
+        // updateMainMenu's own doc and MenuModel.prime.
+        val justEnteredMainMenu = inMainMenuNow && !wasInMainMenu
         wasInMainMenu = inMainMenuNow
-        val menuStartDive = if (inMainMenuNow) updateMainMenu() else false
+        val menuAction: MenuAction = if (inMainMenuNow) updateMainMenu(justEnteredMainMenu) else MenuAction.None
+        val menuStartDive = menuAction is MenuAction.StartDive
 
         lifecycle.update(
             dt = engine.data.deltaTime,
@@ -2502,8 +2569,23 @@ class EnPustTil : PulseEngineGame()
             confirmPressed = actionPressed,
             pausePressed = pausePressed,
             exitHeld = exitHeld,
-            menuAction = menuStartDive
+            menuAction = menuStartDive,
+            menuInputActive = inMainMenuNow && menuInputActiveThisFrame
         )
+
+        // CRITICAL C3 (final review, 2026-08-30): everything the menu produced EXCEPT
+        // StartDive (already folded into menuStartDive above, which lifecycle.update itself
+        // consumes) is applied ONLY NOW, after lifecycle.update has run — see
+        // applyMenuAction's own doc for the same-frame bounce this fixes: MenuAction
+        // .ShowLeaderboard used to be applied (calling lifecycle.viewLeaderboard(), entering
+        // IDLE) BEFORE this same frame's lifecycle.update call, and that call's
+        // anyInputPressed is the SAME confirm press that produced ShowLeaderboard in the
+        // first place — so IDLE's own `if (pressedEdge) enter(MAIN_MENU)` fired in the same
+        // frame and bounced straight back. MAIN_MENU's branch deliberately never reads
+        // anyInputPressed (only menuActionEdge), which is what makes deferring safe: nothing
+        // about applying SettingChanged/Back/Quit/ShowLeaderboard depends on running before
+        // lifecycle.update, and ShowLeaderboard specifically needs to run after it.
+        if (inMainMenuNow) applyMenuAction(menuAction)
 
         // The deliberate way out of the cabinet, replacing the accidental one that the
         // ALT+ENTER fullscreen binding used to be (see src/main/resources/init.pes).
@@ -2989,9 +3071,20 @@ class EnPustTil : PulseEngineGame()
      * [render.fillRect] — never `drawQuad`, which renders nothing on macOS and, more to the
      * point, still renders nothing in the shipped Windows `.exe` (see `render/Draw.kt`).
      *
-     * NO PER-FRAME ALLOCATION beyond what [drawTextWithOutline] itself already accepts (HUD text
-     * is the one documented exemption): the row list, the label for a row and its value string
-     * are all either a fixed constant or a cached field, never composed here.
+     * The row list, the label for a row and its value string are all either a fixed constant or
+     * a cached field, never composed here — but this method is NOT allocation-free overall.
+     * [PanelLayout.bounds] returns a `data class Bounds`, one heap allocation every frame this
+     * screen is open (MINOR fix, final review, 2026-08-30: this KDoc used to claim "NO PER-FRAME
+     * ALLOCATION beyond what drawTextWithOutline itself already accepts", which was wrong — it
+     * predates [PanelLayout.bounds] landing here). The same is true of every sibling screen that
+     * calls `PanelLayout.bounds` (pause, briefing, run-over, initials entry, the attract screen's
+     * leaderboard panel — six call sites in total). Left as a genuine, small, HUD-only allocation
+     * rather than reworked into a preallocated mutable `Bounds` for this pass: these are UI
+     * screens the player is looking at, not the 60Hz simulation/render hot path CLAUDE.md's
+     * no-per-frame-allocation rule was written to protect (`dive/`'s tick and `DiveRenderer`'s
+     * per-object draw calls), and one small immutable data class per frame on a handful of
+     * screens is not the allocation profile that rule exists to catch. [Hud]'s own FPS-readout
+     * string cache, by contrast, IS correctly allocation-free and needs no change.
      */
     private fun drawMainMenu(hud: Surface, w: Float, h: Float)
     {
@@ -3352,9 +3445,31 @@ class EnPustTil : PulseEngineGame()
         // Composites ON TOP of the full-screen scrim just drawn, at PanelLayout.ALPHA (0.45),
         // rather than replacing it: the scrim is what tells a player "the machine is waiting
         // for me, not stopped" (see PauseLayout.SCRIM_ALPHA's doc), and that signal has to
-        // survive across the WHOLE screen, panel included. Composed alpha over the panel's own
-        // small area: 1 - (1 - 0.72) * (1 - 0.45) = 0.846 — dark but short of opaque, and
-        // reported in panel-report.md per the task brief's explicit request for this figure.
+        // survive across the WHOLE screen, panel included.
+        //
+        // COMPOSED ALPHA OVER THE PANEL'S OWN SMALL AREA — CORRECTED 2026-08-31 (Finding I8,
+        // final review). `1 - (1 - 0.72) * (1 - 0.45) = 0.846` is standard source-over
+        // compositing on DISPLAYED alphas, and is the WRONG model for this surface: the HUD
+        // surface SQUARES alpha (see Hud.authoredAlphaFor's doc — measured, `Color(1,1,1,0.15f)`
+        // onto a blank surface stored alpha 0.15^2, not 0.15), which is exactly why both this
+        // scrim and the panel are drawn through `authoredAlphaFor` rather than their raw
+        // figures. Both layers therefore write `sqrt` of what they want DISPLAYED, and the
+        // measured single-layer case (dst alpha 0) is `src^2 + 0 = src^2` — i.e. the blend
+        // uses `new = src^2 + dst * (1 - src)` with `src` the RAW (sqrt) value passed to
+        // `setDrawColor`, not `new = src + dst * (1 - src)` on the displayed figures. For the
+        // scrim (dst, already at its own displayed 0.72 after its own single draw) with the
+        // panel drawn on top (src, whose raw value is `sqrt(0.45) ~= 0.671`):
+        //     composed = PanelLayout.ALPHA + PauseLayout.SCRIM_ALPHA * (1 - sqrt(PanelLayout.ALPHA))
+        //              = 0.45 + 0.72 * (1 - 0.671) ~= 0.687
+        // — dark but short of opaque, and BELOW the scrim's own 0.72 (a real, measured property
+        // of this squared-alpha blend when a lighter layer draws over a heavier one, not a bug).
+        // Reported in panel-report.md per the task brief's explicit request for this figure; the
+        // reviewer's ruling is that either figure is harmless here regardless, because the panel
+        // sits entirely inside a strip (see PanelLayoutTest) where the diver, the pearls and the
+        // stopped clock all already sit under the plain scrim, untouched. See
+        // `PanelLayoutTest.the composed pause-screen alpha is dark but short of opaque` for the
+        // re-derivation and its own test-quality note.
+        //
         // Both forms of this screen (cabinet-menu vs paused-from-run, branching on `fromIdle`
         // for WORDING only) share this exact panel — PauseLayout's anchors do not move between
         // them.
@@ -3721,16 +3836,31 @@ class EnPustTil : PulseEngineGame()
         hintLegend = ControlHints.legend(arcadeHints, gamepadButtonLabel(kickButton, controllerFamily), gamepadButtonLabel(bleedButton, controllerFamily))
         hintBriefingSkip = hintPressStart + ScreenText.BRIEFING_SKIP_SUFFIX
 
-        // pauseButtonAlt's label, NOT pauseButton's, and that is a deliberate choice rather
-        // than an accident of which field was to hand. Two buttons open and close this screen
-        // and only one fits on the line: pauseButtonAlt defaults to START, i.e. Options on a
-        // DualSense and Menu on an Xbox pad, which is the button a console player already
-        // reaches for to pause anything. pauseButton defaults to BACK (Create/View) and is the
-        // TECHNICIAN's way into the CABINET MENU from attract. Both still work; the screen
-        // advertises the player's one.
+        // pauseButtonAlt's label, NOT pauseButton's, for the MID-RUN pause screen's resume
+        // hint — and that is a deliberate choice rather than an accident of which field was
+        // to hand. Two buttons open and close this screen and only one fits on the line:
+        // pauseButtonAlt defaults to START, i.e. Options on a DualSense and Menu on an Xbox
+        // pad, which is the button a console player already reaches for to pause anything.
+        // Both still work to resume (pauseEdges.commit() combines them — see updateGame's own
+        // comment on that pair); the screen advertises the player's one.
         val pauseLabel = gamepadButtonLabel(pauseButtonAlt, controllerFamily)
         hintPauseResume = ControlHints.resume(arcadeHints, pauseLabel)
-        hintMenuResume = ControlHints.goBack(arcadeHints, pauseLabel)
+
+        // pauseButton's label (BACK/Create/View), NOT pauseButtonAlt's, for the MAIN MENU's
+        // own back hint and the cabinet-menu (fromIdle) pause screen's resume hint —
+        // CRITICAL C2 (final review, 2026-08-30). updateMainMenu's `padBack` now reads
+        // [pauseButton], not [pauseButtonAlt] (see that function's own doc for why: the old
+        // pauseButtonAlt collided with restartButton by shipped default, and MAIN_MENU reads
+        // confirm/back in the SAME state, which the "disjoint states" safety argument in
+        // gamepadButtonCollisionWarnings' doc had never accounted for) — so the hint this
+        // screen prints must name the SAME button that actually works, or the legend would
+        // read "PRESS OPTIONS . OPTIONS to go back" while BACK/Create/View is the button that
+        // does something. hintMenuResume is still reused for the fromIdle pause screen below
+        // (see [pausedFromIdle] and the `if (fromIdle)` branch a few dozen lines down) —
+        // pauseButton also resumes that screen (pauseEdges combines both pause buttons), so
+        // advertising it there is equally correct, just a different valid button than before.
+        val menuBackLabel = gamepadButtonLabel(pauseButton, controllerFamily)
+        hintMenuResume = ControlHints.goBack(arcadeHints, menuBackLabel)
         hintExitHold = ControlHints.exitHold(
             arcadeHints,
             gamepadButtonLabel(exitButtonA, controllerFamily),
@@ -3815,12 +3945,24 @@ class EnPustTil : PulseEngineGame()
     }
 
     /**
-     * Drives [menuModel] for one frame and acts on whatever [MenuAction] it returns. Called
-     * from [updateGame] only while [lifecycle]'s state is MAIN_MENU — that gate lives at the
-     * call site (see the comment there), and this function does not re-check it: unlike
+     * Drives [menuModel] for one frame and returns whatever [MenuAction] it produced — it no
+     * longer APPLIES that action itself; see [applyMenuAction] for that half and CRITICAL C3
+     * (final review, 2026-08-30) for why the two are now split across `lifecycle.update`.
+     * Called from [updateGame] only while [lifecycle]'s state is MAIN_MENU — that gate lives
+     * at the call site (see the comment there), and this function does not re-check it: unlike
      * [readInitialsCycle], which RunLifecycle harmlessly ignores outside ENTER_INITIALS, an
-     * unwanted [MenuModel] update here has a real side effect (it moves the cursor / mutates
-     * [gameSettings]) that must not happen while some other screen is on top.
+     * unwanted [MenuModel] update here has a real side effect (it moves the cursor) that must
+     * not happen while some other screen is on top.
+     *
+     * @param justEntered true on exactly the frame [lifecycle] transitioned into MAIN_MENU
+     *   this update (`updateGame`'s `justEnteredMainMenu`). CRITICAL C1 (final review,
+     *   2026-08-30): on that frame, [menuModel] is put back at ROOT/row 0 via [MenuModel.reset]
+     *   as before, but then immediately [MenuModel.prime]d with THIS frame's own just-read
+     *   levels — not left at `reset()`'s zeroes. Without priming, the very press that opened
+     *   the menu (still physically down one frame later; a human press is 5-10 frames) would
+     *   read as a false-to-true CONFIRM edge on this exact call and immediately confirm row 0
+     *   (START DIVE), so the menu flashed for one frame and dropped the player straight into a
+     *   dive. See [MenuModel.prime]'s own doc for the full trace.
      *
      * STEERING THROUGH [PadAxis], READING THROUGH [mappedPads] — never `pad.isPressed` (see
      * that field's own doc; `MappedPadsSourceScanTest` fails the build on a direct read).
@@ -3830,9 +3972,19 @@ class EnPustTil : PulseEngineGame()
      *
      * CONFIRM reads [restartButton]/[restartButtonAlt] — the SAME button [hintPressStart]
      * already advertises everywhere else in the game as "PRESS <button>", so [hintMenuLegend]
-     * is not a promise this function breaks. BACK reads [pauseButtonAlt] — the button
-     * [hintMenuResume] advertises as "<button> to go back". Keyboard SPACE/ESCAPE are OR-ed
-     * in alongside each, matching [lifecycleEdges]'/[pauseEdges]'s own keyboard sources.
+     * is not a promise this function breaks. BACK reads [pauseButton] (CHANGED from
+     * [pauseButtonAlt] — CRITICAL C2, final review, 2026-08-30: `pauseButtonAlt` defaults to
+     * the SAME button as [restartButton]/[restartButtonAlt] — Options/START — which
+     * `EnPustTil`'s own `gamepadButtonCollisionWarnings` doc had always argued was safe because
+     * "a restart edge and a pause edge are consumed in disjoint states." MAIN_MENU broke that
+     * premise: it reads both `padConfirm` and `padBack` in the SAME state, on the SAME frame,
+     * and `MenuModel` checked `backEdge` before `confirmEdge` — so one Options press raised
+     * both, BACK won, and START did nothing at all on the root menu, including on START DIVE.
+     * `pauseButton` defaults to BACK/Create/View, which collides with neither restart button by
+     * default; `gamepadButtonCollisionWarnings` below now also flags a technician config that
+     * makes them collide anyway, and `MenuModel.update` checks confirm before back as a second,
+     * belt-and-braces line of defence). Keyboard SPACE/ESCAPE are OR-ed in alongside each,
+     * matching [lifecycleEdges]'/[pauseEdges]'s own keyboard sources.
      *
      * Up/down/left/right are OR-ed the same way [readInitialsCycle] ORs its own two
      * directions across pads: [MenuModel] has no per-device precedence to protect (there is
@@ -3840,12 +3992,11 @@ class EnPustTil : PulseEngineGame()
      * "any live source says up" is the whole rule, matching the initials screen rather than
      * [readInput]'s first-source-wins.
      *
-     * @return true on exactly the frame [MenuModel.update] returns [MenuAction.StartDive] —
-     *   the caller feeds that straight into `lifecycle.update`'s `menuAction` parameter, which
-     *   does its OWN edge detection (see that parameter's doc), so a raw per-frame level here
-     *   is correct and no local edge tracking is needed.
+     * Sets [menuInputActiveThisFrame] as its first act (see that field's own doc) — before the
+     * `justEntered` priming and before calling [MenuModel.update] — so it is set regardless of
+     * which branch below returns.
      */
-    private fun updateMainMenu(): Boolean
+    private fun updateMainMenu(justEntered: Boolean): MenuAction
     {
         var padUp = false
         var padDown = false
@@ -3874,7 +4025,8 @@ class EnPustTil : PulseEngineGame()
             if (horizontal < 0f) padLeft = true
             if (horizontal > 0f) padRight = true
             if (mappedPads.isPressed(pad.id, restartButton) || mappedPads.isPressed(pad.id, restartButtonAlt)) padConfirm = true
-            if (mappedPads.isPressed(pad.id, pauseButtonAlt)) padBack = true
+            // CRITICAL C2: pauseButton, not pauseButtonAlt — see this function's own doc.
+            if (mappedPads.isPressed(pad.id, pauseButton)) padBack = true
         }
 
         val up = padUp || engine.input.isPressed(Key.UP)
@@ -3884,7 +4036,47 @@ class EnPustTil : PulseEngineGame()
         val confirm = padConfirm || engine.input.isPressed(Key.SPACE)
         val back = padBack || engine.input.isPressed(Key.ESCAPE)
 
-        when (val action = menuModel.update(up, down, left, right, confirm, back))
+        // Finding I4: reported regardless of which branch below returns - see this field's doc.
+        menuInputActiveThisFrame = up || down || left || right || confirm || back
+
+        if (justEntered)
+        {
+            // CRITICAL C1 — see this function's @param justEntered doc and MenuModel.prime's.
+            menuModel.reset()
+            menuModel.prime(up, down, left, right, confirm, back)
+        }
+
+        return menuModel.update(up, down, left, right, confirm, back)
+    }
+
+    /**
+     * Applies everything a [MenuAction] can produce EXCEPT [MenuAction.StartDive], which
+     * `updateGame` already folded into `lifecycle.update`'s `menuAction` parameter before
+     * calling this — see that call site's comment.
+     *
+     * CRITICAL C3 (final review, 2026-08-30): this used to run INSIDE [updateMainMenu], i.e.
+     * BEFORE `lifecycle.update` in the same frame. That was fatal for exactly one case,
+     * [MenuAction.ShowLeaderboard]: `lifecycle.viewLeaderboard()` enters IDLE, and THAT SAME
+     * frame's `lifecycle.update(anyInputPressed = actionPressed, ...)` call — which runs right
+     * after, using the SAME confirm press that produced ShowLeaderboard — reaches IDLE's
+     * `if (pressedEdge) enter(MAIN_MENU)` branch and bounces straight back before a single
+     * frame of the leaderboard is drawn. MAIN_MENU's own branch is immune to this because it
+     * deliberately never reads `anyInputPressed` (only `menuActionEdge`) — but IDLE is not,
+     * and IDLE is exactly where `viewLeaderboard` lands. Calling this AFTER `lifecycle.update`
+     * fixes it: by the time `ShowLeaderboard` is applied here, this frame's `lifecycle.update`
+     * has already run (and, since the state was still MAIN_MENU when it ran, ignored
+     * `anyInputPressed` entirely), so entering IDLE now cannot be re-interpreted by an
+     * `update` call that has already happened.
+     *
+     * The other three cases (`SettingChanged`, `Back`, `Quit`) have no such dependency — none
+     * of them touch [lifecycle] — so deferring them here too is free, and keeping every
+     * non-StartDive action on one code path (rather than special-casing only ShowLeaderboard)
+     * is what stops the NEXT action added to [MenuAction] from silently reintroducing this bug
+     * by defaulting to the old, pre-C3 call site.
+     */
+    private fun applyMenuAction(action: MenuAction)
+    {
+        when (action)
         {
             is MenuAction.SettingChanged ->
             {
@@ -3893,9 +4085,24 @@ class EnPustTil : PulseEngineGame()
                 // RESOLUTION is the one setting GraphicsApplier does not touch at all — it
                 // writes render scale, quality, screen mode and vsync, but never a window
                 // SIZE (see its class doc; that call does not exist on Graphics/Window).
-                // ResizableWindow.requestSize is what actually moves the window, and only
-                // for this one row.
-                if (action.item == MenuItemId.RESOLUTION)
+                // ResizableWindow.requestSize is what actually moves the window, and this now
+                // fires on TWO rows rather than one.
+                //
+                // Finding I2: a fullscreen-then-windowed toggle used to lose the chosen
+                // resolution. `WindowImpl.createWindow` reads `initWidth`/`initHeight` when
+                // recreating a WINDOWED window, and those two fields are written ONLY by
+                // `init()` — never by `glfwSetWindowSize` (verified against the 0.13.0
+                // bytecode) — so `updateScreenMode(WINDOWED)` above (inside `apply`, a few
+                // lines up) recreates the window at `application.cfg`'s size while this very
+                // RESOLUTION row still shows the player's earlier choice. Re-issuing the same
+                // request the RESOLUTION row itself would make restores it. Gated on
+                // `!gameSettings.fullscreen` — already the POST-toggle value, since
+                // `stepGameSettings`/`clamped()` ran above — so this only fires on the
+                // fullscreen -> windowed direction, never on windowed -> fullscreen, where a
+                // window size is meaningless anyway (see the boot-time guard on this same call
+                // for the identical reasoning).
+                if (action.item == MenuItemId.RESOLUTION ||
+                    (action.item == MenuItemId.FULLSCREEN && !gameSettings.fullscreen))
                     (engine.window as? ResizableWindow)?.requestSize(gameSettings.windowWidth, gameSettings.windowHeight)
                 // SHOW_FPS TURNED ON MID-SESSION, WITH NO PROBE YET RUNNING — the boot-time
                 // registration a few dozen lines up in createGame only sees the SAVED value
@@ -3935,12 +4142,13 @@ class EnPustTil : PulseEngineGame()
                 // RunLifecycle owns MAIN_MENU/IDLE, MenuModel does not know either state
                 // exists — see RunLifecycle.viewLeaderboard's own doc for why this is a
                 // direct call rather than a case RunLifecycle interprets from MenuAction.
+                // CRITICAL C3: this is exactly the case that needed to move after
+                // lifecycle.update — see this function's own class doc.
                 lifecycle.viewLeaderboard()
             MenuAction.StartDive ->
-                return true
+                {}  // Already folded into menuStartDive at the call site — nothing left to do.
             MenuAction.None -> {}
         }
-        return false
     }
 
     private fun axis(negative: Key, positive: Key) = when

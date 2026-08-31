@@ -51,4 +51,36 @@ class UpdateGameOrderingTest
             "be lost, all day, with no log and no error."
         )
     }
+
+    /**
+     * CRITICAL C3 (final review, 2026-08-30): `applyMenuAction` (which can call
+     * `lifecycle.viewLeaderboard()`, entering IDLE) must run AFTER this frame's own
+     * `lifecycle.update(...)` call, not before. `updateMainMenu` used to apply
+     * `MenuAction.ShowLeaderboard` itself, before `lifecycle.update` ran — and that
+     * `lifecycle.update` call's `anyInputPressed` is the SAME confirm press that produced
+     * ShowLeaderboard in the first place. IDLE's own branch reads `anyInputPressed`
+     * (`pressedEdge`) and re-enters MAIN_MENU, so the leaderboard bounced back to the menu
+     * in the exact frame it opened, with nothing ever drawn. MAIN_MENU's own branch is
+     * immune (it deliberately never reads `anyInputPressed`), which is what makes deferring
+     * `applyMenuAction` to AFTER `lifecycle.update` safe — see that function's own doc.
+     */
+    @Test
+    fun `the deferred menu action is applied after this frame's own lifecycle update, not before`()
+    {
+        val updateIndex = body.indexOf("lifecycle.update(")
+        val applyIndex = body.indexOf("applyMenuAction(menuAction)")
+
+        assertTrue(updateIndex >= 0, "updateGame no longer calls lifecycle.update( - re-read this test")
+        assertTrue(applyIndex >= 0, "updateGame no longer calls applyMenuAction(menuAction) - re-read this test")
+        assertTrue(
+            updateIndex < applyIndex,
+            "applyMenuAction(menuAction) is called at offset $applyIndex, BEFORE lifecycle.update( at " +
+            "offset $updateIndex. applyMenuAction can call lifecycle.viewLeaderboard() (MenuAction" +
+            ".ShowLeaderboard), which enters IDLE - and THIS SAME FRAME's lifecycle.update call " +
+            "reads anyInputPressed = actionPressed, the identical confirm press that produced " +
+            "ShowLeaderboard. IDLE's own branch reacts to that press and re-enters MAIN_MENU " +
+            "immediately, so the leaderboard would bounce back to the menu in the same frame it " +
+            "opened, with nothing ever drawn (CRITICAL C3, final review)."
+        )
+    }
 }
