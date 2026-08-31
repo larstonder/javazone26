@@ -30,6 +30,7 @@ import render.DiveLighting
 import render.DiveRenderer
 import render.DiverSprite
 import render.FrameProbe
+import render.Framing
 import render.GlfwGamepadStateReader
 import render.GraphicsApplier
 import render.GraphicsQuality
@@ -48,6 +49,7 @@ import render.Motes
 import render.OpaqueWaterEffect
 import render.OxygenSprite
 import render.PadAxis
+import render.PanelLayout
 import render.PearlNormalMap
 import render.ResizableWindow
 import render.RockFace
@@ -3001,6 +3003,23 @@ class EnPustTil : PulseEngineGame()
             h * MenuLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
+        // The dark panel behind the row list and the hint legend below it (never the title
+        // above, per the owner's chosen shape — see render/PanelLayout.kt). Width reuses
+        // MenuLayout.HIGHLIGHT_HALF_SPAN rather than a PanelLayout constant of its own: that
+        // span is already sized "to the widest plausible row" (its own doc) and already
+        // exercised at 4:3 by MenuLayoutTest, and it covers BOTH pages (ROOT's 4 rows and
+        // GRAPHICS' 8) because the panel's bottom edge is anchored to the fixed HINT_Y, not to
+        // the last row drawn — the row count never actually moves the panel's extent.
+        val panel = PanelLayout.bounds(
+            contentLeft = centreX - h * MenuLayout.HIGHLIGHT_HALF_SPAN,
+            contentTop = h * MenuLayout.ROWS_TOP_Y,
+            contentRight = centreX + h * MenuLayout.HIGHLIGHT_HALF_SPAN,
+            contentBottom = h * (MenuLayout.HINT_Y + MenuLayout.HINT_FONT),
+            screenHeight = h,
+            minTop = h * (MenuLayout.TITLE_Y + MenuLayout.TITLE_FONT)
+        )
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+
         val page = menuModel.page
         val items = menuModel.itemsOn(page)
         val selectedIndex = menuModel.selectedIndex
@@ -3220,6 +3239,26 @@ class EnPustTil : PulseEngineGame()
         val centreX = w * 0.5f
         val cold = LEADERBOARD_COLD
 
+        // The dark panel behind the heading + rows ONLY — never the screen's own title/PRESS
+        // START above the diver, and never below the halo either: this is the one panel the
+        // task brief calls out by name as a TEST, not an intention (AttractLayout reserves
+        // DIVER_SCREEN_FRACTION +/- DIVER_HALO_HALF_HEIGHT for the diver and lays every attract
+        // element around it). minTop clamps to the halo's own bottom edge, so the panel's top
+        // can never rise into the band whatever PanelLayout.PADDING_FRACTION is tuned to later
+        // — see PanelLayout.bounds' doc for why that clamp is a required parameter rather than
+        // a default. Bottom is sized to the ACTUAL row count (top.size), not
+        // AttractLayout.LEADERBOARD_SIZE, so the panel does not reserve a full 8 rows of height
+        // on a board with one score on it.
+        val panel = PanelLayout.bounds(
+            contentLeft = centreX - h * AttractLayout.ROW_HALF_SPAN,
+            contentTop = h * AttractLayout.HEADING_Y,
+            contentRight = centreX + h * AttractLayout.ROW_HALF_SPAN,
+            contentBottom = h * AttractLayout.bottomOfBoard(top.size),
+            screenHeight = h,
+            minTop = h * (Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT)
+        )
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+
         hud.drawTextWithOutline(
             ScreenText.LEADERBOARD_HEADING,
             centreX, h * AttractLayout.HEADING_Y,
@@ -3243,17 +3282,45 @@ class EnPustTil : PulseEngineGame()
 
     private fun drawRunOverScreen(hud: Surface, w: Float, h: Float)
     {
+        val centreX = w * 0.5f
+
+        // This screen's title, per the panel design's "title outside the panel" rule — the
+        // headline is the only thing this screen has that plays that role, there being no
+        // separate RunOverLayout.TITLE_Y the way every other screen has one.
+        val titleY = 0.5f
+        val titleFont = 0.04f
+        val hintY = 0.5f + 0.045f
+        val hintFont = 0.022f
+
         // A run can end at any depth, so this can land anywhere from bright shallows to
         // near-black abyss — outlined for the same reason as the rest of the HUD.
         hud.drawTextWithOutline(
             ScreenText.runOver(sim.banked),
-            w * 0.5f, h * 0.5f,
-            h * 0.04f, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * titleY,
+            h * titleFont, h, Color.WHITE, xOrigin = 0.5f
         )
+
+        // The panel behind ONLY the retry hint. THE TITLE-CLEARANCE TRAP LIVES HERE: the
+        // title's own text box runs to h*(titleY+titleFont) = 0.54h and the hint starts at
+        // h*hintY = 0.545h, a 0.005h gap far smaller than PanelLayout.PADDING_FRACTION
+        // (0.025h) — naive padding would draw this panel straight through "RUN OVER (dot)
+        // BANKED N" (see panel-report.md's "found by arithmetic" section). minTop pins the
+        // panel's top edge to the title's own bottom edge instead, so it touches rather than
+        // overlaps regardless of how PADDING_FRACTION is tuned later.
+        val panel = PanelLayout.bounds(
+            contentLeft = centreX - h * PanelLayout.RUN_OVER_HALF_SPAN,
+            contentTop = h * hintY,
+            contentRight = centreX + h * PanelLayout.RUN_OVER_HALF_SPAN,
+            contentBottom = h * (hintY + hintFont),
+            screenHeight = h,
+            minTop = h * (titleY + titleFont)
+        )
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+
         hud.drawTextWithOutline(
             hintPlayAgain,
-            w * 0.5f, h * 0.5f + h * 0.045f,
-            h * 0.022f, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * hintY,
+            h * hintFont, h, Color.WHITE, xOrigin = 0.5f
         )
     }
 
@@ -3280,6 +3347,26 @@ class EnPustTil : PulseEngineGame()
 
         val centreX = w * 0.5f
         val fromIdle = lifecycle.pausedFromIdle
+
+        // The panel behind the resume/exit hints and the exit bar — never the title above it.
+        // Composites ON TOP of the full-screen scrim just drawn, at PanelLayout.ALPHA (0.45),
+        // rather than replacing it: the scrim is what tells a player "the machine is waiting
+        // for me, not stopped" (see PauseLayout.SCRIM_ALPHA's doc), and that signal has to
+        // survive across the WHOLE screen, panel included. Composed alpha over the panel's own
+        // small area: 1 - (1 - 0.72) * (1 - 0.45) = 0.846 — dark but short of opaque, and
+        // reported in panel-report.md per the task brief's explicit request for this figure.
+        // Both forms of this screen (cabinet-menu vs paused-from-run, branching on `fromIdle`
+        // for WORDING only) share this exact panel — PauseLayout's anchors do not move between
+        // them.
+        val panel = PanelLayout.bounds(
+            contentLeft = centreX - h * PanelLayout.PAUSE_HALF_SPAN,
+            contentTop = h * PauseLayout.RESUME_Y,
+            contentRight = centreX + h * PanelLayout.PAUSE_HALF_SPAN,
+            contentBottom = h * (PauseLayout.BAR_Y + PauseLayout.BAR_HEIGHT),
+            screenHeight = h,
+            minTop = h * (PauseLayout.TITLE_Y + PauseLayout.TITLE_FONT)
+        )
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
 
         // Outlined like the rest of the HUD: the scrim darkens the world but does not
         // flatten it, and this text can land over a bright Shallows waterline.
@@ -3338,6 +3425,41 @@ class EnPustTil : PulseEngineGame()
             h * BriefingLayout.TITLE_FONT, h, Color.WHITE, xOrigin = 0.5f
         )
 
+        // The panel behind the three control rows and the rule (and the countdown/skip lines
+        // below them, when either is showing) — never the title above it. Composites on top of
+        // the briefing's own scrim exactly as the pause screen's does, at the same
+        // PanelLayout.ALPHA — see drawPauseScreen's comment for the composed-alpha arithmetic;
+        // BriefingLayout.SCRIM_ALPHA (0.55) is lighter than PauseLayout's (0.72) so the
+        // composed figure here is lighter too, by the same deliberate signal
+        // BriefingLayout's own class doc names.
+        //
+        // The bottom edge grows with what is actually on screen this frame: the countdown and
+        // skip hint are each conditional (see the `if`s below), so a panel sized to the
+        // widest case always would reserve space for lines that are not there yet. minTop
+        // guards BOTH the title's own bottom edge and the diver halo's — BriefingLayout's own
+        // class doc already places ROWS_TOP_Y (0.57h) just 0.03h below the halo's bottom edge
+        // (0.54h) by design, which is too thin a margin to trust to PADDING_FRACTION (0.025h)
+        // alone; the same clamp technique the attract screen's leaderboard panel uses removes
+        // the risk rather than relying on the two constants never drifting closer.
+        val contentBottomY = when
+        {
+            lifecycle.briefingSkippable -> BriefingLayout.SKIP_Y + BriefingLayout.SKIP_FONT
+            lifecycle.briefingAutoStarts -> BriefingLayout.COUNTDOWN_Y + BriefingLayout.COUNTDOWN_FONT
+            else -> BriefingLayout.RULE_Y + BriefingLayout.RULE_FONT
+        }
+        val panel = PanelLayout.bounds(
+            contentLeft = centreX - h * PanelLayout.BRIEFING_HALF_SPAN,
+            contentTop = h * BriefingLayout.ROWS_TOP_Y,
+            contentRight = centreX + h * PanelLayout.BRIEFING_HALF_SPAN,
+            contentBottom = h * contentBottomY,
+            screenHeight = h,
+            minTop = maxOf(
+                h * (BriefingLayout.TITLE_Y + BriefingLayout.TITLE_FONT),
+                h * (Framing.DIVER_SCREEN_FRACTION + AttractLayout.DIVER_HALO_HALF_HEIGHT)
+            )
+        )
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
+
         // Token right-aligned, verb left-aligned - INWARD, unlike the leaderboard's outward
         // columns. See BriefingLayout.COLUMN_GAP.
         drawBriefingRow(hud, 0, ControlHints.swim(arcadeHints), ScreenText.BRIEFING_VERB_SWIM, centreX, gap, h)
@@ -3395,22 +3517,45 @@ class EnPustTil : PulseEngineGame()
      */
     private fun drawInitialsEntryScreen(hud: Surface, w: Float, h: Float)
     {
+        val centreX = w * 0.5f
+
+        // This screen's title, the same role run-over's headline plays — no separate layout
+        // object names it, so the anchor is restated here rather than invented as a new one.
+        val titleY = 0.46f
+        val titleFont = 0.032f
+        val slotsY = 0.54f
+        val slotsFont = 0.06f
+        val helpY = 0.6f
+        val helpFont = 0.02f
+
         hud.drawTextWithOutline(
             ScreenText.newScore(sim.banked),
-            w * 0.5f, h * 0.46f,
-            h * 0.032f, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * titleY,
+            h * titleFont, h, Color.WHITE, xOrigin = 0.5f
         )
+
+        // The panel behind the initials slots and the help line — never the "NEW SCORE" title
+        // above them.
+        val panel = PanelLayout.bounds(
+            contentLeft = centreX - h * PanelLayout.INITIALS_HALF_SPAN,
+            contentTop = h * slotsY,
+            contentRight = centreX + h * PanelLayout.INITIALS_HALF_SPAN,
+            contentBottom = h * (helpY + helpFont),
+            screenHeight = h,
+            minTop = h * (titleY + titleFont)
+        )
+        Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
 
         hud.drawTextWithOutline(
             ScreenText.initialsSlots(lifecycle.currentInitials, lifecycle.currentInitialsSlot),
-            w * 0.5f, h * 0.54f,
-            h * 0.06f, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * slotsY,
+            h * slotsFont, h, Color.WHITE, xOrigin = 0.5f
         )
 
         hud.drawTextWithOutline(
             hintInitialsHelp,
-            w * 0.5f, h * 0.6f,
-            h * 0.02f, h, Color.WHITE, xOrigin = 0.5f
+            centreX, h * helpY,
+            h * helpFont, h, Color.WHITE, xOrigin = 0.5f
         )
     }
 

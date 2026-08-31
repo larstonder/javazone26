@@ -305,6 +305,20 @@ object Hud
     val clockPlate = Color(0.02f, 0.05f, 0.09f, authoredAlphaFor(0.82f))
 
     /**
+     * The dark, semi-transparent plate behind every lifecycle screen's panel (menus, pause,
+     * briefing, run-over, initials entry, the attract screen's leaderboard block) — see
+     * [render.PanelLayout] for the shared geometry and [PanelLayout.ALPHA]'s doc for the
+     * composed-alpha arithmetic on the two screens that already carry a scrim.
+     *
+     * Same RGB family as [clockPlate] rather than an invented colour: both are "a dark plate
+     * behind HUD text on a surface that ranges from bright Shallows to near-black Abyss", and
+     * reusing the triple keeps the two kinds of plate reading as one visual language instead of
+     * two. Only the alpha differs, and it is built here — once, at class init, never per frame
+     * — exactly the way [clockPlate] itself already is.
+     */
+    val panelPlate = Color(0.02f, 0.05f, 0.09f, authoredAlphaFor(PanelLayout.ALPHA))
+
+    /**
      * The visible STAIRCASE RISER a rounded corner is allowed, in pixels, and the ceiling on how
      * many bands may be spent buying it. See [roundedCornerBands] and [roundedBandHalfWidth].
      *
@@ -715,6 +729,24 @@ object Hud
             fpsRightX(w, h), fpsTopY(h),
             h * FPS_FONT_FRACTION, h, legendInk, xOrigin = 1f
         )
+    }
+
+    /**
+     * A dark rounded panel CENTRED on ([centreX], [centreY]) — the surface every lifecycle
+     * screen's text sits on, per [render.PanelLayout]. Public, unlike [fillRoundedRect] below,
+     * because every panel draw site lives in `EnPustTil.kt` (the default package, on the other
+     * side of the package boundary this file's own class doc describes): this is the one
+     * function that crosses it, so the corner-stepping maths [fillRoundedRect] owns stays
+     * declared once rather than being re-taught to the default package.
+     *
+     * Colour is fixed ([panelPlate], built once — see its own doc) because every panel in this
+     * design is the same plate, not a per-screen choice; [width]/[height]/[radius] are what
+     * `PanelLayout.bounds`/`PanelLayout.cornerRadius` compute per screen.
+     */
+    fun renderPanel(surface: Surface, centreX: Float, centreY: Float, width: Float, height: Float, radius: Float)
+    {
+        surface.setDrawColor(panelPlate)
+        surface.fillRoundedRect(centreX, centreY, width, height, radius)
     }
 
     /**
