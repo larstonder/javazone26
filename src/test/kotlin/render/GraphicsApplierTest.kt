@@ -101,4 +101,24 @@ class GraphicsApplierTest
         assertEquals(Multisampling.NONE, GraphicsApplier.multisamplingFor(3))
         assertEquals(Multisampling.NONE, GraphicsApplier.multisamplingFor(-99))
     }
+
+    // --- aoRadius must never drift from localSceneTexScale (Finding I3) -------------------
+
+    @Test
+    fun `aoRadius divides back to the same AO_RADIUS_METRES for every preset's own localSceneTexScale`() {
+        // DiveLighting.setup's comment derives radius_world = aoRadius / localSceneTexScale,
+        // so this ratio must be identical for every preset - it IS the constant
+        // AO_RADIUS_METRES, private to DiveLighting, re-derived here through the same
+        // DiveLighting.aoRadiusFor GraphicsApplier.apply now calls for every preset (not just
+        // HIGH, which is all DiveLighting.setup itself ever wrote). Finding I3: apply() used
+        // to write localSceneTexScale for MEDIUM/LOW but never recompute aoRadius alongside
+        // it, so this ratio silently drifted to 5.33m/8m instead of staying at 4m.
+        val expectedScale = GraphicsQuality.HIGH.settings().localSceneTexScale
+        val expected = DiveLighting.aoRadiusFor(expectedScale) / expectedScale
+        for (q in GraphicsQuality.entries) {
+            val scale = q.settings().localSceneTexScale
+            assertEquals(expected, DiveLighting.aoRadiusFor(scale) / scale, 0.0001f,
+                "$q's aoRadius/localSceneTexScale does not match HIGH's - the two have drifted apart")
+        }
+    }
 }

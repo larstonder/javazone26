@@ -359,6 +359,14 @@ class RunLifecycle(
      *   into one boolean would make every navigation press start a dive. Defaulted to
      *   `false` so every pre-existing caller and test compiles unchanged — none of them
      *   know MAIN_MENU exists yet.
+     * @param menuInputActive whether ANY of the menu's six raw input levels (up/down/
+     *   left/right/confirm/back — see `EnPustTil.updateMainMenu`) read true THIS frame,
+     *   regardless of whether it produced an edge or a [MenuAction]. Consulted only in
+     *   MAIN_MENU, and deliberately a LEVEL rather than an edge: [MENU_IDLE_TIMEOUT_SECONDS]
+     *   is an INACTIVITY timeout (Finding I4, final review) — a player holding a direction,
+     *   or repeatedly nudging FRAME CAP, must keep resetting the clock for exactly as long as
+     *   they keep doing it, not just on the frame a hold began. Defaulted to `false` so every
+     *   pre-existing caller and test compiles unchanged.
      * @return the state after this update.
      */
     fun update(
@@ -371,7 +379,8 @@ class RunLifecycle(
         confirmPressed: Boolean = false,
         pausePressed: Boolean = false,
         exitHeld: Boolean = false,
-        menuAction: Boolean = false
+        menuAction: Boolean = false,
+        menuInputActive: Boolean = false
     ): RunLifecycleState
     {
         justStarted = false
@@ -406,16 +415,28 @@ class RunLifecycle(
                     if (briefingSeconds > 0f) enterBriefing()
                     else enter(RunLifecycleState.PLAYING, started = true)
                 }
-                else if (timeInState >= MENU_IDLE_TIMEOUT_SECONDS)
+                else
                 {
-                    // Unattended-recovery fallback, same shape as every other state's: a menu
-                    // nobody is touching must not hold the screen forever. Longer than
-                    // IDLE_TIMEOUT_SECONDS on purpose - see MENU_IDLE_TIMEOUT_SECONDS' own doc.
-                    enter(RunLifecycleState.IDLE)
+                    // Finding I4 (final review, 2026-08-30): this used to be a state-ENTRY
+                    // timer — timeInState is only ever zeroed by enter(), so nothing here
+                    // reset it, and the spec's own trigger ("no input for
+                    // MENU_IDLE_TIMEOUT_SECONDS") was not what was implemented. The KDoc on
+                    // MENU_IDLE_TIMEOUT_SECONDS justifies 45s with "would yank the screen away
+                    // from someone halfway through choosing a resolution" — which is exactly
+                    // what the old code did the instant 45s had passed since ENTRY, resolution
+                    // choosing or not. RULING: the spec wins. menuInputActive resets the clock
+                    // on ANY held or repeated menu input (not just a fresh edge — see that
+                    // parameter's own doc), so the timeout now measures genuine inactivity.
+                    if (menuInputActive) timeInState = 0f
+                    if (timeInState >= MENU_IDLE_TIMEOUT_SECONDS)
+                    {
+                        // Unattended-recovery fallback, same shape as every other state's: a
+                        // menu nobody is touching must not hold the screen forever. Longer
+                        // than IDLE_TIMEOUT_SECONDS on purpose - see MENU_IDLE_TIMEOUT_SECONDS'
+                        // own doc.
+                        enter(RunLifecycleState.IDLE)
+                    }
                 }
-                // Otherwise: stay. A held or repeated anyInputPressed (menu navigation) does
-                // NOT reset this timer - only genuine inactivity does - matching every other
-                // idle-timeout in this class, which are all measured from state entry.
 
             RunLifecycleState.IDLE ->
                 // Esc from attract opens the same screen a paused run gets, so a technician
@@ -633,12 +654,18 @@ class RunLifecycle(
         const val IDLE_TIMEOUT_SECONDS = 17.5f
 
         /**
-         * How long the main menu waits, untouched, before falling back to the attract screen.
+         * How long the main menu waits with NO INPUT AT ALL before falling back to the
+         * attract screen — an inactivity timeout, not a state-entry one (Finding I4, final
+         * review, 2026-08-30: `update`'s MAIN_MENU branch now resets `timeInState` on
+         * [update]'s `menuInputActive` parameter every frame it reads true, so only genuine
+         * idleness accumulates toward this value).
          *
          * Longer than [IDLE_TIMEOUT_SECONDS] on purpose: attract mode is a screensaver whose
          * job is to recover an abandoned cabinet, while the menu is somewhere a person is
          * actively reading and deciding. Timing out of it as briskly as attract times out
-         * would yank the screen away from someone halfway through choosing a resolution.
+         * would yank the screen away from someone halfway through choosing a resolution — a
+         * risk that is now actually guarded against, rather than merely asserted in this
+         * comment while the code measured time-since-entry regardless of activity.
          */
         const val MENU_IDLE_TIMEOUT_SECONDS = 45f
 

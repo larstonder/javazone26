@@ -2,6 +2,7 @@ package settings
 
 import no.njoh.pulseengine.core.PulseEngine
 import no.njoh.pulseengine.core.shared.utils.Logger
+import no.njoh.pulseengine.core.window.ScreenMode
 
 /**
  * Everything the graphics-options menu needs to persist [GameSettings], and nothing else.
@@ -58,13 +59,41 @@ class EngineSettingsStore(private val engine: PulseEngine) : SettingsStore
     override fun load(): GameSettings =
         try
         {
-            (engine.data.loadObject<GameSettings>(FILE_NAME) ?: GameSettings.DEFAULT).clamped()
+            (engine.data.loadObject<GameSettings>(FILE_NAME) ?: defaultForThisBoot()).clamped()
         }
         catch (e: Exception)
         {
             Logger.warn { "Could not read $FILE_NAME (${e.message}); using default settings" }
-            GameSettings.DEFAULT
+            defaultForThisBoot()
         }
+
+    /**
+     * [GameSettings.DEFAULT] with `fullscreen`/`frameCap` overridden from what the engine
+     * ACTUALLY booted with, rather than the compiled booth literals baked into `DEFAULT`
+     * (`fullscreen = true`, `frameCap = 0`).
+     *
+     * WHY: on a machine with no `settings.json` yet — every fresh clone, and `./gradlew run`
+     * in particular — [load] used to hand back `GameSettings.DEFAULT` untouched, and
+     * `GraphicsApplier.apply` pushes every field of whatever it is given onto the running
+     * engine unconditionally. That meant `apply` called `updateScreenMode(FULLSCREEN)`,
+     * silently overriding `application-dev.cfg`'s `screenMode = WINDOWED` — breaking EVERY
+     * capture procedure in this repo's CLAUDE.md, which assumes a windowed dev build — and set
+     * `targetFps = 0` (uncapped), overriding `application.cfg`'s deliberate `targetFps = 60`
+     * on the very branch whose goal was hitting that cap. Both cfg files are already fully
+     * resolved by the time `createGame` runs `settingsStore.load()` (the engine reads them
+     * before `onCreate`), so `engine.window.screenMode` and `engine.config.targetFps` are
+     * exactly the values `application.cfg`/`application-dev.cfg` chose — reading them back
+     * here, instead of typing the booth's own literals a second time, is what keeps a missing
+     * settings file inert rather than an accidental override of the cfg split.
+     *
+     * A REAL saved `settings.json` is untouched by this — it always wins outright, this
+     * function only ever backstops the case where there is nothing on disk to read at all
+     * (missing file or a corrupt one, the two branches [load] calls it from).
+     */
+    private fun defaultForThisBoot(): GameSettings = GameSettings.DEFAULT.copy(
+        fullscreen = engine.window.screenMode == ScreenMode.FULLSCREEN,
+        frameCap = engine.config.targetFps
+    )
 
     override fun save(settings: GameSettings)
     {

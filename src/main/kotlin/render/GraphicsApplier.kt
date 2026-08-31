@@ -112,6 +112,12 @@ class GraphicsApplier(private val engine: PulseEngine)
             gi.maxCascades = giSettings.maxCascades
             gi.bilinearFix = giSettings.bilinearFix
             gi.traceWorldRays = giSettings.traceWorldRays
+            // Finding I3: aoRadius is expressed AGAINST localSceneTexScale two lines up
+            // (DiveLighting.setup's comment has the derivation) and must move with it or the
+            // two silently disagree — exactly what happened here before this line existed,
+            // since this function wrote every other GI scale but left aoRadius at whatever
+            // DiveLighting.setup computed for GraphicsQuality.HIGH at boot.
+            gi.aoRadius = DiveLighting.aoRadiusFor(giSettings.localSceneTexScale)
         }
 
         engine.gfx.mainSurface.setTextureScale(settings.renderScale)

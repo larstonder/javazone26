@@ -653,6 +653,24 @@ object DiveLighting
     private const val AO_RADIUS_METRES = 4f
 
     /**
+     * [AO_RADIUS_METRES] converted into the engine's own `aoRadius` units for a given
+     * `localSceneTexScale` — see [setup]'s big comment on `aoRadius` for the derivation
+     * (`radius_world = aoRadius / localSceneTexScale`, so `aoRadius = AO_RADIUS_METRES * scale`
+     * is the inverse of that). [setup] itself calls this for `GraphicsQuality.HIGH`'s scale;
+     * [GraphicsApplier.apply] calls it again for whichever scale a MEDIUM/LOW preset writes.
+     *
+     * Finding I3 (final review, 2026-08-30): `apply` used to write `gi.localSceneTexScale`
+     * from the selected preset but never touch `gi.aoRadius`, so a player choosing MEDIUM or
+     * LOW left `aoRadius` at the HIGH-derived value [setup] wrote at boot — `radius_world`
+     * then silently drifts to 5.33 m at MEDIUM's 0.3 scale and 8 m at LOW's 0.2, exactly the
+     * "must not be able to silently disagree" [setup] warns about, two lines below where it
+     * happens. Inert today only because nothing in the scene is a `GiOccluder` yet (see
+     * [setup]'s measurement); live the moment the rock walls become one, at which point a
+     * quality change would visibly change how far AO reaches with no menu row that says so.
+     */
+    internal fun aoRadiusFor(localSceneTexScale: Float): Float = AO_RADIUS_METRES * localSceneTexScale
+
+    /**
      * `GlobalIlluminationSystem.normalMapScale`, which [setup] deliberately leaves at the engine's
      * default (see the two-knobs comment there). Stated here so that the one thing in the game
      * that has to reason about it — [PearlNormalMap], whose hemisphere is shaded through it — can
@@ -1450,7 +1468,7 @@ object DiveLighting
         // have been expensive to find. Do not reintroduce a screen-relative expression while
         // tuning: if a value looks right at one resolution and wrong at another, something else
         // is wrong and a pixel count will hide it rather than fix it.
-        system.aoRadius = AO_RADIUS_METRES * system.localSceneTexScale
+        system.aoRadius = aoRadiusFor(system.localSceneTexScale)
 
         // THE TWO NEIGHBOURING KNOBS THAT LOOK LIKE THEY NEED THE SAME TREATMENT AND DO NOT.
         //
