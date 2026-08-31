@@ -48,6 +48,19 @@ object MenuLayout
     /** Top of row [index] (0-based), as a fraction of screen height. */
     fun rowY(index: Int): Float = ROWS_TOP_Y + ROW_FONT * ROW_SPACING * index
 
+    /**
+     * Where the last of [rowCount] rows ENDS, as a fraction of screen height — the bottom of the
+     * block the panel has to contain.
+     *
+     * Exists because anchoring the panel to [HINT_Y] instead, as it was first written, made the
+     * panel the same height on both pages by spanning all the way to the hint line — leaving ROOT
+     * (four rows, ending near 0.42h) with roughly half a screen of empty dark box below its last
+     * item. Uniformity between the two pages is not worth that: the panel is there to back the
+     * text, so it should end where the text does, and the hint sits outside and below it exactly
+     * as the title sits outside and above.
+     */
+    fun rowsBottom(rowCount: Int): Float = rowY(rowCount - 1) + ROW_FONT
+
     // --- The GRAPHICS page's two columns -----------------------------------------------------
     // Half the gutter between label and value, exactly BriefingLayout.COLUMN_GAP's shape (see
     // this object's class doc) rather than AttractLayout's outward span: the row reads

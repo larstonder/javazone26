@@ -3148,18 +3148,22 @@ class EnPustTil : PulseEngineGame()
         // exercised at 4:3 by MenuLayoutTest, and it covers BOTH pages (ROOT's 4 rows and
         // GRAPHICS' 8) because the panel's bottom edge is anchored to the fixed HINT_Y, not to
         // the last row drawn — the row count never actually moves the panel's extent.
+        val page = menuModel.page
+        val items = menuModel.itemsOn(page)
+
         val panel = PanelLayout.bounds(
             contentLeft = centreX - h * MenuLayout.HIGHLIGHT_HALF_SPAN,
             contentTop = h * MenuLayout.ROWS_TOP_Y,
             contentRight = centreX + h * MenuLayout.HIGHLIGHT_HALF_SPAN,
-            contentBottom = h * (MenuLayout.HINT_Y + MenuLayout.HINT_FONT),
+            // THE LAST ROW, NOT THE HINT LINE. Anchoring to HINT_Y kept the panel identical on
+            // both pages, which sounded like a virtue and photographed like a defect: ROOT's four
+            // rows end near 0.42h while HINT_Y is 0.90h, so most of the box was empty water.
+            // Verified on a real window grab, which is the only thing that could have shown it.
+            contentBottom = h * MenuLayout.rowsBottom(items.size),
             screenHeight = h,
             minTop = h * (MenuLayout.TITLE_Y + MenuLayout.TITLE_FONT)
         )
         Hud.renderPanel(hud, panel.centreX, panel.centreY, panel.width, panel.height, PanelLayout.cornerRadius(h))
-
-        val page = menuModel.page
-        val items = menuModel.itemsOn(page)
         val selectedIndex = menuModel.selectedIndex
         val fontSize = h * MenuLayout.ROW_FONT
         val highlightHalfWidth = h * MenuLayout.HIGHLIGHT_HALF_SPAN
