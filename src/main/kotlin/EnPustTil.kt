@@ -1317,6 +1317,14 @@ class EnPustTil : PulseEngineGame()
     private lateinit var graphicsApplier: GraphicsApplier
 
     /**
+     * Settings to hand [GraphicsApplier] on the first frame, or null once that has happened.
+     *
+     * Exists only because a screen-mode change cannot be applied from `onCreate` - see the
+     * assignment in `createGame` for the frame-by-frame reason and the symptom it produced.
+     */
+    private var pendingBootGraphics: GameSettings? = null
+
+    /**
      * The registered [FrameProbe], or null if neither [PROFILE_ENV] nor a `showFps` setting
      * has ever asked for one this process. A field, not a local, for two reasons: [renderGame]
      * reads [FrameProbe.currentP50Ms] off it every frame the readout is on screen, and
@@ -2099,15 +2107,35 @@ class EnPustTil : PulseEngineGame()
         // this class against a stub `Window` degrades to "no programmatic resize" instead of a
         // `ClassCastException` taking the whole boot down.
         graphicsApplier = GraphicsApplier(engine)
-        graphicsApplier.apply(gameSettings, DiveLighting.giSystem())
+
+        // DEFERRED TO THE FIRST FRAME, NOT APPLIED HERE - and this was a real, visible bug.
+        //
+        // Applying a SCREEN MODE change from `onCreate` leaves the game rendering a corner of
+        // itself. `updateScreenMode` does not act immediately: it parks a lambda that runs at the
+        // next `WindowImpl.initFrame`, which recreates the window and calls `resizeCallBack` ->
+        // `gfx.onWindowChanged` -> re-init every EXISTING surface. But our own `main`/`hud`/`sky`
+        // surfaces are ALSO deferred - `GraphicsImpl.createSurface` queues through its own
+        // `runOnInitFrame` - and they are created in that very same frame. So the resize fires
+        // against surfaces that do not exist yet, and they are then born at the PRE-fullscreen
+        // size.
+        //
+        // Observed, with a settings.json asking for fullscreen: the window went to 1920x1200
+        // while `mainSurface` stayed at 3200x1800, the windowed Retina framebuffer - so a corner
+        // of the frame filled the whole screen. `CameraInvariants` rule 1 named it exactly
+        // ("main surface is 3200x1800 but the window is 1920x1200"), which is what that check is
+        // for, and a windowed boot showed zero violations.
+        //
+        // One frame is enough: by the first `updateGame` the surfaces exist, so the mode change
+        // has something to resize. Everything else `apply` touches - GI properties, render scale,
+        // target fps - is a live per-frame value that does not care which frame it lands on.
+        pendingBootGraphics = gameSettings
         // GUARDED ON !fullscreen: a fullscreen window has no meaningful "size" to request —
         // ScreenMode.FULLSCREEN takes the display's native resolution regardless of what is
         // asked for here (see application.cfg's own doc), so issuing this against a fullscreen
         // boot is a request the window can never honour. It is also the request I2 found
         // clobbering RESOLUTION's own choice on a fullscreen-then-windowed toggle from the
         // menu — same guard, same reasoning, see updateMainMenu's SettingChanged handling.
-        if (!gameSettings.fullscreen)
-            (engine.window as? ResizableWindow)?.requestSize(gameSettings.windowWidth, gameSettings.windowHeight)
+        // (the guarded requestSize moved into the deferred block in updateGame, with apply)
         // gameSettings has held the LOADED value (not the compiled DEFAULT the first
         // rebuildMenuValueHints call a few dozen lines above ran against — see that call's
         // own comment) since the load a few dozen lines up; rebuild now so the GRAPHICS
@@ -2303,6 +2331,23 @@ class EnPustTil : PulseEngineGame()
     /** The real body. See [guard] for why nothing here may throw past this class. */
     private fun updateGame()
     {
+        // The deferred boot graphics settings, applied exactly once, on the first frame that has
+        // real surfaces to resize. See `pendingBootGraphics` and its assignment in `createGame`.
+        // Ahead of the gamepad snapshot below rather than after it: this runs once in the life of
+        // the process and reads no input, so it cannot violate that snapshot-first rule.
+        pendingBootGraphics?.let()
+        {
+            pendingBootGraphics = null
+            graphicsApplier.apply(it, DiveLighting.giSystem())
+
+            // GUARDED ON !fullscreen for the reason the removed boot-time call documented: a
+            // fullscreen window takes the display's native resolution regardless of what is asked
+            // for, so this is a request it can never honour - and it was also finding I2's
+            // clobber of the player's own RESOLUTION choice.
+            if (!it.fullscreen)
+                (engine.window as? ResizableWindow)?.requestSize(it.windowWidth, it.windowHeight)
+        }
+
         // THE GAMEPAD SNAPSHOT, AND IT MUST BE THE FIRST STATEMENT IN THIS FUNCTION.
         //
         // Every gamepad read in this file goes through mappedPads (see its field doc for the
